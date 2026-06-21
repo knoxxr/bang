@@ -1,0 +1,25 @@
+// 리스트 순회 — for-in 루프와 리스트 연산
+// 기대 출력:
+// apple
+// banana
+// cherry
+// total: 15
+// doubled: [2, 4, 6, 8, 10]
+
+let fruits = ["apple", "banana", "cherry"]
+for fruit in fruits {
+    print(fruit)
+}
+
+let numbers = [1, 2, 3, 4, 5]
+let total = 0
+for n in numbers {
+    total = total + n
+}
+print("total: " + str(total))
+
+let doubled = []
+for n in numbers {
+    doubled = doubled + [n * 2]
+}
+print("doubled: " + str(doubled))

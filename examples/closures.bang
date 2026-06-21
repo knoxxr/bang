@@ -1,0 +1,30 @@
+// 클로저 — 외부 변수를 캡처하는 함수
+// 기대 출력:
+// 15
+// 20
+// 1
+// 2
+// 3
+
+fn make_adder(x) {
+    return fn(y) {
+        return x + y
+    }
+}
+
+let add10 = make_adder(10)
+print(add10(5))
+print(add10(10))
+
+fn make_counter() {
+    let count = 0
+    return fn() {
+        count = count + 1
+        return count
+    }
+}
+
+let counter = make_counter()
+print(counter())
+print(counter())
+print(counter())

@@ -1,0 +1,45 @@
+// 문자열 조작 — 연결, 길이, 반복
+// 기대 출력:
+// hello world
+// 11
+// ***
+// H
+// true
+// false
+
+let greeting = "hello" + " " + "world"
+print(greeting)
+print(len(greeting))
+
+// 문자열 반복 함수
+fn repeat_str(s, n) {
+    let result = ""
+    let i = 0
+    while i < n {
+        result = result + s
+        i = i + 1
+    }
+    return result
+}
+print(repeat_str("*", 3))
+
+// 첫 글자 추출
+fn first_char(s) {
+    return s[0]
+}
+print(first_char("Hello"))
+
+// 포함 여부
+fn contains(haystack, needle) {
+    // 간단한 구현: 한 글자 검색
+    let i = 0
+    while i < len(haystack) {
+        if haystack[i] == needle {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+print(contains("hello", "e"))
+print(contains("hello", "z"))

@@ -1,0 +1,13 @@
+[package]
+name = "bang"
+version = "0.1.0"
+edition = "2021"
+description = "Bang 프로그래밍 언어 컴파일러/런타임"
+
+[[bin]]
+name = "bang"
+path = "src/main.rs"
+
+[lib]
+name = "bang"
+path = "src/lib.rs"

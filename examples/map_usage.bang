@@ -1,0 +1,17 @@
+// 맵 사용 — 생성, 접근, 순회
+// 기대 출력:
+// Alice
+// 30
+// name: Alice
+// age: 30
+// city: Seoul
+
+let person = {"name": "Alice", "age": 30, "city": "Seoul"}
+
+print(person["name"])
+print(person["age"])
+
+let keys = ["name", "age", "city"]
+for key in keys {
+    print(key + ": " + str(person[key]))
+}

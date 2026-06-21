@@ -1,0 +1,39 @@
+// 재귀 — 팩토리얼, 거듭제곱, 하노이 탑
+// 기대 출력:
+// 120
+// 1024
+// A -> C
+// A -> B
+// C -> B
+// A -> C
+// B -> A
+// B -> C
+// A -> C
+
+fn factorial(n) {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+fn power(base, exp) {
+    if exp == 0 {
+        return 1
+    }
+    return base * power(base, exp - 1)
+}
+
+fn hanoi(n, from, to, aux) {
+    if n == 1 {
+        print(from + " -> " + to)
+        return nil
+    }
+    hanoi(n - 1, from, aux, to)
+    print(from + " -> " + to)
+    hanoi(n - 1, aux, to, from)
+}
+
+print(factorial(5))
+print(power(2, 10))
+hanoi(3, "A", "C", "B")
