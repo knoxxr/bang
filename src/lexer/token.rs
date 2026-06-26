@@ -6,7 +6,7 @@
 use std::fmt;
 
 /// 소스 코드 내 위치 (줄/열, 1-based)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub line: usize,
     pub col: usize,
@@ -81,6 +81,7 @@ pub enum TokenKind {
     Colon,    // :
 
     // === 끝 ===
+    Newline, // 자동 삽입 문장 종결자
     Eof,
 }
 
@@ -157,6 +158,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Comma => write!(f, ","),
             TokenKind::Dot => write!(f, "."),
             TokenKind::Colon => write!(f, ":"),
+            TokenKind::Newline => write!(f, "Newline"),
             TokenKind::Eof => write!(f, "Eof"),
         }
     }

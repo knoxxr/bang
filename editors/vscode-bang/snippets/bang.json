@@ -1,0 +1,181 @@
+{
+  "Function Declaration": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:params}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "함수 선언"
+  },
+  "Anonymous Function": {
+    "prefix": "anon",
+    "body": [
+      "fn(${1:params}) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "익명 함수(람다)"
+  },
+  "Let Binding": {
+    "prefix": "let",
+    "body": "let ${1:name} = ${0}",
+    "description": "변수 선언"
+  },
+  "If Statement": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition} {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "if 문"
+  },
+  "If-Else Statement": {
+    "prefix": "ife",
+    "body": [
+      "if ${1:condition} {",
+      "\t${2}",
+      "} else {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "if-else 문"
+  },
+  "While Loop": {
+    "prefix": "while",
+    "body": [
+      "while ${1:condition} {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "while 반복문"
+  },
+  "For-In Loop": {
+    "prefix": "for",
+    "body": [
+      "for ${1:item} in ${2:list} {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "for-in 반복문"
+  },
+  "Counted Loop": {
+    "prefix": "fori",
+    "body": [
+      "let ${1:i} = 0",
+      "while ${1:i} < ${2:n} {",
+      "\t${0}",
+      "\t${1:i} = ${1:i} + 1",
+      "}"
+    ],
+    "description": "인덱스 카운터 반복문"
+  },
+  "Return": {
+    "prefix": "ret",
+    "body": "return ${0}",
+    "description": "return 문"
+  },
+  "Print": {
+    "prefix": "pr",
+    "body": "print(${0})",
+    "description": "print 호출"
+  },
+  "Print String Format": {
+    "prefix": "prf",
+    "body": "print(\"${1:label}: \" + str(${0}))",
+    "description": "레이블 + 값 출력"
+  },
+  "Spawn": {
+    "prefix": "spawn",
+    "body": "let ${1:future} = spawn ${0}",
+    "description": "spawn 비동기 작업"
+  },
+  "Parallel Block": {
+    "prefix": "parallel",
+    "body": [
+      "parallel {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "parallel 블록"
+  },
+  "Channel Pattern": {
+    "prefix": "chan",
+    "body": [
+      "let ${1:ch} = channel()",
+      "spawn ${2:producer}(${1:ch})",
+      "",
+      "fn ${2:producer}(${1:ch}) {",
+      "\tsend(${1:ch}, ${3:value})",
+      "\tclose(${1:ch})",
+      "}",
+      "",
+      "let ${4:v} = recv(${1:ch})",
+      "${0}"
+    ],
+    "description": "채널 생산자/소비자 패턴"
+  },
+  "Make Adder (Closure)": {
+    "prefix": "adder",
+    "body": [
+      "fn make_${1:adder}(${2:x}) {",
+      "\treturn fn(${3:y}) {",
+      "\t\treturn ${2:x} + ${3:y}",
+      "\t}",
+      "}",
+      "",
+      "let ${4:add} = make_${1:adder}(${0})"
+    ],
+    "description": "클로저 팩토리 패턴"
+  },
+  "Make Counter (Closure)": {
+    "prefix": "counter",
+    "body": [
+      "fn make_counter() {",
+      "\tlet count = 0",
+      "\treturn fn() {",
+      "\t\tcount = count + 1",
+      "\t\treturn count",
+      "\t}",
+      "}",
+      "",
+      "let ${1:c} = make_counter()"
+    ],
+    "description": "클로저 카운터 패턴"
+  },
+  "List Comprehension (manual)": {
+    "prefix": "listmap",
+    "body": [
+      "let ${1:result} = []",
+      "for ${2:item} in ${3:list} {",
+      "\t${1:result} = ${1:result} + [${0}]",
+      "}"
+    ],
+    "description": "리스트 변환 (for-in 누적)"
+  },
+  "Map Literal": {
+    "prefix": "map",
+    "body": [
+      "let ${1:m} = {",
+      "\t\"${2:key}\": ${3:value}${0}",
+      "}"
+    ],
+    "description": "맵 리터럴"
+  },
+  "Assert": {
+    "prefix": "assert",
+    "body": "assert(${0})",
+    "description": "단언(assert) 호출"
+  },
+  "Fibonacci (recursive)": {
+    "prefix": "fib",
+    "body": [
+      "fn fib(n) {",
+      "\tif n <= 1 { return n }",
+      "\treturn fib(n - 1) + fib(n - 2)",
+      "}"
+    ],
+    "description": "재귀 피보나치 함수"
+  }
+}

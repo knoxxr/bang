@@ -1,0 +1,17 @@
+// 채널 — 작업 간 메시지 전달
+// 기대 출력:
+// 42
+
+fn producer(ch) {
+    send(ch, 42)
+    close(ch)
+}
+
+fn consumer(ch) {
+    let v = recv(ch)
+    print(v)
+}
+
+let ch = channel()
+spawn producer(ch)
+consumer(ch)

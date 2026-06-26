@@ -1,0 +1,19 @@
+// parallel 블록 — 복수 작업 병렬 실행 후 동기화
+// 기대 출력:
+// 2
+// 4
+
+fn fetch(id) {
+    return id * 2
+}
+
+let result_a = nil
+let result_b = nil
+
+parallel {
+    result_a = spawn fetch(1)
+    result_b = spawn fetch(2)
+}
+
+print(result_a)
+print(result_b)

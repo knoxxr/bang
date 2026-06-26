@@ -1,0 +1,29 @@
+// 고차 함수 — 함수를 값으로 전달하고 반환
+// 기대 출력:
+// 10
+// 16
+// 21
+
+fn apply(f, x) {
+    return f(x)
+}
+
+fn double(x) {
+    return x * 2
+}
+
+fn square(x) {
+    return x * x
+}
+
+print(apply(double, 5))
+print(apply(square, 4))
+
+let make_multiplier = fn(n) {
+    return fn(x) {
+        return x * n
+    }
+}
+
+let triple = make_multiplier(3)
+print(triple(7))

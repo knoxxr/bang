@@ -1,19 +1,25 @@
-// 피보나치 수열 — 재귀 함수
+// 피보나치 수열 — 재귀 함수와 반복 함수
 // 기대 출력:
-// 0
-// 1
-// 1
-// 2
-// 3
-// 5
-// 8
-// 13
+// 0 1 1 2 3 5 8 13 21 34
 
 fn fib(n) {
     if n <= 1 {
         return n
     }
     return fib(n - 1) + fib(n - 2)
+}
+
+fn fib_iter(n) {
+    let a = 0
+    let b = 1
+    let i = 0
+    while i < n {
+        let tmp = b
+        b = a + b
+        a = tmp
+        i = i + 1
+    }
+    return a
 }
 
 let i = 0

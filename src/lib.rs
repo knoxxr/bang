@@ -9,3 +9,5 @@ pub mod compiler;
 pub mod vm;
 pub mod runtime;
 pub mod stdlib;
+pub mod scheduler;
+pub mod codegen;

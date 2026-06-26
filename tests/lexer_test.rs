@@ -1,6 +1,4 @@
 // Bang 통합 테스트 — Lexer
-//
-// 모든 examples/*.bang 파일이 패닉 없이 토큰화되는지 검증한다.
 
 use bang::lexer::token::TokenKind;
 use bang::lexer::Lexer;
@@ -21,8 +19,8 @@ fn test_all_examples_tokenize_without_error() {
             continue;
         }
 
-        let source =
-            fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: 파일 읽기 실패: {e}", path.display()));
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: 파일 읽기 실패: {e}", path.display()));
 
         let mut lexer = Lexer::new(&source);
         let result = lexer.tokenize();
@@ -35,7 +33,6 @@ fn test_all_examples_tokenize_without_error() {
 
         let tokens = result.unwrap();
 
-        // 마지막 토큰은 항상 Eof
         assert_eq!(
             tokens.last().unwrap().kind,
             TokenKind::Eof,
@@ -46,10 +43,7 @@ fn test_all_examples_tokenize_without_error() {
         count += 1;
     }
 
-    assert_eq!(
-        count, 12,
-        "examples/ 에 .bang 파일 12개 기대, {count}개 발견"
-    );
+    assert_eq!(count, 12, "examples/ 에 .bang 파일 12개 기대, {count}개 발견");
 }
 
 /// hello.bang 파일의 토큰화 결과가 예상과 일치하는지 확인
@@ -61,7 +55,8 @@ fn test_hello_example_snapshot() {
 
     let kinds: Vec<&TokenKind> = tokens.iter().map(|t| &t.kind).collect();
 
-    // fn greet(name) { print("hello " + name) } greet("world") Eof
+    // 1행: fn greet(name) { print("hello " + name) }
+    // 2행: greet("world")
     assert_eq!(kinds[0], &TokenKind::Fn);
     assert_eq!(kinds[1], &TokenKind::Ident("greet".into()));
     assert_eq!(kinds[2], &TokenKind::LParen);
@@ -70,7 +65,8 @@ fn test_hello_example_snapshot() {
     assert_eq!(kinds[5], &TokenKind::LBrace);
     assert_eq!(kinds[6], &TokenKind::Ident("print".into()));
     assert_eq!(kinds[12], &TokenKind::RBrace);
-    assert_eq!(kinds[13], &TokenKind::Ident("greet".into()));
+    assert_eq!(kinds[13], &TokenKind::Newline); // } 뒤 줄바꿈
+    assert_eq!(kinds[14], &TokenKind::Ident("greet".into()));
     assert_eq!(kinds.last().unwrap(), &&TokenKind::Eof);
 }
 
@@ -81,7 +77,7 @@ fn test_fibonacci_tokenizes_correctly() {
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize().expect("fibonacci.bang 토큰화 실패");
 
-    // fn 키워드가 2번 등장 (fib, fib_list)
+    // fn 키워드가 2번 등장 (fib, fib_iter)
     let fn_count = tokens.iter().filter(|t| t.kind == TokenKind::Fn).count();
     assert_eq!(fn_count, 2, "fn 키워드 2개 기대, {fn_count}개 발견");
 

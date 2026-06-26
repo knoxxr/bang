@@ -1,1 +1,1 @@
-/Users/smic/bang/target/debug/bang: /Users/smic/bang/src/lexer/mod.rs /Users/smic/bang/src/lexer/token.rs /Users/smic/bang/src/lib.rs /Users/smic/bang/src/main.rs
+/bang/target/debug/bang: /bang/src/ast.rs /bang/src/codegen/mod.rs /bang/src/codegen/transpile.rs /bang/src/compiler.rs /bang/src/interpreter.rs /bang/src/lexer/mod.rs /bang/src/lexer/token.rs /bang/src/lib.rs /bang/src/main.rs /bang/src/parser.rs /bang/src/resolver.rs /bang/src/runtime.rs /bang/src/scheduler.rs /bang/src/stdlib.rs /bang/src/vm.rs

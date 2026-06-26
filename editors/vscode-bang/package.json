@@ -1,0 +1,87 @@
+{
+  "name": "bang-lang",
+  "displayName": "Bang Language",
+  "description": "Syntax highlighting, snippets, and language support for the Bang programming language",
+  "version": "0.1.0",
+  "publisher": "knoxxr",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/knoxxr/bang"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "bang",
+        "aliases": ["Bang", "bang"],
+        "extensions": [".bang"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/bang-light.svg",
+          "dark": "./icons/bang-dark.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "bang",
+        "scopeName": "source.bang",
+        "path": "./syntaxes/bang.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "bang",
+        "path": "./snippets/bang.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "bang.runFile",
+        "title": "Bang: 파일 실행",
+        "icon": "$(play)"
+      },
+      {
+        "command": "bang.checkFile",
+        "title": "Bang: 오류 검사"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "bang.runFile",
+          "when": "resourceExtname == .bang",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Bang",
+      "properties": {
+        "bang.executablePath": {
+          "type": "string",
+          "default": "bang",
+          "description": "bang 실행 파일 경로 (PATH에 없는 경우 절대경로 지정)"
+        },
+        "bang.runMode": {
+          "type": "string",
+          "default": "vm",
+          "enum": ["vm", "interp"],
+          "enumDescriptions": [
+            "바이트코드 VM (기본, 빠름)",
+            "트리워킹 인터프리터"
+          ],
+          "description": "실행 모드"
+        }
+      }
+    }
+  },
+  "main": "./extension.js"
+}

@@ -1,0 +1,15 @@
+// spawn 기본 사용 — 비동기 작업 실행
+// 기대 출력:
+// 30
+// 70
+// 100
+
+fn slow_add(x, y) {
+    return x + y
+}
+
+let f1 = spawn slow_add(10, 20)
+let f2 = spawn slow_add(30, 40)
+print(f1)
+print(f2)
+print(f1 + f2)
