@@ -14,7 +14,7 @@ M:N 스케줄러, JIT/AOT 백엔드까지 Rust로 처음부터 구현했다.
 
 ### Homebrew (macOS, 권장)
 
-릴리스가 게시되면 프리빌트 바이너리로 즉시 설치된다.
+프리빌트 바이너리로 즉시 설치된다.
 
 ```bash
 brew install knoxxr/tap/bang
@@ -33,10 +33,15 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 Rust 툴체인(`cargo`)이 필요하다.
 
 ```bash
-cargo install --path .     # `bang` 이 ~/.cargo/bin 에 깔린다
+# 저장소를 클론하지 않고 바로 설치
+cargo install --git https://github.com/knoxxr/bang
+
+# 또는 클론한 저장소에서
+cargo install --path .
 ```
 
-`~/.cargo/bin` 이 PATH에 있어야 한다(rustup 설치 시 보통 자동 설정됨).
+`bang` 은 `~/.cargo/bin` 에 깔린다. 이 경로가 PATH에 있어야 한다
+(rustup 설치 시 보통 자동 설정됨).
 
 > AOT 컴파일(`bang compile`)은 시스템에 C 컴파일러(`cc`: clang/gcc)가 필요하다.
 > macOS에서는 Xcode Command Line Tools(`xcode-select --install`)로 설치된다.
@@ -72,6 +77,8 @@ chmod +x script.bang
 bang <파일.bang>          .bang 파일 실행 (run 생략 가능)
 bang                      REPL 진입
 bang run     [--interp] [--jit] [--dump-ast] <파일|->   실행 (기본: VM)
+                          --jit 은 소스에서 --features jit 로 빌드한 경우에만 동작
+                          (Homebrew/curl 배포본은 미포함)
 bang compile -o <출력> <파일>   AOT 컴파일 (C 트랜스파일 + cc -O2)
 bang check   <파일>       오류 검사 (실행 없음)
 bang build   <파일>       컴파일 검증 + 통계
@@ -100,8 +107,22 @@ while i < 10 {
 }
 ```
 
+위 코드를 `fibonacci.bang` 으로 저장한 뒤 실행한다(저장소 예제는 `examples/fibonacci.bang`):
+
 ```bash
 bang fibonacci.bang
+```
+
+### 동시성 (헤드라인 기능)
+
+`spawn` 으로 작업을 띄우면 Future가 즉시 반환되고, 값이 필요한 시점에 자동 조인된다.
+`await` 키워드도, 함수 색칠도 없다.
+
+```
+// 두 작업을 병렬 실행 — a + b 계산 시점에 자동으로 조인된다
+let a = spawn fib(30)
+let b = spawn fib(31)
+print(a + b)
 ```
 
 더 많은 샘플은 [`examples/`](examples/) — 각 파일 상단 주석의 기대 출력이 통합 테스트 정답지다.
