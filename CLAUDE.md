@@ -135,4 +135,8 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              stdin 실행(bang -), --version/-V. 버전 단일화(env!(CARGO_PKG_VERSION), Cargo 0.10.0).
              통합 테스트: tests/cli_test.rs (빌드 바이너리 직접 실행 7개)
              (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver + 28 vm + 8 transpile + 7 cli = 207 green, clippy 0)
-             (미진: Phase D — Homebrew/프리빌트 바이너리 배포는 원격 저장소 운영 결정 후 진행)
+             Phase D 배포 자동화: cargo-dist(dist-workspace.toml + .github/workflows/release.yml)
+               - 타깃: macOS aarch64/x86_64, 인스톨러: shell(curl) + homebrew
+               - tap: knoxxr/homebrew-tap (HOMEBREW_TAP_TOKEN 시크릿 필요)
+               - 릴리스 트리거: git tag vX.Y.Z && git push --tags → CI가 빌드·릴리스·formula 발행
+               - 남은 수동 단계: GitHub에 knoxxr/homebrew-tap 생성 + 시크릿 등록 + 태그 푸시

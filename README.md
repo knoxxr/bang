@@ -12,19 +12,34 @@ M:N 스케줄러, JIT/AOT 백엔드까지 Rust로 처음부터 구현했다.
 
 ## 설치
 
+### Homebrew (macOS, 권장)
+
+릴리스가 게시되면 프리빌트 바이너리로 즉시 설치된다.
+
+```bash
+brew install knoxxr/tap/bang
+bang --version
+```
+
+### 설치 스크립트 (curl)
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/knoxxr/bang/releases/latest/download/bang-installer.sh | sh
+```
+
+### 소스에서 빌드 (cargo)
+
 Rust 툴체인(`cargo`)이 필요하다.
 
 ```bash
-# 저장소에서 직접 설치 — `bang` 이 ~/.cargo/bin 에 깔린다
-cargo install --path .
-
-# 설치 확인
-bang --version
+cargo install --path .     # `bang` 이 ~/.cargo/bin 에 깔린다
 ```
 
 `~/.cargo/bin` 이 PATH에 있어야 한다(rustup 설치 시 보통 자동 설정됨).
 
 > AOT 컴파일(`bang compile`)은 시스템에 C 컴파일러(`cc`: clang/gcc)가 필요하다.
+> macOS에서는 Xcode Command Line Tools(`xcode-select --install`)로 설치된다.
 
 ## 사용법
 
