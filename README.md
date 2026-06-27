@@ -21,7 +21,9 @@ brew install knoxxr/tap/bang
 bang --version
 ```
 
-### 설치 스크립트 (curl)
+### 설치 스크립트 (Linux / macOS, curl)
+
+프리빌트 바이너리를 내려받아 설치한다. Linux(x86_64·ARM64)와 macOS를 지원한다.
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
