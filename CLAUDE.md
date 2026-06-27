@@ -65,8 +65,12 @@ src/
   vm/           스택 VM + GC (Phase 5)
   runtime/      스케줄러·채널·Future (Phase 3 OS스레드 → Phase 5 M:N)
   stdlib/       내장 함수·모듈 (Phase 6)
+  scheduler/    M:N 스케줄러 (Phase 9)
+  codegen/      Cranelift JIT(jit) + AOT C 트랜스파일러(transpile) (Phase 9~10)
 docs/SPEC.md    언어 명세 (동시성 모델 섹션 포함). 의미 변경 시 함께 갱신.
-examples/       기본 샘플 + concurrency/ 동시성 샘플. 상단 주석의 기대 출력이 통합 테스트 정답지.
+docs/GUIDE.md   사용자 가이드.
+examples/       기본 샘플 + 동시성 샘플(channels/parallel_block/spawn_basic 등)이 한 디렉토리에 평면 배치.
+                상단 주석의 기대 출력이 통합 테스트 정답지.
 
 빌드 · 테스트 · 실행
 
@@ -75,8 +79,8 @@ cargo build --release                    # 릴리스 빌드
 cargo test                               # 전체 테스트 (단위 + 통합)
 cargo clippy --all-targets -- -D warnings  # 린트 (경고 0 유지)
 cargo fmt                                # 포맷
-cargo run -- run examples/fib.bang       # 개발 중 실행
-cargo run -- run --dump-ast examples/fib.bang   # AST 덤프 확인
+cargo run -- run examples/fibonacci.bang            # 개발 중 실행
+cargo run -- run --dump-ast examples/fibonacci.bang  # AST 덤프 확인
 
 코딩 규약
 
@@ -123,4 +127,5 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              bang compile -o <출력> <파일.bang> → AST → C11 → cc -O2 → 네이티브 바이너리
              지원: Int/Float/Bool/Nil/Str, 산술·비교·논리, let/assign, if/while/return, 최상위 fn(재귀 포함)
              미지원: List/Map/Index/Field/Spawn/Parallel/for-in/클로저 (에러 반환)
-             (tests: 87 unit + 26 interp + 3 lexer + 9 parser + 36 resolver + 28 vm = 189 green, clippy 0)
+             통합 테스트: tests/transpile_test.rs가 생성 C를 실제 cc로 컴파일·실행해 stdout 검증
+             (tests: 87 unit + 26 interp + 3 lexer + 9 parser + 36 resolver + 28 vm + 8 transpile = 197 green, clippy 0)

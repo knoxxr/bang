@@ -349,7 +349,7 @@ impl Transpiler {
                     // print() 등 내장 함수 호출 → 문 레벨에서 직접 emit
                     ExprKind::Call { callee, args } => {
                         if let Some(builtin_stmt) = self.maybe_builtin_stmt(callee, args, sp) {
-                            self.push_line(&builtin_stmt);
+                            self.push_line(&format!("{builtin_stmt};"));
                         } else {
                             let expr = self.emit_expr(e);
                             self.push_line(&format!("{expr};"));
