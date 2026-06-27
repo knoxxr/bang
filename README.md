@@ -12,6 +12,8 @@ M:N 스케줄러, JIT/AOT 백엔드까지 Rust로 처음부터 구현했다.
 
 ## 설치
 
+지원 플랫폼: **macOS**(Apple Silicon·Intel), **Linux**(x86_64·ARM64), **Windows**(x64).
+
 ### Homebrew (macOS, 권장)
 
 프리빌트 바이너리로 즉시 설치된다.
@@ -55,8 +57,9 @@ cargo install --path .
 `bang` 은 `~/.cargo/bin` 에 깔린다. 이 경로가 PATH에 있어야 한다
 (rustup 설치 시 보통 자동 설정됨).
 
-> AOT 컴파일(`bang compile`)은 시스템에 C 컴파일러(`cc`: clang/gcc)가 필요하다.
-> macOS에서는 Xcode Command Line Tools(`xcode-select --install`)로 설치된다.
+> AOT 컴파일(`bang compile`)은 시스템에 C 컴파일러가 필요하다. `cc → clang → gcc`
+> 순으로 자동 탐색한다. macOS는 Xcode Command Line Tools(`xcode-select --install`),
+> Linux는 `gcc`/`clang`, Windows는 MSYS2(MinGW) 또는 LLVM(clang)을 설치하면 된다.
 
 ## 사용법
 
@@ -91,7 +94,7 @@ bang                      REPL 진입
 bang run     [--interp] [--jit] [--dump-ast] <파일|->   실행 (기본: VM)
                           --jit 은 소스에서 --features jit 로 빌드한 경우에만 동작
                           (Homebrew/curl 배포본은 미포함)
-bang compile -o <출력> <파일>   AOT 컴파일 (C 트랜스파일 + cc -O2)
+bang compile -o <출력> <파일>   AOT 컴파일 (C 트랜스파일 + cc/clang/gcc -O2)
 bang check   <파일>       오류 검사 (실행 없음)
 bang build   <파일>       컴파일 검증 + 통계
 bang parse   <파일>       AST 출력
