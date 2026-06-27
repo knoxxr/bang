@@ -142,3 +142,11 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                - tap: knoxxr/homebrew-tap (HOMEBREW_TAP_TOKEN 시크릿 필요)
                - 릴리스 트리거: git tag vX.Y.Z && git push --tags → CI가 빌드·릴리스·formula 발행
                - 남은 수동 단계: GitHub에 knoxxr/homebrew-tap 생성 + 시크릿 등록 + 태그 푸시
+✅ Phase 12 — import 크로스모듈 전역 버그 수정 (VM)
+             이전: import한 모듈 함수가 형제 함수/모듈 상수를 참조하면 VM 패닉
+             (모듈 함수가 전역을 절대 슬롯으로 참조하는데 메인 VM 전역 배열을 가리킴).
+             수정: VmClosure가 자기 모듈 전역(Arc<Mutex<Vec>>)을 보유 →
+             OP_LOAD/STORE_GLOBAL은 현재 프레임 클로저 전역 사용. spawn은 deep_clone_closure가
+             전역까지 깊은 복사해 격리 유지. import는 sub_vm 전역 Arc가 함수에 실려 유지됨.
+             통합 테스트: tests/import_test.rs (4개). 참고: import는 VM 전용(--interp 미지원).
+             (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver + 28 vm + 8 transpile + 7 cli + 4 import = 211 green, clippy 0)

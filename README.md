@@ -183,6 +183,31 @@ print(sqrt(16.0))                     // 4
 
 전체 함수의 정확한 시그니처·의미는 [`docs/SPEC.md`](docs/SPEC.md) 참고.
 
+## 모듈 (import)
+
+`import("경로.bang")` 는 다른 `.bang` 파일을 실행하고, 그 파일의 **최상위 바인딩
+(let·fn)을 맵으로 반환**한다. `.이름` 또는 `["이름"]` 으로 꺼내 쓴다.
+
+```
+// math.bang
+let pi = 3.14159
+fn square(x) { return x * x }
+fn area(r) { return pi * square(r) }   // 형제 함수·모듈 상수 참조 OK
+```
+
+```
+// main.bang
+let math = import("math.bang")
+print(math.pi)           // 3.14159
+print(math.square(5))    // 25
+print(math.area(2))      // 12.56636
+```
+
+- 모듈 함수는 **자기 모듈의 전역**(형제 함수·상수)을 그대로 참조한다.
+- import 경로는 실행 디렉토리 기준 상대경로다.
+- 모듈은 import 시점에 한 번 실행된다(최상위 코드의 부수효과 포함).
+- import는 기본 실행 엔진인 VM에서 동작한다(`--interp` 모드는 미지원).
+
 ## 개발
 
 ```bash

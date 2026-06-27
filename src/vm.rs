@@ -256,6 +256,10 @@ pub type UpvalueRef = Arc<Upvalue>;
 pub struct VmClosure {
     pub func: Arc<CompiledFn>,
     pub upvalues: Vec<UpvalueRef>,
+    /// 이 클로저가 속한 모듈의 전역 배열. import된 모듈의 함수는
+    /// 자기 모듈 전역을 들고 다니므로, 호출하는 VM이 달라도(메인 VM 등)
+    /// OP_LOAD_GLOBAL/OP_STORE_GLOBAL이 올바른 모듈 전역을 가리킨다.
+    pub globals: Arc<Mutex<Vec<VmValue>>>,
 }
 
 impl fmt::Debug for VmClosure {
@@ -356,7 +360,9 @@ pub struct CallFrame {
 pub struct Vm {
     pub stack: Vec<VmValue>,
     pub frames: Vec<CallFrame>,
-    pub globals: Vec<VmValue>,
+    /// 루트(메인) 모듈의 전역 배열. 실행 중 전역 접근은 현재 프레임
+    /// 클로저의 globals를 쓰며, 이 필드는 루트 클로저 globals와 같은 Arc다.
+    pub globals: Arc<Mutex<Vec<VmValue>>>,
     pub output: Arc<Mutex<Vec<String>>>,
     /// 구조적 동시성: spawn 스코프 스택.
     /// 각 항목은 이 스코프 안에서 spawn된 Future 목록.
@@ -369,7 +375,7 @@ impl Vm {
         Self {
             stack: Vec::with_capacity(256),
             frames: Vec::with_capacity(64),
-            globals: vec![VmValue::Nil; global_count],
+            globals: Arc::new(Mutex::new(vec![VmValue::Nil; global_count])),
             output,
             spawn_scopes: Vec::new(),
         }
@@ -379,7 +385,11 @@ impl Vm {
         // 프로그램 레벨 spawn 스코프
         self.spawn_scopes.push(Vec::new());
 
-        let closure = Arc::new(VmClosure { func: main_fn.clone(), upvalues: Vec::new() });
+        let closure = Arc::new(VmClosure {
+            func: main_fn.clone(),
+            upvalues: Vec::new(),
+            globals: self.globals.clone(),
+        });
         let locals = Arc::new(Mutex::new(vec![VmValue::Nil; main_fn.local_count]));
         self.frames.push(CallFrame { closure, ip: 0, locals });
         self.exec_until(0)?;
@@ -394,15 +404,16 @@ impl Vm {
     /// spawned 클로저를 서브-VM에서 실행하고 결과 반환.
     /// std::thread::spawn 클로저 안에서 호출된다.
     pub fn run_spawned(
-        globals: Vec<VmValue>,
         output: Arc<Mutex<Vec<String>>>,
         closure: Arc<VmClosure>,
         args: Vec<VmValue>,
     ) -> Result<VmValue, RuntimeError> {
+        // spawned 클로저는 이미 자기 모듈 전역의 독립 복사본을 들고 있다
+        // (deep_clone_closure에서 깊은 복사). 그 Arc를 루트 전역으로 쓴다.
         let mut vm = Vm {
             stack: Vec::with_capacity(64),
             frames: Vec::with_capacity(16),
-            globals,
+            globals: closure.globals.clone(),
             output,
             spawn_scopes: vec![Vec::new()],
         };
@@ -663,12 +674,17 @@ impl Vm {
                 // --- Globals ---
                 OP_LOAD_GLOBAL => {
                     let slot = self.read_u16() as usize;
-                    self.stack.push(self.globals[slot].clone());
+                    let fi = self.frames.len() - 1;
+                    let g_arc = self.frames[fi].closure.globals.clone();
+                    let v = g_arc.lock().unwrap()[slot].clone();
+                    self.stack.push(v);
                 }
                 OP_STORE_GLOBAL => {
                     let slot = self.read_u16() as usize;
                     let val = self.stack_pop();
-                    self.globals[slot] = val;
+                    let fi = self.frames.len() - 1;
+                    let g_arc = self.frames[fi].closure.globals.clone();
+                    g_arc.lock().unwrap()[slot] = val;
                 }
 
                 // --- Builtins ---
@@ -703,7 +719,9 @@ impl Vm {
                         }
                     }
 
-                    let closure = Arc::new(VmClosure { func: compiled_fn, upvalues });
+                    let fi = self.frames.len() - 1;
+                    let globals = self.frames[fi].closure.globals.clone();
+                    let closure = Arc::new(VmClosure { func: compiled_fn, upvalues, globals });
                     self.stack.push(VmValue::Closure(closure));
                 }
 
@@ -778,17 +796,17 @@ impl Vm {
                     let callee = self.stack_pop();
                     match callee {
                         VmValue::Closure(closure) => {
-                            // 값 의미론: 인자와 upvalue를 spawn 경계에서 복제
+                            // 값 의미론: 인자·upvalue·모듈 전역을 spawn 경계에서 복제
+                            // (deep_clone_closure가 클로저 전역을 깊은 복사한다)
                             let args_copy = args; // VmValue::clone() 이 올바르게 deep-copy
                             let closure_copy = deep_clone_closure(&closure);
-                            let globals_copy = self.globals.clone();
                             let output_copy  = self.output.clone();
                             let future = VmFuture::new();
                             let future2 = future.clone();
                             // M:N 스케줄러에 태스크 제출 (Phase 9 Part A)
                             crate::scheduler::global().spawn_task(move || {
                                 let result = Vm::run_spawned(
-                                    globals_copy, output_copy, closure_copy, args_copy);
+                                    output_copy, closure_copy, args_copy);
                                 future2.complete(result);
                             });
                             // 현재 스코프에 등록
@@ -1526,9 +1544,15 @@ impl Vm {
                 let mut sub_vm = Vm::new(out.global_count as usize, sub_out);
                 sub_vm.run(out.main_fn)
                     .map_err(|e| RuntimeError::new(format!("import(): 모듈 실행 오류 in '{path}': {e}"), span))?;
+                // 모듈의 export(최상위 바인딩)를 Map으로. 함수 값은 sub_vm의
+                // 모듈 전역 Arc를 그대로 들고 있어, 메인 VM에서 호출돼도
+                // 자기 모듈 전역을 참조한다(sub_vm 드롭 후에도 Arc로 유지).
                 let mut map = HashMap::new();
-                for (name, slot) in &out.global_names {
-                    map.insert(name.clone(), sub_vm.globals[*slot as usize].clone());
+                {
+                    let g = sub_vm.globals.lock().unwrap();
+                    for (name, slot) in &out.global_names {
+                        map.insert(name.clone(), g[*slot as usize].clone());
+                    }
                 }
                 Ok(VmValue::Map(map))
             }
@@ -1754,7 +1778,13 @@ fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
         let new_locals = Arc::new(Mutex::new(vec![val]));
         Arc::new(Upvalue { locals: new_locals, slot: 0 })
     }).collect();
-    Arc::new(VmClosure { func: c.func.clone(), upvalues })
+    // 모듈 전역도 독립 복사본으로 (값 의미론: 데이터 깊은 복사, 함수/채널은 Arc 공유).
+    // Vec<VmValue>::clone() 이 각 값에 대해 올바른 복사 의미를 적용한다.
+    let globals = {
+        let g = c.globals.lock().unwrap();
+        Arc::new(Mutex::new(g.clone()))
+    };
+    Arc::new(VmClosure { func: c.func.clone(), upvalues, globals })
 }
 
 fn to_runtime(v: &VmValue) -> crate::runtime::Value {
