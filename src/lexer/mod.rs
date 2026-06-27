@@ -74,6 +74,15 @@ impl Lexer {
         // 마지막으로 방출한 토큰 종류 (Newline 판단용)
         let mut last_kind: Option<TokenKind> = None;
 
+        // shebang: 파일 첫 줄이 `#!`로 시작하면 무시한다.
+        // (`./script.bang` 직접 실행 지원 — `#!/usr/bin/env bang`)
+        // 줄바꿈(\n)은 남겨 두어 이후 줄 번호가 정확히 유지된다.
+        if self.source.first() == Some(&'#') && self.source.get(1) == Some(&'!') {
+            while !self.is_at_end() && self.peek() != '\n' {
+                self.advance();
+            }
+        }
+
         loop {
             self.skip_blanks_and_line_comments();
 
@@ -647,6 +656,34 @@ mod tests {
             kinds_no_eof("10 / 2"),
             vec![TokenKind::Int(10), TokenKind::Slash, TokenKind::Int(2)]
         );
+    }
+
+    #[test]
+    fn test_shebang_skipped() {
+        // 첫 줄 `#!`는 무시되고, 이후 코드만 토큰화된다.
+        assert_eq!(
+            kinds_no_eof("#!/usr/bin/env bang\n42"),
+            vec![TokenKind::Int(42)]
+        );
+    }
+
+    #[test]
+    fn test_shebang_preserves_line_numbers() {
+        // shebang 줄을 무시하되 줄 번호는 보존되어야 한다 (코드는 2번 줄).
+        let mut lexer = Lexer::new("#!/usr/bin/env bang\nx");
+        let tokens = lexer.tokenize().expect("tokenize 실패");
+        let ident = tokens
+            .iter()
+            .find(|t| matches!(t.kind, TokenKind::Ident(_)))
+            .expect("식별자 없음");
+        assert_eq!(ident.span.line, 2);
+    }
+
+    #[test]
+    fn test_hash_not_shebang_is_error() {
+        // `#!`가 아닌 단독 `#`는 여전히 예상하지 못한 문자 오류.
+        let mut lexer = Lexer::new("# 주석 아님\n42");
+        assert!(lexer.tokenize().is_err());
     }
 
     // =================================================================

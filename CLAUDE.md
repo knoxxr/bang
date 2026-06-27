@@ -129,3 +129,10 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              미지원: List/Map/Index/Field/Spawn/Parallel/for-in/클로저 (에러 반환)
              통합 테스트: tests/transpile_test.rs가 생성 C를 실제 cc로 컴파일·실행해 stdout 검증
              (tests: 87 unit + 26 interp + 3 lexer + 9 parser + 36 resolver + 28 vm + 8 transpile = 197 green, clippy 0)
+✅ Phase 11 — 설치/배포 UX (Python 같은 CLI)
+             `cargo install --path .` → ~/.cargo/bin/bang. README.md/LICENSE(MIT)/Cargo 메타데이터 추가.
+             베어 파일 실행(bang script.bang), shebang(#!) 무시, 인자 없이 REPL 진입,
+             stdin 실행(bang -), --version/-V. 버전 단일화(env!(CARGO_PKG_VERSION), Cargo 0.10.0).
+             통합 테스트: tests/cli_test.rs (빌드 바이너리 직접 실행 7개)
+             (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver + 28 vm + 8 transpile + 7 cli = 207 green, clippy 0)
+             (미진: Phase D — Homebrew/프리빌트 바이너리 배포는 원격 저장소 운영 결정 후 진행)

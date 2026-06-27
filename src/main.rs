@@ -15,9 +15,10 @@ use std::sync::{Arc, Mutex};
 fn main() {
     let args: Vec<String> = env::args().collect();
 
+    // 인자 없이 실행 → REPL 진입 (Python 동작)
     if args.len() < 2 {
-        print_usage();
-        process::exit(1);
+        cmd_repl();
+        return;
     }
 
     match args[1].as_str() {
@@ -29,21 +30,35 @@ fn main() {
         "tokenize" => cmd_tokenize(&args[2..]),
         "parse"    => cmd_parse(&args[2..]),
         "help" | "--help" | "-h" => print_usage(),
-        _ => {
-            eprintln!("알 수 없는 명령: {}", args[1]);
-            print_usage();
-            process::exit(1);
+        "version" | "--version" | "-V" => print_version(),
+        other => {
+            // 알려진 명령이 아니면 파일 경로로 간주해 실행한다.
+            // (bang script.bang  /  ./script.bang  /  bang - )
+            if other == "-" || std::path::Path::new(other).is_file() {
+                cmd_run(&args[1..]);
+            } else {
+                eprintln!("알 수 없는 명령 또는 존재하지 않는 파일: {other}");
+                print_usage();
+                process::exit(1);
+            }
         }
     }
 }
 
+fn print_version() {
+    println!("bang {}", env!("CARGO_PKG_VERSION"));
+}
+
 fn print_usage() {
-    eprintln!("Bang 프로그래밍 언어 v0.5.0");
+    eprintln!("Bang 프로그래밍 언어 v{}", env!("CARGO_PKG_VERSION"));
     eprintln!();
-    eprintln!("사용법: bang <명령> [옵션] [인자...]");
+    eprintln!("사용법:");
+    eprintln!("  bang <파일.bang>          .bang 파일 실행 (run 생략 가능)");
+    eprintln!("  bang                      인자 없이 실행하면 REPL 진입");
+    eprintln!("  bang <명령> [옵션] [인자...]");
     eprintln!();
     eprintln!("명령:");
-    eprintln!("  run     [--interp] [--jit] [--dump-ast] <파일>  .bang 파일 실행");
+    eprintln!("  run     [--interp] [--jit] [--dump-ast] <파일|->  .bang 파일/표준입력 실행");
     eprintln!("                    기본: VM, --interp: 트리-워킹 인터프리터");
     eprintln!("                    --jit: Cranelift JIT 백엔드 (--features jit 빌드 필요)");
     eprintln!("  compile -o <출력> <파일>  AOT 컴파일 (C 트랜스파일 + cc -O2)");
@@ -52,6 +67,7 @@ fn print_usage() {
     eprintln!("  parse   <파일>   AST 출력");
     eprintln!("  tokenize <파일>  토큰화 출력 (디버그)");
     eprintln!("  repl             대화형 셸(REPL) 시작");
+    eprintln!("  version          버전 출력");
     eprintln!("  help             도움말 출력");
 }
 
@@ -60,6 +76,16 @@ fn print_usage() {
 // ============================================================================
 
 fn read_source(path: &str) -> String {
+    // `-` 는 표준 입력에서 소스를 읽는다 (echo '...' | bang -).
+    if path == "-" {
+        use std::io::Read;
+        let mut s = String::new();
+        if let Err(e) = io::stdin().read_to_string(&mut s) {
+            eprintln!("오류: 표준 입력을 읽을 수 없습니다: {e}");
+            process::exit(1);
+        }
+        return s;
+    }
     fs::read_to_string(path).unwrap_or_else(|e| {
         eprintln!("오류: '{path}' 파일을 읽을 수 없습니다: {e}");
         process::exit(1);
@@ -316,7 +342,7 @@ fn cmd_tokenize(args: &[String]) {
 // ============================================================================
 
 fn cmd_repl() {
-    eprintln!("Bang REPL v0.3.0  (종료: exit(0) 또는 Ctrl+C)");
+    eprintln!("Bang REPL v{}  (종료: exit(0) 또는 Ctrl+C)", env!("CARGO_PKG_VERSION"));
     eprintln!();
 
     let interp = Interpreter::new();
