@@ -143,6 +143,46 @@ print(a + b)
 더 많은 샘플은 [`examples/`](examples/) — 각 파일 상단 주석의 기대 출력이 통합 테스트 정답지다.
 동시성 예제: `channels.bang`, `parallel_block.bang`, `spawn_basic.bang`.
 
+## 표준 라이브러리
+
+별도 import 없이 바로 쓰는 내장 함수다. **컨테이너는 값 의미론**이라
+`push`/`sort` 같은 함수는 원본을 바꾸지 않고 **새 값을 반환**한다 — 결과를 다시 받아야 한다.
+
+```
+let xs = [3, 1, 2]
+let ys = push(xs, 9)   // xs 는 그대로, ys = [3, 1, 2, 9]
+let sorted = sort(xs)  // sorted = [1, 2, 3], xs 는 그대로
+```
+
+| 분류 | 함수 |
+|---|---|
+| 타입/변환 | `str(x)` `int(x)` `float(x)` `bool(x)` `type(x)` `len(x)` |
+| 리스트 | `push(l,x)` `pop(l)` `sort(l)` `reverse(l)` `map(l,f)` `filter(l,f)` `reduce(l,f,init)` `any(l,f)` `all(l,f)` `sum(l)` `flat(l)` `enumerate(l)` `zip(a,b)` `range(...)` |
+| 맵 | `keys(m)` `values(m)` |
+| 문자열 | `split(s,sep)` `join(l,sep)` `trim(s)` `trim_start(s)` `trim_end(s)` `replace(s,a,b)` `contains(s,sub)` `starts_with(s,p)` `ends_with(s,p)` `upper(s)` `lower(s)` `find(s,sub)` `chars(s)` |
+| 수학 | `abs(x)` `sqrt(x)` `floor(x)` `ceil(x)` `round(x)` `pow(b,e)` `min(...)` `max(...)` |
+| 동시성 | `channel(...)` `send(c,v)` `recv(c)` `close(c)` `wait(f)` `parallel_map(l,f)` |
+| I/O | `print(...)` `print_err(...)` `input(...)` `read_file(p)` `write_file(p,s)` `args()` |
+
+```
+// 고차 함수 — 함수를 값으로 넘긴다
+let nums = [1, 2, 3, 4, 5]
+let evens = filter(nums, fn(x) { return x % 2 == 0 })
+let doubled = map(evens, fn(x) { return x * 2 })
+print(reduce(doubled, fn(a, b) { return a + b }, 0))   // 12
+
+// min/max 는 리스트 또는 2개 인자
+print(max([3, 7, 1]))   // 7
+print(max(3, 7))        // 7
+
+// 문자열·수학
+print(upper(trim("  hi  ")))          // HI
+print(join(["a", "b", "c"], "-"))     // a-b-c
+print(sqrt(16.0))                     // 4
+```
+
+전체 함수의 정확한 시그니처·의미는 [`docs/SPEC.md`](docs/SPEC.md) 참고.
+
 ## 개발
 
 ```bash
