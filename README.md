@@ -30,6 +30,16 @@ curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/knoxxr/bang/releases/latest/download/bang-installer.sh | sh
 ```
 
+### Windows (PowerShell)
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/knoxxr/bang/releases/latest/download/bang-installer.ps1 | iex"
+```
+
+> Windows에서 인터프리터/VM 실행은 그대로 동작한다. 단, AOT 컴파일(`bang compile`)은
+> C 컴파일러가 필요한데 Windows 기본 MSVC(`cl`)는 비호환이므로,
+> MSYS2(MinGW `gcc`) 또는 LLVM(`clang`)을 설치해 PATH에 두어야 한다.
+
 ### 소스에서 빌드 (cargo)
 
 Rust 툴체인(`cargo`)이 필요하다.

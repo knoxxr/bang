@@ -136,8 +136,9 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              통합 테스트: tests/cli_test.rs (빌드 바이너리 직접 실행 7개)
              (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver + 28 vm + 8 transpile + 7 cli = 207 green, clippy 0)
              Phase D 배포 자동화: cargo-dist(dist-workspace.toml + .github/workflows/release.yml)
-               - 타깃: macOS aarch64/x86_64 + Linux x86_64/aarch64, 인스톨러: shell(curl) + homebrew
-                 (Windows는 추후 추가; AOT compile의 cc/-lm/-O2가 MSVC 비호환이라 검증 필요)
+               - 타깃: macOS aarch64/x86_64 + Linux x86_64/aarch64 + Windows x86_64-msvc
+                 인스톨러: shell(curl, Linux/macOS) + homebrew(macOS) + powershell(Windows)
+                 (Windows AOT compile은 cc/clang/gcc 후보 탐색; MSVC cl 비호환 → MinGW/clang 필요)
                - tap: knoxxr/homebrew-tap (HOMEBREW_TAP_TOKEN 시크릿 필요)
                - 릴리스 트리거: git tag vX.Y.Z && git push --tags → CI가 빌드·릴리스·formula 발행
                - 남은 수동 단계: GitHub에 knoxxr/homebrew-tap 생성 + 시크릿 등록 + 태그 푸시

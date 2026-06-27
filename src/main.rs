@@ -471,27 +471,45 @@ fn cmd_compile(args: &[String]) {
         process::exit(1);
     }
 
-    // cc -O2 로 컴파일
-    let status = std::process::Command::new("cc")
-        .args(["-O2", "-lm", "-o", output_path, &c_path])
-        .status();
+    // C 컴파일러 후보를 순서대로 시도한다 (cc → clang → gcc).
+    // macOS/Linux엔 보통 cc가 있고, Windows(MSVC)엔 없을 수 있으나
+    // MinGW(gcc)나 LLVM(clang)을 설치하면 동일한 unix 플래그로 동작한다.
+    let candidates = ["cc", "clang", "gcc"];
+    let mut last_spawn_err: Option<std::io::Error> = None;
+    let mut compiled = false;
+    for compiler in candidates {
+        match std::process::Command::new(compiler)
+            .args(["-O2", "-lm", "-o", output_path, &c_path])
+            .status()
+        {
+            Ok(s) if s.success() => {
+                compiled = true;
+                break;
+            }
+            Ok(s) => {
+                // 컴파일러는 있으나 컴파일 자체가 실패 → 같은 C이므로 다른 후보도 무의미.
+                let _ = fs::remove_file(&c_path);
+                eprintln!("{compiler} 컴파일 실패 (종료 코드: {:?})", s.code());
+                process::exit(1);
+            }
+            // 이 컴파일러가 PATH에 없음 → 다음 후보 시도.
+            Err(e) => last_spawn_err = Some(e),
+        }
+    }
 
     // 임시 파일 삭제 (실패해도 계속)
     let _ = fs::remove_file(&c_path);
 
-    match status {
-        Ok(s) if s.success() => {
-            println!("컴파일 완료: {source_path} → {output_path}");
+    if compiled {
+        println!("컴파일 완료: {source_path} → {output_path}");
+    } else {
+        eprintln!("오류: C 컴파일러를 찾을 수 없습니다 (시도: cc, clang, gcc)");
+        if let Some(e) = last_spawn_err {
+            eprintln!("  마지막 실행 오류: {e}");
         }
-        Ok(s) => {
-            eprintln!("cc 컴파일 실패 (종료 코드: {:?})", s.code());
-            process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("cc 실행 오류: {e}");
-            eprintln!("힌트: GCC/Clang이 설치돼 있고 PATH에 있는지 확인하세요.");
-            process::exit(1);
-        }
+        eprintln!("힌트: macOS는 'xcode-select --install', Linux는 gcc/clang,");
+        eprintln!("      Windows는 MSYS2(MinGW) 또는 LLVM(clang)을 PATH에 설치하세요.");
+        process::exit(1);
     }
 }
 
