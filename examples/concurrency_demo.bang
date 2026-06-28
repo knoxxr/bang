@@ -1,0 +1,38 @@
+// 투명 동시성 데모 — async/await 색칠도, 락도 없이 병렬 실행
+// 기대 출력:
+// 6997000
+// [0, 2, 4, 6, 8]
+// 42
+
+// CPU 작업 시뮬레이션 (0..n-1 합)
+fn work(n) {
+    let s = 0
+    let i = 0
+    while i < n {
+        s = s + i
+        i = i + 1
+    }
+    return s
+}
+
+// 세 작업을 동시에 띄운다 — 평범한 함수 그대로, await 불필요
+let a = spawn work(1000)
+let b = spawn work(2000)
+let c = spawn work(3000)
+// a + b + c 를 계산하는 순간 자동으로 조인된다
+print(a + b + c)
+
+// parallel_map — 리스트를 병렬 처리
+let doubled = parallel_map([0, 1, 2, 3, 4], fn(x) {
+    return work(x) + x * 2 - work(x)
+})
+print(doubled)
+
+// 채널 — 작업 간 안전한 메시지 전달 (공유 가변 상태 없음)
+fn producer(ch) {
+    send(ch, 42)
+    close(ch)
+}
+let ch = channel()
+spawn producer(ch)
+print(recv(ch))

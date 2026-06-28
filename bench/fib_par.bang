@@ -1,0 +1,14 @@
+// 병렬: fib(32) 8개를 동시에 spawn → 합산 시점에 자동 조인
+fn fib(n) {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+let a = spawn fib(32)
+let b = spawn fib(32)
+let c = spawn fib(32)
+let d = spawn fib(32)
+let e = spawn fib(32)
+let f = spawn fib(32)
+let g = spawn fib(32)
+let h = spawn fib(32)
+print(a + b + c + d + e + f + g + h)

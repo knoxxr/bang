@@ -178,3 +178,16 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              예제: examples/type_hints.bang. 테스트: vm_test +8.
              (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 49 vm + 8 transpile + 7 cli + 4 import = 232 green, clippy 0)
+✅ Phase 16 — stdlib 확장 + 패키지 시스템(import 캐싱) — 범용 언어 5순위
+             신규 빌트인(58-63, VM): slice(seq,s,e), has(map,k), get(map,k,default),
+             merge(m1,m2), repeat(str,n), index_of(list,x). resolver+vm BUILTINS 끝에 추가.
+             패키지: import 모듈 캐싱 — 같은 파일은 1회만 실행(싱글톤), 정규화 경로 키.
+             모듈 top-level print를 메인 출력으로. (module_cache OnceLock<Mutex<HashMap>>)
+             테스트: vm_test +5(stdlib), import_test +1(캐싱). 
+✅ Phase 17 — 킬러 데모 + 벤치마크 — 범용 언어 4순위
+             examples/concurrency_demo.bang(결정적 출력), bench/(loop_seq/par, fib_seq/par, fib.py).
+             결과: 거친 단위 CPU작업 8개 병렬 = 순차 24s→11s (~2.2x, GIL 없음).
+             정직한 한계 보고: 세밀한 재귀(fib)는 호출당 프레임 힙할당(Arc<Mutex<Vec>>)
+             경합으로 병렬 이득 없음 → 향후 VM 과제(호출 경로 프레임 할당 제거).
+             (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 54 vm + 8 transpile + 7 cli + 5 import = 238 green, clippy 0)

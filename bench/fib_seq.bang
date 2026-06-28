@@ -1,0 +1,12 @@
+// 순차: fib(32)를 8번 차례로 계산
+fn fib(n) {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+let total = 0
+let i = 0
+while i < 8 {
+    total = total + fib(32)
+    i = i + 1
+}
+print(total)

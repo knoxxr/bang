@@ -1,6 +1,6 @@
 [package]
 name = "bang"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 description = "Bang 프로그래밍 언어 컴파일러/런타임"
 license = "MIT"

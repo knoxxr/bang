@@ -415,6 +415,40 @@ fn test_vm_typed_list_map() {
     assert_eq!(run_vm(src), vec!["2", "1"]);
 }
 
+// ============================================================================
+// stdlib 확장 (slice/has/get/merge/repeat/index_of) — Phase 16
+// ============================================================================
+
+#[test]
+fn test_vm_slice() {
+    assert_eq!(run_vm("print(slice([1,2,3,4,5], 1, 4))"), vec!["[2, 3, 4]"]);
+    assert_eq!(run_vm("print(slice(\"hello\", 0, 3))"), vec!["hel"]);
+    assert_eq!(run_vm("print(slice([1,2,3], 5, 9))"), vec!["[]"]); // 범위 밖 → 빈
+}
+
+#[test]
+fn test_vm_map_has_get() {
+    let src = "let m = {\"a\": 1}\nprint(has(m, \"a\"))\nprint(has(m, \"z\"))\nprint(get(m, \"a\", 0))\nprint(get(m, \"z\", -1))";
+    assert_eq!(run_vm(src), vec!["true", "false", "1", "-1"]);
+}
+
+#[test]
+fn test_vm_merge() {
+    assert_eq!(run_vm("print(merge({\"a\": 1}, {\"a\": 9, \"b\": 2})[\"a\"])"), vec!["9"]);
+}
+
+#[test]
+fn test_vm_repeat() {
+    assert_eq!(run_vm("print(repeat(\"ab\", 3))"), vec!["ababab"]);
+    assert_eq!(run_vm("print(repeat(\"x\", 0))"), vec![""]);
+}
+
+#[test]
+fn test_vm_index_of() {
+    assert_eq!(run_vm("print(index_of([10,20,30], 20))"), vec!["1"]);
+    assert_eq!(run_vm("print(index_of([10,20], 99))"), vec!["-1"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

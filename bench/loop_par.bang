@@ -1,0 +1,18 @@
+fn work(n) {
+    let s = 0
+    let i = 0
+    while i < n {
+        s = s + (i % 7)
+        i = i + 1
+    }
+    return s
+}
+let a = spawn work(20000000)
+let b = spawn work(20000000)
+let c = spawn work(20000000)
+let d = spawn work(20000000)
+let e = spawn work(20000000)
+let f = spawn work(20000000)
+let g = spawn work(20000000)
+let h = spawn work(20000000)
+print(a + b + c + d + e + f + g + h)

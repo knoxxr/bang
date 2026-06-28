@@ -5,7 +5,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use crate::compiler::{
     OP_POP, OP_NIL, OP_TRUE, OP_FALSE, OP_CONST, OP_DUP,
@@ -341,6 +341,13 @@ pub const BUILTINS: &[&str] = &[
     "args",         // 56
     // 모듈 (57)
     "import",       // 57
+    // stdlib 확장 (58-63)
+    "slice",        // 58
+    "has",          // 59
+    "get",          // 60
+    "merge",        // 61
+    "repeat",       // 62
+    "index_of",     // 63
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -1640,9 +1647,16 @@ impl Vm {
             }
 
             // ── 모듈 (57) ───────────────────────────────────────────────────────
-            57 => { // import(path) → Map of module exports
+            57 => { // import(path) → Map of module exports (캐시된 싱글톤)
                 req_args("import", &args, 1, span)?;
                 let path = str_arg("import", &args[0], span)?;
+                // 캐시 키: 정규화된 절대경로 (실패 시 원본 경로)
+                let key = std::fs::canonicalize(&path)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| path.clone());
+                if let Some(cached) = module_cache().lock().unwrap().get(&key).cloned() {
+                    return Ok(cached); // 이미 로드됨 → 같은 모듈 인스턴스 반환
+                }
                 let source = std::fs::read_to_string(&path)
                     .map_err(|e| RuntimeError::new(format!("import(): '{path}': {e}"), span))?;
                 let tokens = crate::lexer::Lexer::new(&source)
@@ -1656,8 +1670,8 @@ impl Vm {
                 let out = crate::compiler::compile(&prog)
                     .map_err(|e| RuntimeError::new(
                         format!("import(): 컴파일 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span))?;
-                let sub_out = Arc::new(Mutex::new(Vec::<String>::new()));
-                let mut sub_vm = Vm::new(out.global_count as usize, sub_out);
+                // 모듈의 top-level print는 메인 프로그램 출력으로 보낸다.
+                let mut sub_vm = Vm::new(out.global_count as usize, self.output.clone());
                 sub_vm.run(out.main_fn)
                     .map_err(|e| RuntimeError::new(format!("import(): 모듈 실행 오류 in '{path}': {e}"), span))?;
                 // 모듈의 export(최상위 바인딩)를 Map으로. 함수 값은 sub_vm의
@@ -1670,7 +1684,79 @@ impl Vm {
                         map.insert(name.clone(), g[*slot as usize].clone());
                     }
                 }
-                Ok(VmValue::Map(Arc::new(map)))
+                let result = VmValue::Map(Arc::new(map));
+                module_cache().lock().unwrap().insert(key, result.clone());
+                Ok(result)
+            }
+
+            // ── stdlib 확장 (58-63) ──────────────────────────────────────────
+            58 => { // slice(seq, start, end) — list/str 부분 추출
+                req_args("slice", &args, 3, span)?;
+                let start = int_of("slice", &args[1], span)?;
+                let end = int_of("slice", &args[2], span)?;
+                match &args[0] {
+                    VmValue::List(items) => {
+                        let len = items.len() as i64;
+                        let s = start.clamp(0, len) as usize;
+                        let e = end.clamp(0, len) as usize;
+                        let sub = if s < e { items[s..e].to_vec() } else { Vec::new() };
+                        Ok(VmValue::List(Arc::new(sub)))
+                    }
+                    VmValue::Str(s0) => {
+                        let chars: Vec<char> = s0.chars().collect();
+                        let len = chars.len() as i64;
+                        let s = start.clamp(0, len) as usize;
+                        let e = end.clamp(0, len) as usize;
+                        let sub: String = if s < e { chars[s..e].iter().collect() } else { String::new() };
+                        Ok(VmValue::Str(sub))
+                    }
+                    other => Err(RuntimeError::new(
+                        format!("slice: List/Str 필요, {} 발견", other.type_name()), span)),
+                }
+            }
+            59 => { // has(map, key) → Bool
+                req_args("has", &args, 2, span)?;
+                match &args[0] {
+                    VmValue::Map(m) => Ok(VmValue::Bool(m.contains_key(&args[1].to_string()))),
+                    other => Err(RuntimeError::new(
+                        format!("has: Map 필요, {} 발견", other.type_name()), span)),
+                }
+            }
+            60 => { // get(map, key, default)
+                req_args("get", &args, 3, span)?;
+                match &args[0] {
+                    VmValue::Map(m) => Ok(m.get(&args[1].to_string())
+                        .cloned().unwrap_or_else(|| args[2].clone())),
+                    other => Err(RuntimeError::new(
+                        format!("get: Map 필요, {} 발견", other.type_name()), span)),
+                }
+            }
+            61 => { // merge(map1, map2) → 새 map (map2 우선)
+                req_args("merge", &args, 2, span)?;
+                match (&args[0], &args[1]) {
+                    (VmValue::Map(a), VmValue::Map(b)) => {
+                        let mut m = (**a).clone();
+                        for (k, v) in b.iter() { m.insert(k.clone(), v.clone()); }
+                        Ok(VmValue::Map(Arc::new(m)))
+                    }
+                    _ => Err(RuntimeError::new("merge: 두 인자 모두 Map이어야 함", span)),
+                }
+            }
+            62 => { // repeat(str, n)
+                req_args("repeat", &args, 2, span)?;
+                let s = str_arg("repeat", &args[0], span)?;
+                let n = int_of("repeat", &args[1], span)?;
+                if n < 0 {
+                    return Err(RuntimeError::new("repeat: n은 음수가 될 수 없음", span));
+                }
+                Ok(VmValue::Str(s.repeat(n as usize)))
+            }
+            63 => { // index_of(list, x) → 첫 인덱스 또는 -1
+                req_args("index_of", &args, 2, span)?;
+                let list = list_arg("index_of", &args[0], span)?;
+                let idx = list.iter().position(|e| vm_eq(e, &args[1]))
+                    .map(|i| i as i64).unwrap_or(-1);
+                Ok(VmValue::Int(idx))
             }
 
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
@@ -1817,6 +1903,14 @@ fn vm_field_get(target: VmValue, name: &str, span: Span) -> Result<VmValue, Runt
     }
 }
 
+fn int_of(name: &str, v: &VmValue, span: Span) -> Result<i64, RuntimeError> {
+    match v {
+        VmValue::Int(n) => Ok(*n),
+        other => Err(RuntimeError::new(
+            format!("{name}(): 정수 필요, {} 발견", other.type_name()), span)),
+    }
+}
+
 fn str_arg(name: &str, v: &VmValue, span: Span) -> Result<String, RuntimeError> {
     match v {
         VmValue::Str(s) => Ok(s.clone()),
@@ -1888,6 +1982,13 @@ fn deep_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
 
 /// spawn 경계에서 클로저의 upvalue를 독립 복사 (값 의미론).
 /// 각 upvalue의 현재 값을 읽어 새로운 독립적 Upvalue 슬롯에 저장.
+/// import 모듈 캐시 — 같은 파일은 한 번만 실행되고 결과(export 맵)를 공유한다.
+/// (모듈을 싱글톤으로 만드는 패키지 시스템 v1의 핵심.)
+fn module_cache() -> &'static Mutex<HashMap<String, VmValue>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, VmValue>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// 런타임 값이 타입 힌트와 일치하는지 검사 (Any는 위에서 처리됨).
 fn value_matches_type(v: &VmValue, t: TypeAnn) -> bool {
     match t {

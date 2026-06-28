@@ -1,0 +1,16 @@
+fn work(n) {
+    let s = 0
+    let i = 0
+    while i < n {
+        s = s + (i % 7)
+        i = i + 1
+    }
+    return s
+}
+let total = 0
+let k = 0
+while k < 8 {
+    total = total + work(20000000)
+    k = k + 1
+}
+print(total)

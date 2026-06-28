@@ -327,6 +327,13 @@ impl Resolver {
             ("args",         Some(0)),
             // 모듈 (57)
             ("import",       Some(1)),
+            // stdlib 확장 (58-63)
+            ("slice",        Some(3)),
+            ("has",          Some(2)),
+            ("get",          Some(3)),
+            ("merge",        Some(2)),
+            ("repeat",       Some(2)),
+            ("index_of",     Some(2)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {

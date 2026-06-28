@@ -157,9 +157,9 @@ let sorted = sort(xs)  // sorted = [1, 2, 3], xs 는 그대로
 | 분류 | 함수 |
 |---|---|
 | 타입/변환 | `str(x)` `int(x)` `float(x)` `bool(x)` `type(x)` `len(x)` |
-| 리스트 | `push(l,x)` `pop(l)` `sort(l)` `reverse(l)` `map(l,f)` `filter(l,f)` `reduce(l,f,init)` `any(l,f)` `all(l,f)` `sum(l)` `flat(l)` `enumerate(l)` `zip(a,b)` `range(...)` |
-| 맵 | `keys(m)` `values(m)` |
-| 문자열 | `split(s,sep)` `join(l,sep)` `trim(s)` `trim_start(s)` `trim_end(s)` `replace(s,a,b)` `contains(s,sub)` `starts_with(s,p)` `ends_with(s,p)` `upper(s)` `lower(s)` `find(s,sub)` `chars(s)` |
+| 리스트 | `push(l,x)` `pop(l)` `sort(l)` `reverse(l)` `map(l,f)` `filter(l,f)` `reduce(l,f,init)` `any(l,f)` `all(l,f)` `sum(l)` `flat(l)` `enumerate(l)` `zip(a,b)` `range(...)` `slice(l,s,e)` `index_of(l,x)` |
+| 맵 | `keys(m)` `values(m)` `has(m,k)` `get(m,k,default)` `merge(m1,m2)` |
+| 문자열 | `split(s,sep)` `join(l,sep)` `trim(s)` `trim_start(s)` `trim_end(s)` `replace(s,a,b)` `contains(s,sub)` `starts_with(s,p)` `ends_with(s,p)` `upper(s)` `lower(s)` `find(s,sub)` `chars(s)` `slice(s,start,end)` `repeat(s,n)` |
 | 수학 | `abs(x)` `sqrt(x)` `floor(x)` `ceil(x)` `round(x)` `pow(b,e)` `min(...)` `max(...)` |
 | 동시성 | `channel(...)` `send(c,v)` `recv(c)` `close(c)` `wait(f)` `parallel_map(l,f)` |
 | I/O | `print(...)` `print_err(...)` `input(...)` `read_file(p)` `write_file(p,s)` `args()` |
@@ -205,7 +205,8 @@ print(math.area(2))      // 12.56636
 
 - 모듈 함수는 **자기 모듈의 전역**(형제 함수·상수)을 그대로 참조한다.
 - import 경로는 실행 디렉토리 기준 상대경로다.
-- 모듈은 import 시점에 한 번 실행된다(최상위 코드의 부수효과 포함).
+- 모듈은 **한 번만 실행**되고 캐시된다(싱글톤). 같은 파일을 여러 번 import해도
+  최상위 코드는 한 번만 실행되며, 모든 import가 같은 모듈 인스턴스를 공유한다.
 - import는 기본 실행 엔진인 VM에서 동작한다(`--interp` 모드는 미지원).
 
 ## 에러 처리 (try / catch / throw)

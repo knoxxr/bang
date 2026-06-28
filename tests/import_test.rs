@@ -75,6 +75,19 @@ fn test_bracket_access() {
     assert_eq!(run_with_module(module, main), "hi\n");
 }
 
+/// 패키지 캐싱: 같은 모듈을 두 번 import해도 top-level 코드는 한 번만 실행된다.
+#[test]
+fn test_module_imported_once() {
+    let module = "print(\"init\")\nlet value = 7\n";
+    let main = "\
+let a = import(\"module.bang\")
+let b = import(\"module.bang\")
+print(a.value + b.value)
+";
+    // "init"은 한 번만, 합계 14
+    assert_eq!(run_with_module(module, main), "init\n14\n");
+}
+
 /// 값 의미론: 모듈이 export한 리스트를 메인에서 바꿔도 모듈 내부엔 영향 없음.
 /// (모듈 함수가 자기 전역 리스트를 그대로 반환하는지 확인)
 #[test]
