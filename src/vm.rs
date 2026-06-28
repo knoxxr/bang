@@ -407,6 +407,9 @@ pub const BUILTINS: &[&str] = &[
     "tcp_read_until",  // 101
     "tcp_set_timeout", // 102
     "select",          // 103
+    // stdlib: 바이너리 파일 (104-105)
+    "file_size",       // 104
+    "tcp_send_file",   // 105
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -2244,6 +2247,32 @@ impl Vm {
                     }
                     // 준비된 채널 없음 → 잠깐 양보 후 재시도 (폴링 select)
                     std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+
+            // ── 바이너리 파일 (104-105) ───────────────────────────────────────
+            104 => { // file_size(path) → Int (바이트 수, Content-Length 용)
+                req_args("file_size", &args, 1, span)?;
+                let path = str_arg("file_size", &args[0], span)?;
+                let meta = std::fs::metadata(&path)
+                    .map_err(|e| RuntimeError::new(format!("file_size('{path}'): {e}"), span))?;
+                Ok(VmValue::Int(meta.len() as i64))
+            }
+            105 => { // tcp_send_file(conn, path) → Int (보낸 바이트 수). UTF-8 변환 없이 무손실 전송.
+                req_args("tcp_send_file", &args, 2, span)?;
+                let path = str_arg("tcp_send_file", &args[1], span)?;
+                let bytes = std::fs::read(&path)
+                    .map_err(|e| RuntimeError::new(format!("tcp_send_file('{path}'): {e}"), span))?;
+                match &args[0] {
+                    VmValue::TcpConn(c) => {
+                        use std::io::Write;
+                        let mut s = c.lock().unwrap();
+                        s.write_all(&bytes)
+                            .map_err(|e| RuntimeError::new(format!("tcp_send_file(): {e}"), span))?;
+                        Ok(VmValue::Int(bytes.len() as i64))
+                    }
+                    other => Err(RuntimeError::new(
+                        format!("tcp_send_file: TcpConn 필요, {} 발견", other.type_name()), span)),
                 }
             }
 

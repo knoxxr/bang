@@ -381,6 +381,9 @@ impl Resolver {
             ("tcp_set_timeout", Some(2)),
             // 동시성: 멀티 채널 대기 (103)
             ("select",          Some(1)),
+            // stdlib: 바이너리 파일 (104-105)
+            ("file_size",     Some(1)),
+            ("tcp_send_file", Some(2)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {

@@ -318,3 +318,11 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              (참고: --features jit 자체는 cranelift 버전 비호환으로 기존부터 빌드 불가 — 별개.)
              회귀: vm_test +2(상수 270개 인덱스 정확 / 중복 300회). 의미 불변.
              (tests: 289 green, clippy 0)
+✅ Phase 33 — 바이너리 파일 소켓 전송 빌트인 (104-105) — v0.23.3
+             read_file는 UTF-8 전용, tcp_write도 Str(UTF-8)라 바이너리 무손실 전송 불가했음.
+             file_size(path)→Int (std::fs::metadata().len(), Content-Length용),
+             tcp_send_file(conn, path)→Int (std::fs::read 후 write_all, UTF-8 변환 없이 전송,
+             보낸 바이트 수 반환). 잘못된 경로는 RuntimeError.
+             → bang-web가 헤더는 tcp_write, 본문은 tcp_send_file로 보내 바이너리(이미지 등) 무손실.
+             회귀: tests/binary_test.rs +3 (file_size / 없는파일 에러 / 소켓 바이너리 왕복 cmp).
+             기존 빌트인 번호·시그니처 불변(추가만). (tests: 292 green, clippy 0)
