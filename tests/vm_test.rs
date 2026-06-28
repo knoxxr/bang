@@ -541,6 +541,45 @@ fn test_vm_fs_predicates() {
     assert_eq!(run_vm("print(file_exists(\"/definitely/not/here/xyz\"))"), vec!["false"]);
 }
 
+// ============================================================================
+// 정규식 — Phase 21
+// ============================================================================
+
+#[test]
+fn test_vm_regex_match() {
+    assert_eq!(run_vm("print(regex_match(\"abc123\", \"[0-9]+\"))"), vec!["true"]);
+    assert_eq!(run_vm("print(regex_match(\"hello1\", \"^[a-z]+$\"))"), vec!["false"]);
+}
+
+#[test]
+fn test_vm_regex_find() {
+    assert_eq!(run_vm("print(regex_find(\"order 4521 ok\", \"\\\\d+\"))"), vec!["4521"]);
+    assert_eq!(run_vm("print(regex_find(\"abc\", \"\\\\d+\"))"), vec!["nil"]);
+}
+
+#[test]
+fn test_vm_regex_find_all() {
+    assert_eq!(run_vm("print(regex_find_all(\"a1 b22 c333\", \"\\\\d+\"))"), vec!["[1, 22, 333]"]);
+}
+
+#[test]
+fn test_vm_regex_replace() {
+    assert_eq!(run_vm("print(regex_replace(\"foo bar baz\", \"ba.\", \"X\"))"), vec!["foo X X"]);
+}
+
+#[test]
+fn test_vm_regex_brace_and_date() {
+    assert_eq!(run_vm("print(regex_find(\"2023-11-14\", \"\\\\d{4}\"))"), vec!["2023"]);
+    let src = "print(regex_match(\"2023-11-14\", \"^\\\\d{4}-\\\\d{2}-\\\\d{2}$\"))";
+    assert_eq!(run_vm(src), vec!["true"]);
+}
+
+#[test]
+fn test_vm_regex_bad_pattern_catchable() {
+    let src = "try {\n regex_match(\"x\", \"[unclosed\")\n} catch e {\n print(\"caught\")\n}";
+    assert_eq!(run_vm(src), vec!["caught"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

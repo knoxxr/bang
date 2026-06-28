@@ -215,3 +215,11 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              문자: ord(str)→코드포인트, chr(int)→문자. (정규식은 별도 엔진이라 향후 과제)
              테스트: vm_test +5. (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 65 vm + 8 transpile + 7 cli + 5 import = 249 green, clippy 0)
+✅ Phase 21 — 정규식 엔진 (자체 구현, 외부 의존성 없음) (VM 빌트인 77-80)
+             src/regex.rs: 패턴→AST→백트래킹 바이트코드 VM (스텝 상한으로 폭주 방어).
+             지원: 리터럴 . * + ? {n}{n,}{n,m} [..][^..] 범위 \d\w\s\D\W\S ^ $ ( ) | 이스케이프.
+             빌트인: regex_match/regex_find/regex_find_all/regex_replace. 패턴 오류는 try/catch로 잡힘.
+             (캡처 그룹 추출/역참조는 미지원 — 향후 과제). 예제: examples/regex_demo.bang.
+             테스트: regex.rs 단위 7 + vm_test 통합 6.
+             (tests: 97 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 71 vm + 8 transpile + 7 cli + 5 import = 262 green, clippy 0)

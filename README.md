@@ -163,6 +163,7 @@ let sorted = sort(xs)  // sorted = [1, 2, 3], xs 는 그대로
 | 수학 | `abs(x)` `sqrt(x)` `floor(x)` `ceil(x)` `round(x)` `pow(b,e)` `min(...)` `max(...)` |
 | 동시성 | `channel(...)` `send(c,v)` `recv(c)` `close(c)` `wait(f)` `parallel_map(l,f)` |
 | JSON | `json_parse(s)` `json_stringify(v)` |
+| 정규식 | `regex_match(s,pat)` `regex_find(s,pat)` `regex_find_all(s,pat)` `regex_replace(s,pat,repl)` |
 | 시간/난수 | `now_ms()` `format_time(ms)` `random()` `random_int(lo,hi)` |
 | 문자열/문자 | `ord(s)` `chr(n)` (그 외 위 문자열 행 참고) |
 | 파일시스템 | `read_file(p)` `write_file(p,s)` `list_dir(p)` `file_exists(p)` `is_dir(p)` |

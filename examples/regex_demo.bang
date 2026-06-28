@@ -1,0 +1,20 @@
+// 정규식 데모 — 자체 엔진 (외부 의존성 없음)
+// 기대 출력:
+// true
+// 2023-11-14
+// [alice@example.com, bob@test.org]
+// 전화: [REDACTED], [REDACTED]
+
+// 날짜 형식 검증
+print(regex_match("2023-11-14", "^\\d{4}-\\d{2}-\\d{2}$"))
+
+// 텍스트에서 날짜 추출
+print(regex_find("로그 2023-11-14 12:00 시작", "\\d{4}-\\d{2}-\\d{2}"))
+
+// 이메일 모두 찾기
+let text = "연락: alice@example.com 또는 bob@test.org"
+print(regex_find_all(text, "[a-z]+@[a-z]+\\.[a-z]+"))
+
+// 전화번호 마스킹
+let msg = "전화: 010-1234-5678, 02-987-6543"
+print(regex_replace(msg, "\\d{2,3}-\\d{3,4}-\\d{4}", "[REDACTED]"))

@@ -349,6 +349,11 @@ impl Resolver {
             ("format_time",  Some(1)),
             ("ord",          Some(1)),
             ("chr",          Some(1)),
+            // stdlib: 정규식 (77-80)
+            ("regex_match",    Some(2)),
+            ("regex_find",     Some(2)),
+            ("regex_find_all", Some(2)),
+            ("regex_replace",  Some(3)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {
