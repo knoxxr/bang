@@ -337,3 +337,14 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                난점: VM 중단/재개(yield/resume) — 현재 스케줄러는 태스크를 끝까지 실행.
                접근 결정 필요(코루틴 vs VM 상태머신). CPU 병렬(OS스레드 spawn)과의 양립도 과제.
              단계0은 표면 변경 없어 릴리스 없음. (tests: 295 green, clippy 0)
+✅ Phase 35 — 논블로킹 I/O 단계 1: 이벤트 루프 서버 serve_event (107) — v0.24.0
+             결정: B(의존성 없는 길) 선택 → VM 중단/재개(코루틴) 대신 "연결 단위 상태머신을
+             런타임에" 두는 방식. VM 실행 모델·spawn·기존 빌트인 전부 무변경(추가만).
+             serve_event(addr, handler): 단일 스레드가 리액터(polling)로 다수 연결을 멀티플렉싱.
+             리스너+모든 연결 fd를 readiness 등록 → 준비된 것만 read, 요청 완성(\r\n\r\n) 시
+             handler(req_str)→resp_str 호출(run_spawned 재사용) 후 write. keep-alive 재무장.
+             유휴 keep-alive 연결이 스레드를 점유하지 않음 → C10K 1차 달성.
+             핸들러 예외는 경고+연결 종료. 단일 스레드라 CPU 무거운 핸들러는 루프 블록(2차 과제).
+             회귀: tests/event_server_test.rs +2(동시 100연결 멀티플렉싱 / keep-alive 3요청).
+             (tests: 297 green, clippy 0)
+             남은 2차: 활성 처리량을 스레드 cap 넘게 확장(핸들러 풀 오프로드 또는 진짜 VM 중단/재개).

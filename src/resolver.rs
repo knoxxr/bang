@@ -384,6 +384,7 @@ impl Resolver {
             // stdlib: 바이너리 파일 (104-105)
             ("file_size",     Some(1)),
             ("tcp_send_file", Some(2)),
+            ("serve_event",   Some(2)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {

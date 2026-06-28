@@ -410,6 +410,8 @@ pub const BUILTINS: &[&str] = &[
     // stdlib: 바이너리 파일 (104-105)
     "file_size",       // 104
     "tcp_send_file",   // 105
+    // 논블로킹 이벤트 루프 서버 (106)
+    "serve_event",     // 106
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -549,6 +551,93 @@ impl Vm {
         for f in scope { warn_if_spawn_err(f.resolve()); }
 
         Ok(vm.stack.pop().unwrap_or(VmValue::Nil))
+    }
+
+    /// 논블로킹 이벤트 루프 서버. 단일 스레드가 리액터로 다수 연결을 멀티플렉싱한다.
+    /// handler: fn(req_str) -> resp_str (전체 HTTP 응답 문자열을 반환).
+    /// 유휴 keep-alive 연결은 리액터에 파킹되어 스레드를 점유하지 않는다(C10K 1차).
+    /// 주의: 단일 스레드라 CPU 무거운 핸들러는 루프를 막는다(향후 풀 오프로드 과제).
+    fn run_event_server(&self, addr: &str, handler: Arc<VmClosure>, span: Span)
+        -> Result<VmValue, RuntimeError>
+    {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        let err = |m: String| RuntimeError::new(format!("serve_event: {m}"), span);
+
+        let listener = TcpListener::bind(addr).map_err(|e| err(format!("bind '{addr}': {e}")))?;
+        listener.set_nonblocking(true).map_err(|e| err(format!("set_nonblocking: {e}")))?;
+        let mut reactor = crate::reactor::Reactor::new().map_err(|e| err(format!("reactor: {e}")))?;
+        const LKEY: usize = 0;
+        reactor.add_readable(&listener, LKEY).map_err(|e| err(format!("register listener: {e}")))?;
+
+        let mut conns: HashMap<usize, TcpStream> = HashMap::new();
+        let mut bufs: HashMap<usize, Vec<u8>> = HashMap::new();
+        let mut next_key: usize = 1;
+
+        loop {
+            let ready = reactor.wait(None).map_err(|e| err(format!("wait: {e}")))?;
+            for key in ready {
+                if key == LKEY {
+                    // 대기 중인 새 연결을 모두 accept (논블로킹)
+                    loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => {
+                                let _ = stream.set_nonblocking(true);
+                                let k = next_key; next_key += 1;
+                                if reactor.add_readable(&stream, k).is_ok() {
+                                    conns.insert(k, stream);
+                                    bufs.insert(k, Vec::new());
+                                }
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(_) => break,
+                        }
+                    }
+                    let _ = reactor.modify_readable(&listener, LKEY); // oneshot 재무장
+                    continue;
+                }
+
+                // 연결에서 읽기 → 요청 완성 시 핸들러 호출 → 응답 쓰기
+                let mut close = false;
+                let mut response: Option<Vec<u8>> = None;
+                if let Some(stream) = conns.get_mut(&key) {
+                    let mut tmp = [0u8; 4096];
+                    match stream.read(&mut tmp) {
+                        Ok(0) => close = true, // EOF
+                        Ok(n) => {
+                            let buf = bufs.entry(key).or_default();
+                            buf.extend_from_slice(&tmp[..n]);
+                            if find_subseq(buf, b"\r\n\r\n").is_some() {
+                                let req = String::from_utf8_lossy(buf).into_owned();
+                                buf.clear();
+                                let h = deep_clone_closure(&handler);
+                                match Vm::run_spawned(self.output.clone(), h, vec![VmValue::Str(req)]) {
+                                    Ok(VmValue::Str(s)) => response = Some(s.into_bytes()),
+                                    Ok(other) => response = Some(format!("{other}").into_bytes()),
+                                    Err(e) => {
+                                        eprintln!("경고: serve_event 핸들러 에러: {e}");
+                                        close = true;
+                                    }
+                                }
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => close = true,
+                    }
+                }
+                if let Some(bytes) = response {
+                    if let Some(stream) = conns.get_mut(&key) {
+                        if stream.write_all(&bytes).is_err() { close = true; }
+                    }
+                }
+                if close {
+                    if let Some(s) = conns.remove(&key) { let _ = reactor.deregister(&s); }
+                    bufs.remove(&key);
+                } else if let Some(s) = conns.get(&key) {
+                    let _ = reactor.modify_readable(s, key); // keep-alive: 재무장
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2276,6 +2365,19 @@ impl Vm {
                 }
             }
 
+            106 => { // serve_event(addr, handler) — 논블로킹 이벤트 루프 서버
+                // handler: fn(req_str) -> resp_str. 단일 스레드가 리액터로 많은 연결을
+                // 멀티플렉싱 → 유휴 keep-alive 연결이 스레드를 점유하지 않음(C10K 1차).
+                req_args("serve_event", &args, 2, span)?;
+                let addr = str_arg("serve_event", &args[0], span)?;
+                let handler = match &args[1] {
+                    VmValue::Closure(c) => c.clone(),
+                    other => return Err(RuntimeError::new(
+                        format!("serve_event: 핸들러(함수) 필요, {} 발견", other.type_name()), span)),
+                };
+                self.run_event_server(&addr, handler, span)
+            }
+
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
         }
     }
@@ -2843,6 +2945,12 @@ fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
         }
     }
     Arc::new(VmClosure { func: c.func.clone(), upvalues, globals: new_globals })
+}
+
+/// 바이트 슬라이스에서 부분열의 시작 위치를 찾는다 (HTTP 헤더 끝 감지용).
+fn find_subseq(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() { return None; }
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// 상수 풀 중복 제거용 동등성 비교. 단순 값만 같다고 판정하고,

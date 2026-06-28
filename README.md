@@ -164,6 +164,7 @@ let sorted = sort(xs)  // sorted = [1, 2, 3], xs 는 그대로
 | 집합(리스트) | `union(a,b)` `intersect(a,b)` `difference(a,b)` (중복 제거) |
 | 동시성 | `channel(...)` `send(c,v)` `recv(c)` `select(chans)` `close(c)` `wait(f)` `parallel_map(l,f)` |
 | 네트워킹 | `tcp_listen(addr)` `tcp_accept(s)` `tcp_read(c)` `tcp_read_until(c,marker)` `tcp_write(c,s)` `tcp_send_file(c,path)` `tcp_set_timeout(c,ms)` `tcp_close(c)` |
+| 이벤트 서버 | `serve_event(addr, handler)` — 논블로킹 이벤트 루프(단일 스레드 멀티플렉싱). `handler: fn(req)->resp_str` |
 | JSON | `json_parse(s)` `json_stringify(v)` |
 | 정규식 | `regex_match(s,pat)` `regex_find(s,pat)` `regex_find_all(s,pat)` `regex_replace(s,pat,repl)` `regex_groups(s,pat)` |
 | 시간/난수 | `now_ms()` `format_time(ms)` `random()` `random_int(lo,hi)` |
