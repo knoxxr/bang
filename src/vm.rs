@@ -395,6 +395,9 @@ pub struct Vm {
     pub handlers: Vec<TryHandler>,
     /// throw로 던져진 값(있으면). 빌트인/런타임 오류는 None → 메시지 문자열로 변환.
     pub pending_exception: Option<VmValue>,
+    /// 호출 프레임 locals 재사용 풀 (호출당 힙 할당 제거 → 할당자 경합 완화).
+    /// 클로저에 포착되지 않은(strong_count==1) locals만 회수한다.
+    locals_pool: Vec<Arc<Mutex<Vec<VmValue>>>>,
 }
 
 impl Vm {
@@ -407,6 +410,27 @@ impl Vm {
             spawn_scopes: Vec::new(),
             handlers: Vec::new(),
             pending_exception: None,
+            locals_pool: Vec::new(),
+        }
+    }
+
+    /// 풀에서 locals 버퍼를 가져오거나 새로 할당한다. local_count 크기로 Nil 초기화.
+    fn acquire_locals(&mut self, local_count: usize) -> Arc<Mutex<Vec<VmValue>>> {
+        if let Some(arc) = self.locals_pool.pop() {
+            if let Ok(mut g) = arc.lock() {
+                g.clear();
+                g.resize(local_count, VmValue::Nil);
+            }
+            arc
+        } else {
+            Arc::new(Mutex::new(vec![VmValue::Nil; local_count]))
+        }
+    }
+
+    /// 프레임 종료 시 locals를 회수한다. 클로저가 포착(strong_count>1)했으면 버린다.
+    fn release_locals(&mut self, locals: Arc<Mutex<Vec<VmValue>>>) {
+        if Arc::strong_count(&locals) == 1 && self.locals_pool.len() < 256 {
+            self.locals_pool.push(locals);
         }
     }
 
@@ -447,6 +471,7 @@ impl Vm {
             spawn_scopes: vec![Vec::new()],
             handlers: Vec::new(),
             pending_exception: None,
+            locals_pool: Vec::new(),
         };
         let local_count = closure.func.local_count;
         let mut locals_vec = vec![VmValue::Nil; local_count];
@@ -582,7 +607,9 @@ impl Vm {
                 let ip = frame.ip;
                 if ip >= frame.closure.func.chunk.code.len() {
                     // Implicit nil return
-                    self.frames.pop();
+                    if let Some(f) = self.frames.pop() {
+                        self.release_locals(f.locals);
+                    }
                     // 빠져나간 프레임에 남은 try 핸들러 정리 (try 안에서의 암묵 반환)
                     self.handlers.retain(|h| h.frame_depth <= self.frames.len());
                     self.stack.push(VmValue::Nil);
@@ -816,7 +843,9 @@ impl Vm {
                 OP_RETURN => {
                     let span = self.current_span();
                     let retval = auto_resolve(self.stack_pop(), span)?;
-                    self.frames.pop();
+                    if let Some(f) = self.frames.pop() {
+                        self.release_locals(f.locals);
+                    }
                     // 빠져나간 프레임에 남은 try 핸들러 정리 (try 안에서의 return)
                     self.handlers.retain(|h| h.frame_depth <= self.frames.len());
                     self.stack.push(retval);
@@ -1022,23 +1051,29 @@ impl Vm {
                             closure.func.arity, arg_count),
                         span));
                 }
-                let args: Vec<VmValue> =
-                    self.stack.drain(self.stack.len() - arg_count..).collect();
-                self.stack.pop(); // pop callee
+                let callee_idx = self.stack.len() - arg_count - 1;
+                let base = callee_idx + 1; // 첫 인자 위치
 
                 // Phase 9 Part B: JIT 호출 시도 (Int-only 함수에만 적용)
                 #[cfg(feature = "jit")]
-                if let Some(result) = crate::codegen::jit::try_jit_call(&closure.func, &args, span) {
-                    self.stack.push(result?);
-                    return Ok(());
+                {
+                    let args: Vec<VmValue> = self.stack[base..].to_vec();
+                    if let Some(result) = crate::codegen::jit::try_jit_call(&closure.func, &args, span) {
+                        self.stack.truncate(callee_idx); // 인자 + callee 제거
+                        self.stack.push(result?);
+                        return Ok(());
+                    }
                 }
 
+                // 풀에서 locals를 가져와 인자를 슬롯 0..arg_count에 채운다 (중간 Vec 없음)
                 let local_count = closure.func.local_count;
-                let mut locals_vec = vec![VmValue::Nil; local_count];
-                for (i, arg) in args.into_iter().enumerate() {
-                    locals_vec[i] = arg;
+                let locals = self.acquire_locals(local_count);
+                if let Ok(mut g) = locals.lock() {
+                    for i in 0..arg_count {
+                        g[i] = self.stack[base + i].clone();
+                    }
                 }
-                let locals = Arc::new(Mutex::new(locals_vec));
+                self.stack.truncate(callee_idx); // 인자 + callee 제거
                 self.frames.push(CallFrame { closure, ip: 0, locals });
                 // Execution continues in exec_until loop
             }
@@ -2010,13 +2045,27 @@ fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
         let new_locals = Arc::new(Mutex::new(vec![val]));
         Arc::new(Upvalue { locals: new_locals, slot: 0 })
     }).collect();
-    // 모듈 전역도 독립 복사본으로 (값 의미론: 데이터 깊은 복사, 함수/채널은 Arc 공유).
-    // Vec<VmValue>::clone() 이 각 값에 대해 올바른 복사 의미를 적용한다.
-    let globals = {
-        let g = c.globals.lock().unwrap();
-        Arc::new(Mutex::new(g.clone()))
-    };
-    Arc::new(VmClosure { func: c.func.clone(), upvalues, globals })
+    // 모듈 전역을 spawn 경계에서 **완전 독립 복사**한다.
+    // 단순히 Vec를 복사하면 그 안의 함수들이 원본 globals Arc를 그대로 공유해
+    // (함수=참조 의미론), 여러 스레드가 같은 globals Mutex를 잠가 심한 경합이 난다.
+    // 따라서 같은 모듈에 속한 형제 함수들의 globals를 새 복사본으로 재지정한다.
+    let snapshot = { c.globals.lock().unwrap().clone() };
+    let new_globals = Arc::new(Mutex::new(snapshot));
+    {
+        let mut g = new_globals.lock().unwrap();
+        for v in g.iter_mut() {
+            if let VmValue::Closure(inner) = v {
+                if Arc::ptr_eq(&inner.globals, &c.globals) {
+                    *v = VmValue::Closure(Arc::new(VmClosure {
+                        func: inner.func.clone(),
+                        upvalues: inner.upvalues.clone(),
+                        globals: new_globals.clone(), // Arc bump (재잠금 아님)
+                    }));
+                }
+            }
+        }
+    }
+    Arc::new(VmClosure { func: c.func.clone(), upvalues, globals: new_globals })
 }
 
 fn to_runtime(v: &VmValue) -> crate::runtime::Value {

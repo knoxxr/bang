@@ -191,3 +191,12 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              경합으로 병렬 이득 없음 → 향후 VM 과제(호출 경로 프레임 할당 제거).
              (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 54 vm + 8 transpile + 7 cli + 5 import = 238 green, clippy 0)
+✅ Phase 18 — VM 호출 경로 최적화 (성능) — 의미 불변
+             Phase 17 벤치가 드러낸 병목 해결:
+             1) 호출 프레임 locals 풀링 — 호출당 Arc<Mutex<Vec>> 힙 할당을 재사용으로 교체
+                (strong_count==1만 회수). do_call에서 중간 args Vec도 제거. fib 순차 14s→8.3s.
+             2) spawn 시 모듈 전역 완전 격리 — deep_clone_closure가 globals 복사 시 그 안의
+                형제 함수들의 globals Arc를 새 복사본으로 재지정. 이전엔 함수가 원본 globals
+                Arc를 공유해 다중 스레드가 같은 Mutex를 경합(system 116s). 
+                fib 병렬 35s→1.9s (순차 대비 4.4x), loop 병렬 2.3x.
+             값 의미론·spawn 격리는 오히려 더 정확해짐(작업별 독립 전역). 238 green, clippy 0.
