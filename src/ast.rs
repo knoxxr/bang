@@ -13,6 +13,85 @@ pub struct Program {
 }
 
 // =============================================================================
+// 타입 힌트 (선택적, 런타임 검증)
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeAnn {
+    Int,
+    Float,
+    Bool,
+    Str,
+    Nil,
+    List,
+    Map,
+    Fn,
+    Any,
+}
+
+impl TypeAnn {
+    /// 타입 이름 문자열 → TypeAnn (예약된 타입 이름).
+    pub fn from_name(s: &str) -> Option<TypeAnn> {
+        match s {
+            "int" => Some(TypeAnn::Int),
+            "float" => Some(TypeAnn::Float),
+            "bool" => Some(TypeAnn::Bool),
+            "str" => Some(TypeAnn::Str),
+            "nil" => Some(TypeAnn::Nil),
+            "list" => Some(TypeAnn::List),
+            "map" => Some(TypeAnn::Map),
+            "fn" => Some(TypeAnn::Fn),
+            "any" => Some(TypeAnn::Any),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TypeAnn::Int => "int",
+            TypeAnn::Float => "float",
+            TypeAnn::Bool => "bool",
+            TypeAnn::Str => "str",
+            TypeAnn::Nil => "nil",
+            TypeAnn::List => "list",
+            TypeAnn::Map => "map",
+            TypeAnn::Fn => "fn",
+            TypeAnn::Any => "any",
+        }
+    }
+
+    /// 바이트코드 피연산자용 태그.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            TypeAnn::Int => 0,
+            TypeAnn::Float => 1,
+            TypeAnn::Bool => 2,
+            TypeAnn::Str => 3,
+            TypeAnn::Nil => 4,
+            TypeAnn::List => 5,
+            TypeAnn::Map => 6,
+            TypeAnn::Fn => 7,
+            TypeAnn::Any => 8,
+        }
+    }
+
+    pub fn from_u8(b: u8) -> Option<TypeAnn> {
+        Some(match b {
+            0 => TypeAnn::Int,
+            1 => TypeAnn::Float,
+            2 => TypeAnn::Bool,
+            3 => TypeAnn::Str,
+            4 => TypeAnn::Nil,
+            5 => TypeAnn::List,
+            6 => TypeAnn::Map,
+            7 => TypeAnn::Fn,
+            8 => TypeAnn::Any,
+            _ => return None,
+        })
+    }
+}
+
+// =============================================================================
 // 블록
 // =============================================================================
 
@@ -34,8 +113,8 @@ pub struct Stmt {
 
 #[derive(Debug, Clone)]
 pub enum StmtKind {
-    /// `let name = value`
-    Let { name: String, value: Expr },
+    /// `let name [: type] = value`
+    Let { name: String, ty: Option<TypeAnn>, value: Expr },
     /// 표현식 문장
     Expr(Expr),
     /// `return [expr]`
@@ -148,7 +227,15 @@ pub enum ExprKind {
     Field { target: Box<Expr>, name: String },
     // 함수 / 클로저
     // name: Some("foo") 이면 본문 안에서 재귀 가능 (named fn 디슈가)
-    Function { name: Option<String>, params: Vec<String>, body: Block },
+    // param_types/ret_type: 선택적 타입 힌트 (런타임 검증, None=미지정).
+    // param_types는 params와 길이가 같다.
+    Function {
+        name: Option<String>,
+        params: Vec<String>,
+        param_types: Vec<Option<TypeAnn>>,
+        ret_type: Option<TypeAnn>,
+        body: Block,
+    },
     // 동시성
     Spawn(Box<Expr>),
     // 대입 (target: Ident / Index / Field 만 허용)
@@ -174,8 +261,9 @@ fn indent(n: usize) -> String {
 fn dump_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
     let pad = indent(depth);
     match &stmt.kind {
-        StmtKind::Let { name, value } => {
-            out.push_str(&format!("{pad}Let {name} [{}:{}]\n", stmt.span.line, stmt.span.col));
+        StmtKind::Let { name, ty, value } => {
+            let tystr = ty.map(|t| format!(": {}", t.name())).unwrap_or_default();
+            out.push_str(&format!("{pad}Let {name}{tystr} [{}:{}]\n", stmt.span.line, stmt.span.col));
             dump_expr(out, value, depth + 1);
         }
         StmtKind::Expr(expr) => {
@@ -293,9 +381,10 @@ fn dump_expr(out: &mut String, expr: &Expr, depth: usize) {
             out.push_str(&format!("{pad}Field(.{name})\n"));
             dump_expr(out, target, depth + 1);
         }
-        ExprKind::Function { name, params, body } => {
+        ExprKind::Function { name, params, ret_type, body, .. } => {
             let n = name.as_deref().unwrap_or("<anon>");
-            out.push_str(&format!("{pad}Function({n})[{}]\n", params.join(", ")));
+            let ret = ret_type.map(|t| format!(" -> {}", t.name())).unwrap_or_default();
+            out.push_str(&format!("{pad}Function({n})[{}]{ret}\n", params.join(", ")));
             dump_block(out, body, depth + 1);
         }
         ExprKind::Spawn(expr) => {

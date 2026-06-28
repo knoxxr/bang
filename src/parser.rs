@@ -255,26 +255,36 @@ impl Parser {
     fn parse_let(&mut self, span: Span) -> Option<Stmt> {
         self.advance(); // let
         let name = self.expect_ident()?;
+        // 선택적 타입 힌트: `: type`
+        let ty = if matches!(self.peek(), TokenKind::Colon) {
+            self.advance(); // :
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
         self.expect(&TokenKind::Eq)?;
         let value = self.parse_expr()?;
         self.consume_stmt_end();
-        Some(Stmt { kind: StmtKind::Let { name, value }, span })
+        Some(Stmt { kind: StmtKind::Let { name, ty, value }, span })
     }
 
-    /// `fn name(params) { body }` → `let name = Function { name: Some(name), ... }`
+    /// `fn name(params) [-> ret] { body }` → `let name = Function { name: Some(name), ... }`
     fn parse_fn_decl(&mut self, span: Span) -> Option<Stmt> {
         self.advance(); // fn
         let name = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
-        let params = self.parse_params()?;
+        let (params, param_types) = self.parse_params()?;
         self.expect(&TokenKind::RParen)?;
+        let ret_type = self.parse_ret_type()?;
         let body = self.parse_block()?;
         self.consume_stmt_end();
         let func = Expr {
-            kind: ExprKind::Function { name: Some(name.clone()), params, body },
+            kind: ExprKind::Function {
+                name: Some(name.clone()), params, param_types, ret_type, body,
+            },
             span,
         };
-        Some(Stmt { kind: StmtKind::Let { name, value: func }, span })
+        Some(Stmt { kind: StmtKind::Let { name, ty: None, value: func }, span })
     }
 
     fn parse_if(&mut self, span: Span) -> Option<Stmt> {
@@ -381,18 +391,50 @@ impl Parser {
     // 파라미터 목록
     // =========================================================================
 
-    fn parse_params(&mut self) -> Option<Vec<String>> {
+    /// 파라미터 목록 — 각 파라미터는 선택적 `: type` 힌트를 가질 수 있다.
+    fn parse_params(&mut self) -> Option<(Vec<String>, Vec<Option<TypeAnn>>)> {
         let mut params = Vec::new();
+        let mut types = Vec::new();
         while !matches!(self.peek(), TokenKind::RParen | TokenKind::Eof) {
             let name = self.expect_ident()?;
             params.push(name);
+            // 선택적 타입 힌트: `: type`
+            if matches!(self.peek(), TokenKind::Colon) {
+                self.advance(); // :
+                types.push(Some(self.parse_type()?));
+            } else {
+                types.push(None);
+            }
             if matches!(self.peek(), TokenKind::Comma) {
                 self.advance();
             } else {
                 break;
             }
         }
-        Some(params)
+        Some((params, types))
+    }
+
+    /// 타입 이름 파싱 (int/float/bool/str/nil/list/map/fn/any).
+    fn parse_type(&mut self) -> Option<TypeAnn> {
+        let span = self.peek_span();
+        let name = self.expect_ident()?;
+        match TypeAnn::from_name(&name) {
+            Some(t) => Some(t),
+            None => {
+                self.error_at(span, &format!("알 수 없는 타입: '{name}'"));
+                None
+            }
+        }
+    }
+
+    /// 선택적 반환 타입: `-> type`.
+    fn parse_ret_type(&mut self) -> Option<Option<TypeAnn>> {
+        if matches!(self.peek(), TokenKind::Arrow) {
+            self.advance(); // ->
+            Some(Some(self.parse_type()?))
+        } else {
+            Some(None)
+        }
     }
 
     // =========================================================================
@@ -600,10 +642,13 @@ impl Parser {
     fn parse_lambda(&mut self, span: Span) -> Option<Expr> {
         self.advance(); // fn
         self.expect(&TokenKind::LParen)?;
-        let params = self.parse_params()?;
+        let (params, param_types) = self.parse_params()?;
         self.expect(&TokenKind::RParen)?;
+        let ret_type = self.parse_ret_type()?;
         let body = self.parse_block()?;
-        Some(Expr { kind: ExprKind::Function { name: None, params, body }, span })
+        Some(Expr { kind: ExprKind::Function {
+            name: None, params, param_types, ret_type, body,
+        }, span })
     }
 
     // =========================================================================
@@ -773,7 +818,7 @@ mod tests {
     fn test_fn_decl_desugared_to_let() {
         let prog = parse("fn add(a, b) {\n  return a + b\n}");
         match &prog.stmts[0].kind {
-            StmtKind::Let { name, value } => {
+            StmtKind::Let { name, value, .. } => {
                 assert_eq!(name, "add");
                 match &value.kind {
                     ExprKind::Function { name: Some(n), params, .. } => {
@@ -802,7 +847,7 @@ mod tests {
     fn test_closure_assigned() {
         let prog = parse("let add10 = make_adder(10)");
         match &prog.stmts[0].kind {
-            StmtKind::Let { name, value } => {
+            StmtKind::Let { name, value, .. } => {
                 assert_eq!(name, "add10");
                 assert!(matches!(value.kind, ExprKind::Call { .. }));
             }

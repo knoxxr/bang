@@ -255,6 +255,33 @@ try {
 - 잡히지 않은 예외는 프로그램을 종료시킨다.
 - 기본 실행 엔진인 VM에서 동작한다(`--interp` / AOT `compile`은 미지원).
 
+## 선택적 타입 힌트
+
+변수·파라미터·반환값에 타입을 선택적으로 표기할 수 있다. 표기는 **점진적**이라
+생략 가능하며, 표기한 경곗값은 **런타임에 검증**된다(불일치 시 `try/catch`로 잡히는 에러).
+
+```
+let count: int = 42
+
+fn area(w: int, h: int) -> int {
+    return w * h
+}
+print(area(3, 4))        // 12
+
+// 불일치는 런타임 에러
+try {
+    let n: int = "oops"
+} catch e {
+    print(e)             // "타입 불일치: int 기대, Str 받음"
+}
+
+// any 는 모두 허용, 힌트 없는 코드는 완전 동적
+fn id(v: any) -> any { return v }
+```
+
+타입: `int` `float` `bool` `str` `nil` `list` `map` `fn` `any`.
+(VM 전용 — `--interp`/AOT는 힌트를 무시한다.)
+
 ## 개발
 
 ```bash

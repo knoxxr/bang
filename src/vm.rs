@@ -22,8 +22,9 @@ use crate::compiler::{
     OP_FIELD_GET,
     OP_MAKE_ITER, OP_FOR_ITER,
     OP_SPAWN, OP_PARALLEL_ENTER, OP_PARALLEL_EXIT,
-    OP_SETUP_TRY, OP_POP_TRY, OP_THROW,
+    OP_SETUP_TRY, OP_POP_TRY, OP_THROW, OP_CHECK_TYPE,
 };
+use crate::ast::TypeAnn;
 use crate::lexer::token::Span;
 use crate::runtime::{BangChannel, RuntimeError};
 
@@ -924,6 +925,25 @@ impl Vm {
                     // 던진 값을 보관하고 Err로 신호 → exec_until 래퍼가 핸들러로 라우팅
                     self.pending_exception = Some(val);
                     return Err(RuntimeError::new("throw", span));
+                }
+                OP_CHECK_TYPE => {
+                    let tag = self.read_byte();
+                    let expected = TypeAnn::from_u8(tag);
+                    // 값이 Future면 먼저 해소 후 검사
+                    let span = self.current_span();
+                    let top = self.stack_pop();
+                    let v = auto_resolve(top, span)?;
+                    let ok = match expected {
+                        Some(TypeAnn::Any) | None => true,
+                        Some(t) => value_matches_type(&v, t),
+                    };
+                    if !ok {
+                        let exp = expected.map(|t| t.name()).unwrap_or("?");
+                        // 타입 에러는 try/catch로 잡을 수 있는 런타임 에러
+                        return Err(RuntimeError::new(
+                            format!("타입 불일치: {exp} 기대, {} 받음", v.type_name()), span));
+                    }
+                    self.stack.push(v);
                 }
 
                 // --- For loop ---
@@ -1868,6 +1888,21 @@ fn deep_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
 
 /// spawn 경계에서 클로저의 upvalue를 독립 복사 (값 의미론).
 /// 각 upvalue의 현재 값을 읽어 새로운 독립적 Upvalue 슬롯에 저장.
+/// 런타임 값이 타입 힌트와 일치하는지 검사 (Any는 위에서 처리됨).
+fn value_matches_type(v: &VmValue, t: TypeAnn) -> bool {
+    match t {
+        TypeAnn::Int   => matches!(v, VmValue::Int(_)),
+        TypeAnn::Float => matches!(v, VmValue::Float(_)),
+        TypeAnn::Bool  => matches!(v, VmValue::Bool(_)),
+        TypeAnn::Str   => matches!(v, VmValue::Str(_)),
+        TypeAnn::Nil   => matches!(v, VmValue::Nil),
+        TypeAnn::List  => matches!(v, VmValue::List(_)),
+        TypeAnn::Map   => matches!(v, VmValue::Map(_)),
+        TypeAnn::Fn    => matches!(v, VmValue::Closure(_) | VmValue::Function(_) | VmValue::Builtin(_)),
+        TypeAnn::Any   => true,
+    }
+}
+
 fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
     let upvalues: Vec<UpvalueRef> = c.upvalues.iter().map(|uv| {
         let val = uv.get(); // VmValue::clone() — 컨테이너 깊은 복사, 참조타입 Arc 클론

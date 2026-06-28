@@ -336,7 +336,14 @@ impl Lexer {
 
         let kind = match ch {
             '+' => TokenKind::Plus,
-            '-' => TokenKind::Minus,
+            '-' => {
+                if self.peek() == '>' {
+                    self.advance();
+                    TokenKind::Arrow
+                } else {
+                    TokenKind::Minus
+                }
+            }
             '*' => TokenKind::Star,
             '/' => TokenKind::Slash,
             '%' => TokenKind::Percent,

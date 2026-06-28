@@ -234,7 +234,7 @@ impl Transpiler {
 
     fn collect_fns(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
-            if let StmtKind::Let { name, value } = &stmt.kind {
+            if let StmtKind::Let { name, value, .. } = &stmt.kind {
                 if matches!(value.kind, ExprKind::Function { .. }) {
                     self.user_fns.insert(name.clone());
                 }
@@ -248,7 +248,7 @@ impl Transpiler {
         let fns: Vec<(String, Vec<String>)> = stmts
             .iter()
             .filter_map(|s| {
-                if let StmtKind::Let { name, value } = &s.kind {
+                if let StmtKind::Let { name, value, .. } = &s.kind {
                     if let ExprKind::Function { params, .. } = &value.kind {
                         return Some((name.clone(), params.clone()));
                     }
@@ -275,7 +275,7 @@ impl Transpiler {
 
     fn emit_fn_defs(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
-            if let StmtKind::Let { name, value } = &stmt.kind {
+            if let StmtKind::Let { name, value, .. } = &stmt.kind {
                 if let ExprKind::Function { params, body, .. } = &value.kind {
                     self.emit_fn_def(name, params, body);
                 }
@@ -316,7 +316,7 @@ impl Transpiler {
     fn emit_stmt(&mut self, stmt: &Stmt) {
         let sp = stmt.span;
         match &stmt.kind {
-            StmtKind::Let { name, value } => {
+            StmtKind::Let { name, value, .. } => {
                 // 최상위 함수 정의는 이미 처리 → 건너뜀
                 if matches!(value.kind, ExprKind::Function { .. }) && self.scope_stack.len() == 1 {
                     return;

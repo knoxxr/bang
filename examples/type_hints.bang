@@ -1,0 +1,37 @@
+// 선택적 타입 힌트 — 런타임 검증 (점진적 타이핑)
+// 기대 출력:
+// 42
+// 7
+// gradual
+// 타입 에러 잡음
+// 100
+
+// 타입이 맞으면 정상
+let count: int = 42
+print(count)
+
+fn add(a: int, b: int) -> int {
+    return a + b
+}
+print(add(3, 4))
+
+// 힌트 없는 코드는 그대로 동작 (점진적)
+let label = "gradual"
+fn echo(x) {
+    return x
+}
+print(echo(label))
+
+// 타입 불일치는 try/catch로 잡히는 런타임 에러
+try {
+    let bad: int = "문자열"
+    print(bad)
+} catch e {
+    print("타입 에러 잡음")
+}
+
+// any 는 모든 타입 허용
+fn identity(v: any) -> any {
+    return v
+}
+print(identity(100))

@@ -64,6 +64,7 @@ pub const OP_PARALLEL_EXIT:   u8 = 74;
 pub const OP_SETUP_TRY:       u8 = 75; // operand: u16 절대 catch ip
 pub const OP_POP_TRY:         u8 = 76; // try 본문 정상 종료 시 핸들러 제거
 pub const OP_THROW:           u8 = 77; // 스택 top 값을 예외로 던짐
+pub const OP_CHECK_TYPE:      u8 = 78; // operand: u8 타입 태그. 스택 top 타입 검증(peek)
 
 // ============================================================================
 // Compile error
@@ -121,6 +122,7 @@ struct FnCompiler {
     scope_depth: usize,
     local_peak: usize, // maximum locals used (= local_count for CompiledFn)
     try_depth: usize,  // 현재 활성화된 try 핸들러(OP_SETUP_TRY) 수
+    ret_type: Option<TypeAnn>, // 반환 타입 힌트 (return 문에서 검증)
 }
 
 impl FnCompiler {
@@ -135,6 +137,7 @@ impl FnCompiler {
             scope_depth: 0,
             local_peak: 0,
             try_depth: 0,
+            ret_type: None,
         }
     }
 
@@ -376,8 +379,12 @@ impl Compiler {
     fn compile_stmt(&mut self, stmt: &Stmt) {
         let sp = stmt.span;
         match &stmt.kind.clone() {
-            StmtKind::Let { name, value } => {
+            StmtKind::Let { name, ty, value } => {
                 self.compile_expr(value);
+                // 선택적 타입 힌트: 값이 스택 top에 있을 때 런타임 검증 (peek)
+                if let Some(t) = ty {
+                    self.emit_u8(OP_CHECK_TYPE, t.as_u8(), sp);
+                }
                 let fn_idx = self.fn_stack.len() - 1;
                 if fn_idx == 0 && self.globals.contains_key(name.as_str()) {
                     // Top-level: store to global slot
@@ -401,6 +408,10 @@ impl Compiler {
                 match val {
                     Some(v) => self.compile_expr(v),
                     None    => { self.emit(OP_NIL, sp); }
+                }
+                // 반환 타입 힌트 런타임 검증 (명시적 return의 반환값)
+                if let Some(t) = self.cur().ret_type {
+                    self.emit_u8(OP_CHECK_TYPE, t.as_u8(), sp);
                 }
                 self.emit(OP_RETURN, sp);
             }
@@ -701,8 +712,8 @@ impl Compiler {
                 self.emit_u8(OP_FIELD_GET, name_idx, sp);
             }
 
-            ExprKind::Function { name, params, body } => {
-                self.compile_fn(name.clone(), params, body, sp);
+            ExprKind::Function { name, params, param_types, ret_type, body } => {
+                self.compile_fn(name.clone(), params, param_types, *ret_type, body, sp);
             }
 
             ExprKind::Spawn(inner) => {
@@ -724,7 +735,7 @@ impl Compiler {
                         }],
                         span: sp,
                     };
-                    self.compile_fn(None, &[], &body, sp);
+                    self.compile_fn(None, &[], &[], None, &body, sp);
                     self.emit_u8(OP_SPAWN, 0, sp);
                 }
             }
@@ -793,11 +804,14 @@ impl Compiler {
         &mut self,
         name: Option<String>,
         params: &[String],
+        param_types: &[Option<TypeAnn>],
+        ret_type: Option<TypeAnn>,
         body: &Block,
         sp: Span,
     ) {
         // Push a new FnCompiler
         let mut fn_comp = FnCompiler::new(name.clone(), params.len());
+        fn_comp.ret_type = ret_type;
 
         // Parameters are locals at scope_depth=1
         fn_comp.scope_depth = 1;
@@ -817,6 +831,15 @@ impl Compiler {
 
         self.fn_stack.push(fn_comp);
         self.cur_mut().begin_scope(); // body block scope
+
+        // 파라미터 타입 힌트 런타임 검증 (본문 시작 시)
+        for (i, pt) in param_types.iter().enumerate() {
+            if let Some(t) = pt {
+                self.emit_u8(OP_LOAD_LOCAL, i as u8, sp);
+                self.emit_u8(OP_CHECK_TYPE, t.as_u8(), sp);
+                self.emit(OP_POP, sp);
+            }
+        }
 
         self.compile_stmts(&body.stmts);
 

@@ -348,6 +348,73 @@ print(acc)
     assert_eq!(run_vm(src), vec!["25000000"]);
 }
 
+// ============================================================================
+// 선택적 타입 힌트 (런타임 검증) — Phase 15
+// ============================================================================
+
+#[test]
+fn test_vm_typed_let_ok() {
+    assert_eq!(run_vm("let x: int = 42\nprint(x)"), vec!["42"]);
+    assert_eq!(run_vm("let s: str = \"hi\"\nprint(s)"), vec!["hi"]);
+}
+
+#[test]
+fn test_vm_typed_fn_ok() {
+    let src = "fn add(a: int, b: int) -> int { return a + b }\nprint(add(3, 4))";
+    assert_eq!(run_vm(src), vec!["7"]);
+}
+
+#[test]
+fn test_vm_typed_let_mismatch_catchable() {
+    let src = "try {\n let x: int = \"s\"\n} catch e {\n print(\"caught\")\n}";
+    assert_eq!(run_vm(src), vec!["caught"]);
+}
+
+#[test]
+fn test_vm_typed_param_mismatch_catchable() {
+    let src = r#"
+fn f(a: int) { return a }
+try {
+    f("nope")
+} catch e {
+    print("caught")
+}
+"#;
+    assert_eq!(run_vm(src), vec!["caught"]);
+}
+
+#[test]
+fn test_vm_typed_return_mismatch_catchable() {
+    let src = r#"
+fn f() -> int { return "nope" }
+try {
+    f()
+} catch e {
+    print("caught")
+}
+"#;
+    assert_eq!(run_vm(src), vec!["caught"]);
+}
+
+#[test]
+fn test_vm_any_type_accepts_all() {
+    let src = "fn id(v: any) -> any { return v }\nprint(id(1))\nprint(id(\"x\"))";
+    assert_eq!(run_vm(src), vec!["1", "x"]);
+}
+
+#[test]
+fn test_vm_untyped_still_gradual() {
+    // 힌트 없는 코드는 영향 없음
+    let src = "let x = 5\nfn f(a) { return a }\nprint(f(x))";
+    assert_eq!(run_vm(src), vec!["5"]);
+}
+
+#[test]
+fn test_vm_typed_list_map() {
+    let src = "let xs: list = [1,2]\nlet m: map = {\"a\": 1}\nprint(len(xs))\nprint(m[\"a\"])";
+    assert_eq!(run_vm(src), vec!["2", "1"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

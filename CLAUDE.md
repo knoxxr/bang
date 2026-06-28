@@ -169,3 +169,12 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              테스트: vm_test +5 COW(별칭격리/맵/인자/push/대용량). 
              (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 41 vm + 8 transpile + 7 cli + 4 import = 224 green, clippy 0)
+✅ Phase 15 — 선택적 타입 힌트 (런타임 검증, gradual typing) — 범용 언어 3순위
+             문법: let x: T = .., fn f(a: T) -> T { }. 타입: int/float/bool/str/nil/list/map/fn/any.
+             점진적: 힌트 생략 가능, 표기 경곗값만 런타임 검증(불일치=try/catch로 잡히는 에러).
+             렉서: -> (Arrow) 토큰. AST: TypeAnn enum + Let.ty/Function.param_types,ret_type.
+             컴파일러: OP_CHECK_TYPE(peek) emit — 타입된 let/파라미터(진입)/명시적 return.
+             VM: OP_CHECK_TYPE가 Future 해소 후 검사, any/미표기는 통과. VM 전용(interp/AOT 무시).
+             예제: examples/type_hints.bang. 테스트: vm_test +8.
+             (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 49 vm + 8 transpile + 7 cli + 4 import = 232 green, clippy 0)

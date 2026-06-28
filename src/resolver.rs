@@ -370,7 +370,7 @@ impl Resolver {
     /// 문장 해석. true = 이 문장이 반드시 return.
     fn resolve_stmt(&mut self, stmt: &Stmt) -> bool {
         match &stmt.kind {
-            StmtKind::Let { name, value } => {
+            StmtKind::Let { name, value, .. } => {
                 // two-phase: declare → 초기화식 해석 → define
                 let slot = self.declare(name, stmt.span);
                 let arity = self.resolve_expr_arity(value);
@@ -562,7 +562,7 @@ impl Resolver {
                 None
             }
 
-            ExprKind::Function { name, params, body } => {
+            ExprKind::Function { name, params, body, .. } => {
                 let arity = params.len();
                 self.push_scope(FrameKind::Function);
                 self.fn_depth += 1;

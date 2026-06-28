@@ -136,7 +136,7 @@ impl Interpreter {
     ) -> Result<StmtResult, RuntimeError> {
         let span = stmt.span;
         match &stmt.kind {
-            StmtKind::Let { name, value } => {
+            StmtKind::Let { name, value, .. } => {
                 let val = self.eval_expr(value, env, scope)?;
                 // 이름 있는 함수: 클로저에 자기 이름 등록 → 재귀 허용
                 if let Value::Function(ref f) = val {
@@ -320,7 +320,7 @@ impl Interpreter {
                 eval_field(tgt, name, span)
             }
 
-            ExprKind::Function { name, params, body } => {
+            ExprKind::Function { name, params, body, .. } => {
                 Ok(Value::Function(Arc::new(BangFunction {
                     name: name.clone(),
                     params: params.clone(),
