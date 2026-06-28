@@ -223,3 +223,10 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              테스트: regex.rs 단위 7 + vm_test 통합 6.
              (tests: 97 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 71 vm + 8 transpile + 7 cli + 5 import = 262 green, clippy 0)
+✅ Phase 22 — 정규식 캡처 그룹 (VM 빌트인 81)
+             regex 엔진에 캡처 추가: (...) 가 그룹 인덱스를 갖고, 백트래킹 VM이 Save(슬롯)로
+             각 그룹 위치 기록(스레드별 saves, Split 시 복제). 그룹0=전체 매치.
+             regex_groups(s, pat) → [전체, g1, g2, ...] (미참여 그룹은 nil), 매치 없으면 nil.
+             (역참조는 여전히 미지원). 테스트: regex 단위 +1, vm_test +1.
+             (tests: 98 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 72 vm + 8 transpile + 7 cli + 5 import = 264 green, clippy 0)

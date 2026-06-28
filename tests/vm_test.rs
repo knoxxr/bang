@@ -575,6 +575,18 @@ fn test_vm_regex_brace_and_date() {
 }
 
 #[test]
+fn test_vm_regex_groups() {
+    let src = r#"
+let g = regex_groups("2023-11-14", "(\\d{4})-(\\d{2})-(\\d{2})")
+print(g[0])
+print(g[1])
+print(g[3])
+"#;
+    assert_eq!(run_vm(src), vec!["2023-11-14", "2023", "14"]);
+    assert_eq!(run_vm("print(regex_groups(\"x\", \"(\\\\d+)\"))"), vec!["nil"]);
+}
+
+#[test]
 fn test_vm_regex_bad_pattern_catchable() {
     let src = "try {\n regex_match(\"x\", \"[unclosed\")\n} catch e {\n print(\"caught\")\n}";
     assert_eq!(run_vm(src), vec!["caught"]);

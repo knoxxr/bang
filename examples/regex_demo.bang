@@ -4,6 +4,7 @@
 // 2023-11-14
 // [alice@example.com, bob@test.org]
 // 전화: [REDACTED], [REDACTED]
+// 년=2023 월=11 일=14
 
 // 날짜 형식 검증
 print(regex_match("2023-11-14", "^\\d{4}-\\d{2}-\\d{2}$"))
@@ -18,3 +19,7 @@ print(regex_find_all(text, "[a-z]+@[a-z]+\\.[a-z]+"))
 // 전화번호 마스킹
 let msg = "전화: 010-1234-5678, 02-987-6543"
 print(regex_replace(msg, "\\d{2,3}-\\d{3,4}-\\d{4}", "[REDACTED]"))
+
+// 캡처 그룹으로 부분 추출
+let g = regex_groups("2023-11-14", "(\\d{4})-(\\d{2})-(\\d{2})")
+print("년=" + g[1] + " 월=" + g[2] + " 일=" + g[3])

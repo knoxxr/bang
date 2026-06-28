@@ -36,6 +36,7 @@ enum Re {
     Star(Box<Re>),
     Plus(Box<Re>),
     Opt(Box<Re>),
+    Group(usize, Box<Re>), // 캡처 그룹 (1-based 인덱스)
     Empty,
 }
 
@@ -46,6 +47,7 @@ enum Re {
 struct ReParser {
     chars: Vec<char>,
     pos: usize,
+    group_count: usize,
 }
 
 impl ReParser {
@@ -143,11 +145,14 @@ impl ReParser {
         match self.next() {
             None => Err("예상치 못한 패턴 끝".into()),
             Some('(') => {
+                // 캡처 그룹 인덱스를 여는 괄호 순서대로 부여
+                self.group_count += 1;
+                let idx = self.group_count;
                 let inner = self.parse_alt()?;
                 if self.next() != Some(')') {
                     return Err("닫는 ')' 없음".into());
                 }
-                Ok(inner)
+                Ok(Re::Group(idx, Box::new(inner)))
             }
             Some('[') => self.parse_class(),
             Some('.') => Ok(Re::Any),
@@ -241,6 +246,7 @@ enum Inst {
     End,
     Jmp(usize),
     Split(usize, usize),
+    Save(usize), // 캡처 슬롯에 현재 위치 기록
     Match,
 }
 
@@ -253,6 +259,11 @@ fn compile_node(re: &Re, prog: &mut Vec<Inst>) {
         Re::End => prog.push(Inst::End),
         Re::Class { neg, items } => prog.push(Inst::Class { neg: *neg, items: items.clone() }),
         Re::Concat(nodes) => { for n in nodes { compile_node(n, prog); } }
+        Re::Group(idx, inner) => {
+            prog.push(Inst::Save(2 * idx));
+            compile_node(inner, prog);
+            prog.push(Inst::Save(2 * idx + 1));
+        }
         Re::Alt(branches) => {
             // Split b0, b1; ... 마지막은 직접
             let mut jmp_ends = Vec::new();
@@ -308,31 +319,35 @@ fn compile_node(re: &Re, prog: &mut Vec<Inst>) {
 
 pub struct Regex {
     prog: Vec<Inst>,
+    nslots: usize, // 캡처 슬롯 수 = 2*(group_count+1)
 }
 
 pub fn compile(pattern: &str) -> Result<Regex, String> {
-    let mut p = ReParser { chars: pattern.chars().collect(), pos: 0 };
+    let mut p = ReParser { chars: pattern.chars().collect(), pos: 0, group_count: 0 };
     let ast = p.parse_alt()?;
     if p.pos != p.chars.len() {
         return Err("패턴을 끝까지 파싱하지 못함".into());
     }
-    let mut prog = Vec::new();
+    // 그룹 0 = 전체 매치. Save(0) ... Save(1) 로 감싼다.
+    let mut prog = vec![Inst::Save(0)];
     compile_node(&ast, &mut prog);
+    prog.push(Inst::Save(1));
     prog.push(Inst::Match);
-    Ok(Regex { prog })
+    Ok(Regex { prog, nslots: 2 * (p.group_count + 1) })
 }
 
 impl Regex {
-    /// start 위치에서 시작하는 매치를 시도, 끝 위치(char index) 반환.
-    fn run_at(&self, chars: &[char], start: usize) -> Option<usize> {
-        let mut stack: Vec<(usize, usize)> = vec![(0, start)];
+    /// start 위치에서 시작하는 매치를 시도, 캡처 슬롯 배열 반환.
+    fn run_at(&self, chars: &[char], start: usize) -> Option<Vec<Option<usize>>> {
+        let init = vec![None; self.nslots];
+        let mut stack: Vec<(usize, usize, Vec<Option<usize>>)> = vec![(0, start, init)];
         let mut steps = 0usize;
-        while let Some((mut pc, mut sp)) = stack.pop() {
+        while let Some((mut pc, mut sp, mut saves)) = stack.pop() {
             loop {
                 steps += 1;
                 if steps > STEP_LIMIT { return None; }
                 match &self.prog[pc] {
-                    Inst::Match => return Some(sp),
+                    Inst::Match => return Some(saves),
                     Inst::Char(c) => {
                         if sp < chars.len() && chars[sp] == *c { pc += 1; sp += 1; } else { break; }
                     }
@@ -345,7 +360,11 @@ impl Regex {
                     Inst::Start => { if sp == 0 { pc += 1; } else { break; } }
                     Inst::End => { if sp == chars.len() { pc += 1; } else { break; } }
                     Inst::Jmp(a) => { pc = *a; }
-                    Inst::Split(a, b) => { stack.push((*b, sp)); pc = *a; }
+                    Inst::Split(a, b) => { stack.push((*b, sp, saves.clone())); pc = *a; }
+                    Inst::Save(n) => {
+                        if let Some(slot) = saves.get_mut(*n) { *slot = Some(sp); }
+                        pc += 1;
+                    }
                 }
             }
         }
@@ -355,8 +374,30 @@ impl Regex {
     /// 가장 왼쪽 매치 (start, end) char index 반환.
     pub fn search(&self, chars: &[char]) -> Option<(usize, usize)> {
         for start in 0..=chars.len() {
-            if let Some(end) = self.run_at(chars, start) {
-                return Some((start, end));
+            if let Some(saves) = self.run_at(chars, start) {
+                if let (Some(a), Some(b)) = (saves[0], saves[1]) {
+                    return Some((a, b));
+                }
+            }
+        }
+        None
+    }
+
+    /// 가장 왼쪽 매치의 그룹별 (start,end). 인덱스 0 = 전체 매치,
+    /// 1.. = 캡처 그룹(참여 안 한 그룹은 None).
+    pub fn captures(&self, chars: &[char]) -> Option<Vec<Option<(usize, usize)>>> {
+        for start in 0..=chars.len() {
+            if let Some(saves) = self.run_at(chars, start) {
+                if saves[0].is_none() { continue; }
+                let groups = saves.len() / 2;
+                let mut out = Vec::with_capacity(groups);
+                for g in 0..groups {
+                    match (saves[2 * g], saves[2 * g + 1]) {
+                        (Some(a), Some(b)) => out.push(Some((a, b))),
+                        _ => out.push(None),
+                    }
+                }
+                return Some(out);
             }
         }
         None
@@ -371,12 +412,12 @@ impl Regex {
         let mut out = Vec::new();
         let mut i = 0;
         while i <= chars.len() {
-            if let Some(end) = self.run_at(chars, i) {
-                out.push((i, end));
-                // 빈 매치면 1칸 전진(무한 루프 방지)
-                i = if end > i { end } else { i + 1 };
-            } else {
-                i += 1;
+            match self.run_at(chars, i).and_then(|s| Some((s[0]?, s[1]?))) {
+                Some((a, end)) => {
+                    out.push((a, end));
+                    i = if end > i { end } else { i + 1 };
+                }
+                None => i += 1,
             }
         }
         out
@@ -455,6 +496,19 @@ mod tests {
         assert!(m("(ab)+", "abab"));
         assert!(m("(cat|dog)s?", "cats"));
         assert!(!m("^(cat|dog)$", "fish"));
+    }
+
+    #[test]
+    fn capture_groups() {
+        let c: Vec<char> = "2023-11-14".chars().collect();
+        let re = compile(r"(\d{4})-(\d{2})-(\d{2})").unwrap();
+        let caps = re.captures(&c).unwrap();
+        let txt = |g: Option<(usize, usize)>| g.map(|(a, b)| c[a..b].iter().collect::<String>());
+        assert_eq!(txt(caps[0]), Some("2023-11-14".to_string()));
+        assert_eq!(txt(caps[1]), Some("2023".to_string()));
+        assert_eq!(txt(caps[2]), Some("11".to_string()));
+        assert_eq!(txt(caps[3]), Some("14".to_string()));
+        assert!(compile(r"(\d+)").unwrap().captures(&"x".chars().collect::<Vec<_>>()).is_none());
     }
 
     #[test]

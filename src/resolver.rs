@@ -354,6 +354,7 @@ impl Resolver {
             ("regex_find",     Some(2)),
             ("regex_find_all", Some(2)),
             ("regex_replace",  Some(3)),
+            ("regex_groups",   Some(2)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {

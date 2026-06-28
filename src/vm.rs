@@ -368,6 +368,7 @@ pub const BUILTINS: &[&str] = &[
     "regex_find",     // 78
     "regex_find_all", // 79
     "regex_replace",  // 80
+    "regex_groups",   // 81
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -1971,6 +1972,25 @@ impl Vm {
                 let re = compile_regex(&pat, span)?;
                 let chars: Vec<char> = s.chars().collect();
                 Ok(VmValue::Str(re.replace_all(&chars, &repl)))
+            }
+            81 => { // regex_groups(s, pat) → [전체매치, g1, g2, ...] 또는 nil
+                req_args("regex_groups", &args, 2, span)?;
+                let s = str_arg("regex_groups", &args[0], span)?;
+                let pat = str_arg("regex_groups", &args[1], span)?;
+                let re = compile_regex(&pat, span)?;
+                let chars: Vec<char> = s.chars().collect();
+                match re.captures(&chars) {
+                    Some(groups) => {
+                        let items: Vec<VmValue> = groups.into_iter()
+                            .map(|g| match g {
+                                Some((a, b)) => VmValue::Str(chars[a..b].iter().collect()),
+                                None => VmValue::Nil,
+                            })
+                            .collect();
+                        Ok(VmValue::List(Arc::new(items)))
+                    }
+                    None => Ok(VmValue::Nil),
+                }
             }
 
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
