@@ -208,3 +208,10 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              난수는 xorshift64 PRNG(시간 시드, 의존성 없음). 예제: examples/json_demo.bang.
              테스트: vm_test +6. (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 60 vm + 8 transpile + 7 cli + 5 import = 244 green, clippy 0)
+✅ Phase 20 — stdlib 폭 확장 (VM 빌트인 69-76)
+             파일시스템: list_dir(path)→names, file_exists(path), is_dir(path) (std::fs 래퍼).
+             list 유틸: sort_by(list,keyfn)→키 정렬(고차, vm_cmp), unique(list)→순서유지 dedup.
+             시간: format_time(ms)→"YYYY-MM-DD HH:MM:SS" UTC (civil-date 변환, 의존성 없음).
+             문자: ord(str)→코드포인트, chr(int)→문자. (정규식은 별도 엔진이라 향후 과제)
+             테스트: vm_test +5. (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 65 vm + 8 transpile + 7 cli + 5 import = 249 green, clippy 0)

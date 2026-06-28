@@ -505,6 +505,42 @@ fn test_vm_now_ms_and_random() {
     assert_eq!(run_vm("let n = random_int(5, 5)\nprint(n)"), vec!["5"]); // [5,5] → 5
 }
 
+// ============================================================================
+// stdlib 폭: list 유틸 / 시간포맷 / 문자 — Phase 20
+// ============================================================================
+
+#[test]
+fn test_vm_sort_by() {
+    let src = "print(sort_by([\"bbb\", \"a\", \"cc\"], fn(s) { return len(s) }))";
+    assert_eq!(run_vm(src), vec!["[a, cc, bbb]"]);
+}
+
+#[test]
+fn test_vm_unique() {
+    assert_eq!(run_vm("print(unique([1, 2, 2, 3, 1, 3]))"), vec!["[1, 2, 3]"]);
+    assert_eq!(run_vm("print(unique([\"a\", \"a\", \"b\"]))"), vec!["[a, b]"]);
+}
+
+#[test]
+fn test_vm_format_time() {
+    assert_eq!(run_vm("print(format_time(0))"), vec!["1970-01-01 00:00:00"]);
+    assert_eq!(run_vm("print(format_time(1700000000000))"), vec!["2023-11-14 22:13:20"]);
+}
+
+#[test]
+fn test_vm_ord_chr() {
+    assert_eq!(run_vm("print(ord(\"A\"))"), vec!["65"]);
+    assert_eq!(run_vm("print(chr(97))"), vec!["a"]);
+    // 라운드트립
+    assert_eq!(run_vm("print(chr(ord(\"Z\")))"), vec!["Z"]);
+}
+
+#[test]
+fn test_vm_fs_predicates() {
+    // file_exists / is_dir 는 환경 비의존 경로로
+    assert_eq!(run_vm("print(file_exists(\"/definitely/not/here/xyz\"))"), vec!["false"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

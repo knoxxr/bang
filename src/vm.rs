@@ -354,6 +354,15 @@ pub const BUILTINS: &[&str] = &[
     "now_ms",         // 66
     "random",         // 67
     "random_int",     // 68
+    // stdlib: 파일시스템 / list 유틸 / 시간포맷 / 문자 (69-76)
+    "list_dir",     // 69
+    "file_exists",  // 70
+    "is_dir",       // 71
+    "sort_by",      // 72
+    "unique",       // 73
+    "format_time",  // 74
+    "ord",          // 75
+    "chr",          // 76
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -1836,6 +1845,89 @@ impl Vm {
                 Ok(VmValue::Int(n.min(hi)))
             }
 
+            // ── 파일시스템 / list 유틸 / 시간포맷 / 문자 (69-76) ──────────────
+            69 => { // list_dir(path) → List of entry names
+                req_args("list_dir", &args, 1, span)?;
+                let path = str_arg("list_dir", &args[0], span)?;
+                let mut names = Vec::new();
+                let rd = std::fs::read_dir(&path)
+                    .map_err(|e| RuntimeError::new(format!("list_dir('{path}'): {e}"), span))?;
+                for entry in rd.flatten() {
+                    names.push(VmValue::Str(entry.file_name().to_string_lossy().into_owned()));
+                }
+                Ok(VmValue::List(Arc::new(names)))
+            }
+            70 => { // file_exists(path) → Bool
+                req_args("file_exists", &args, 1, span)?;
+                let path = str_arg("file_exists", &args[0], span)?;
+                Ok(VmValue::Bool(std::path::Path::new(&path).exists()))
+            }
+            71 => { // is_dir(path) → Bool
+                req_args("is_dir", &args, 1, span)?;
+                let path = str_arg("is_dir", &args[0], span)?;
+                Ok(VmValue::Bool(std::path::Path::new(&path).is_dir()))
+            }
+            72 => { // sort_by(list, keyfn) → 키 기준 정렬 사본
+                req_args("sort_by", &args, 2, span)?;
+                let list = list_arg("sort_by", &args[0], span)?;
+                let func = args[1].clone();
+                // 각 원소의 키를 계산 (고차 호출)
+                let mut keyed: Vec<(VmValue, VmValue)> = Vec::with_capacity(list.len());
+                for item in list {
+                    let depth_before = self.frames.len();
+                    self.stack.push(func.clone());
+                    self.stack.push(item.clone());
+                    self.do_call(1, span, stop_depth)?;
+                    if self.frames.len() > depth_before {
+                        self.exec_until(depth_before)?;
+                    }
+                    let key = self.stack_pop();
+                    keyed.push((key, item));
+                }
+                let mut err: Option<RuntimeError> = None;
+                keyed.sort_by(|a, b| {
+                    if err.is_some() { return std::cmp::Ordering::Equal; }
+                    match vm_cmp(&a.0, &b.0, span) {
+                        Ok(o) => o,
+                        Err(e) => { err = Some(e); std::cmp::Ordering::Equal }
+                    }
+                });
+                if let Some(e) = err { return Err(e); }
+                Ok(VmValue::List(Arc::new(keyed.into_iter().map(|(_, v)| v).collect())))
+            }
+            73 => { // unique(list) → 순서 유지 중복 제거
+                req_args("unique", &args, 1, span)?;
+                let list = list_arg("unique", &args[0], span)?;
+                let mut out: Vec<VmValue> = Vec::new();
+                for item in list {
+                    if !out.iter().any(|e| vm_eq(e, &item)) {
+                        out.push(item);
+                    }
+                }
+                Ok(VmValue::List(Arc::new(out)))
+            }
+            74 => { // format_time(ms) → "YYYY-MM-DD HH:MM:SS" (UTC)
+                req_args("format_time", &args, 1, span)?;
+                let ms = int_of("format_time", &args[0], span)?;
+                Ok(VmValue::Str(format_time_utc(ms)))
+            }
+            75 => { // ord(str) → 첫 문자의 코드포인트
+                req_args("ord", &args, 1, span)?;
+                let s = str_arg("ord", &args[0], span)?;
+                match s.chars().next() {
+                    Some(c) => Ok(VmValue::Int(c as i64)),
+                    None => Err(RuntimeError::new("ord: 빈 문자열", span)),
+                }
+            }
+            76 => { // chr(int) → 한 문자 문자열
+                req_args("chr", &args, 1, span)?;
+                let n = int_of("chr", &args[0], span)?;
+                match u32::try_from(n).ok().and_then(char::from_u32) {
+                    Some(c) => Ok(VmValue::Str(c.to_string())),
+                    None => Err(RuntimeError::new(format!("chr: 잘못된 코드포인트 {n}"), span)),
+                }
+            }
+
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
         }
     }
@@ -2091,6 +2183,26 @@ fn next_random() -> f64 {
     x ^= x << 17;
     *guard = x;
     ((x >> 11) as f64) / ((1u64 << 53) as f64)
+}
+
+/// epoch 밀리초 → "YYYY-MM-DD HH:MM:SS" (UTC). 외부 의존성 없이 civil-date 변환.
+fn format_time_utc(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // Howard Hinnant's days_from_civil 역변환 (civil_from_days)
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{year:04}-{m:02}-{d:02} {hh:02}:{mm:02}:{ss:02}")
 }
 
 // ── JSON ────────────────────────────────────────────────────────────────────

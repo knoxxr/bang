@@ -340,6 +340,15 @@ impl Resolver {
             ("now_ms",         Some(0)),
             ("random",         Some(0)),
             ("random_int",     Some(2)),
+            // stdlib: 파일시스템 / list 유틸 / 시간포맷 / 문자 (69-76)
+            ("list_dir",     Some(1)),
+            ("file_exists",  Some(1)),
+            ("is_dir",       Some(1)),
+            ("sort_by",      Some(2)),
+            ("unique",       Some(1)),
+            ("format_time",  Some(1)),
+            ("ord",          Some(1)),
+            ("chr",          Some(1)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {
