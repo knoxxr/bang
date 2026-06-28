@@ -1,5 +1,9 @@
 # Bang 언어 사용 가이드
 
+> 처음이라면 **[TUTORIAL.md](TUTORIAL.md)** 를 먼저 보세요 (최신 기능 포함, 따라 하기 쉬움).
+> 이 가이드는 초기 버전 기준이라 일부 최신 기능(에러 처리·타입 힌트·JSON·정규식·패키지)은
+> 튜토리얼과 [SPEC.md](SPEC.md), [../README.md](../README.md)를 참고하세요.
+
 > Bang은 동적 타입 범용 프로그래밍 언어입니다. **투명 동시성(Transparent Concurrency)** 을 핵심으로, async/await 없이 자연스럽게 병렬 코드를 작성할 수 있습니다.
 
 ---

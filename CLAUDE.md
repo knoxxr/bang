@@ -256,3 +256,7 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              병목 아님 확인. 진짜 순차 성능엔 unsafe/재작성 필요(보류).
              테스트: typeck 단위 5. (tests: 107 unit + 26 interp + 3 lexer + 9 parser
              + 36 resolver + 75 vm + 8 transpile + 7 cli + 6 import = 277 green, clippy 0)
+✅ Phase 26 — 문서: docs/TUTORIAL.md (진행형 입문 튜토리얼)
+             설치~동시성~에러처리~타입~모듈/패키지~stdlib까지 따라 하며 배우는 구성.
+             모든 코드 스니펫은 실행 검증. README 문서 섹션 추가, GUIDE.md에 최신 안내 배너.
+             (문서만 변경 — 코드/테스트/버전 불변)

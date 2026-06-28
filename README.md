@@ -336,7 +336,11 @@ cargo clippy --all-targets -- -D warnings    # 린트
 cargo run -- run examples/fibonacci.bang     # 개발 중 실행
 ```
 
-언어 명세는 [`docs/SPEC.md`](docs/SPEC.md), 사용자 가이드는 [`docs/GUIDE.md`](docs/GUIDE.md).
+## 문서
+
+- **[튜토리얼](docs/TUTORIAL.md)** — 따라 하며 배우는 입문 가이드 (먼저 읽으세요)
+- [언어 명세](docs/SPEC.md) — 문법·의미 레퍼런스
+- [사용 가이드](docs/GUIDE.md) — 상세 가이드
 
 ## 라이선스
 
