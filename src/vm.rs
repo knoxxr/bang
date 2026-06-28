@@ -348,6 +348,12 @@ pub const BUILTINS: &[&str] = &[
     "merge",        // 61
     "repeat",       // 62
     "index_of",     // 63
+    // stdlib: JSON / 시간 / 난수 (64-68)
+    "json_parse",     // 64
+    "json_stringify", // 65
+    "now_ms",         // 66
+    "random",         // 67
+    "random_int",     // 68
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -1794,6 +1800,42 @@ impl Vm {
                 Ok(VmValue::Int(idx))
             }
 
+            // ── JSON / 시간 / 난수 (64-68) ────────────────────────────────────
+            64 => { // json_parse(str) → value
+                req_args("json_parse", &args, 1, span)?;
+                let s = str_arg("json_parse", &args[0], span)?;
+                json_parse(&s, span)
+            }
+            65 => { // json_stringify(value) → str
+                req_args("json_stringify", &args, 1, span)?;
+                let mut out = String::new();
+                json_stringify(&args[0], &mut out, span)?;
+                Ok(VmValue::Str(out))
+            }
+            66 => { // now_ms() → epoch millis
+                req_args("now_ms", &args, 0, span)?;
+                let ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                Ok(VmValue::Int(ms))
+            }
+            67 => { // random() → [0,1) float
+                req_args("random", &args, 0, span)?;
+                Ok(VmValue::Float(next_random()))
+            }
+            68 => { // random_int(lo, hi) → [lo, hi] 정수 (포함)
+                req_args("random_int", &args, 2, span)?;
+                let lo = int_of("random_int", &args[0], span)?;
+                let hi = int_of("random_int", &args[1], span)?;
+                if hi < lo {
+                    return Err(RuntimeError::new("random_int: hi >= lo 이어야 함", span));
+                }
+                let range = (hi - lo + 1) as f64;
+                let n = lo + (next_random() * range) as i64;
+                Ok(VmValue::Int(n.min(hi)))
+            }
+
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
         }
     }
@@ -2022,6 +2064,241 @@ fn deep_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
 fn module_cache() -> &'static Mutex<HashMap<String, VmValue>> {
     static CACHE: OnceLock<Mutex<HashMap<String, VmValue>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// ── PRNG (xorshift64, 시간 시드) ────────────────────────────────────────────
+fn rng_state() -> &'static Mutex<u64> {
+    static S: OnceLock<Mutex<u64>> = OnceLock::new();
+    S.get_or_init(|| {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9e37_79b9_7f4a_7c15)
+            | 1;
+        Mutex::new(seed)
+    })
+}
+
+/// [0, 1) 범위의 난수.
+fn next_random() -> f64 {
+    let mut guard = match rng_state().lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    let mut x = *guard;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *guard = x;
+    ((x >> 11) as f64) / ((1u64 << 53) as f64)
+}
+
+// ── JSON ────────────────────────────────────────────────────────────────────
+
+/// JSON 텍스트 → VmValue. object→Map, array→List, number→Int/Float, null→Nil.
+fn json_parse(s: &str, span: Span) -> Result<VmValue, RuntimeError> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut p = JsonParser { chars: &chars, pos: 0, span };
+    p.skip_ws();
+    let v = p.parse_value()?;
+    p.skip_ws();
+    if p.pos != p.chars.len() {
+        return Err(RuntimeError::new("json_parse: 끝에 잉여 문자", span));
+    }
+    Ok(v)
+}
+
+struct JsonParser<'a> {
+    chars: &'a [char],
+    pos: usize,
+    span: Span,
+}
+
+impl JsonParser<'_> {
+    fn err(&self, msg: &str) -> RuntimeError {
+        RuntimeError::new(format!("json_parse: {msg}"), self.span)
+    }
+    fn peek(&self) -> Option<char> { self.chars.get(self.pos).copied() }
+    fn skip_ws(&mut self) {
+        while let Some(c) = self.peek() {
+            if c == ' ' || c == '\t' || c == '\n' || c == '\r' { self.pos += 1; } else { break; }
+        }
+    }
+    fn parse_value(&mut self) -> Result<VmValue, RuntimeError> {
+        self.skip_ws();
+        match self.peek() {
+            Some('{') => self.parse_object(),
+            Some('[') => self.parse_array(),
+            Some('"') => Ok(VmValue::Str(self.parse_string()?)),
+            Some('t') | Some('f') => self.parse_bool(),
+            Some('n') => self.parse_null(),
+            Some(c) if c == '-' || c.is_ascii_digit() => self.parse_number(),
+            _ => Err(self.err("예상하지 못한 토큰")),
+        }
+    }
+    fn expect(&mut self, lit: &str) -> Result<(), RuntimeError> {
+        for ec in lit.chars() {
+            if self.peek() == Some(ec) { self.pos += 1; } else { return Err(self.err("리터럴 불일치")); }
+        }
+        Ok(())
+    }
+    fn parse_bool(&mut self) -> Result<VmValue, RuntimeError> {
+        if self.peek() == Some('t') { self.expect("true")?; Ok(VmValue::Bool(true)) }
+        else { self.expect("false")?; Ok(VmValue::Bool(false)) }
+    }
+    fn parse_null(&mut self) -> Result<VmValue, RuntimeError> {
+        self.expect("null")?; Ok(VmValue::Nil)
+    }
+    fn parse_string(&mut self) -> Result<String, RuntimeError> {
+        self.pos += 1; // opening "
+        let mut out = String::new();
+        loop {
+            match self.peek() {
+                None => return Err(self.err("종료되지 않은 문자열")),
+                Some('"') => { self.pos += 1; break; }
+                Some('\\') => {
+                    self.pos += 1;
+                    match self.peek() {
+                        Some('"') => out.push('"'),
+                        Some('\\') => out.push('\\'),
+                        Some('/') => out.push('/'),
+                        Some('n') => out.push('\n'),
+                        Some('t') => out.push('\t'),
+                        Some('r') => out.push('\r'),
+                        Some('b') => out.push('\u{0008}'),
+                        Some('f') => out.push('\u{000C}'),
+                        Some('u') => {
+                            let mut code = 0u32;
+                            for _ in 0..4 {
+                                self.pos += 1;
+                                let d = self.peek().and_then(|c| c.to_digit(16))
+                                    .ok_or_else(|| self.err("잘못된 \\u 이스케이프"))?;
+                                code = code * 16 + d;
+                            }
+                            out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
+                        }
+                        _ => return Err(self.err("잘못된 이스케이프")),
+                    }
+                    self.pos += 1;
+                }
+                Some(c) => { out.push(c); self.pos += 1; }
+            }
+        }
+        Ok(out)
+    }
+    fn parse_number(&mut self) -> Result<VmValue, RuntimeError> {
+        let start = self.pos;
+        let mut is_float = false;
+        if self.peek() == Some('-') { self.pos += 1; }
+        while let Some(c) = self.peek() {
+            match c {
+                '0'..='9' => self.pos += 1,
+                '.' | 'e' | 'E' | '+' | '-' => { is_float = true; self.pos += 1; }
+                _ => break,
+            }
+        }
+        let text: String = self.chars[start..self.pos].iter().collect();
+        if is_float {
+            text.parse::<f64>().map(VmValue::Float).map_err(|_| self.err("잘못된 숫자"))
+        } else {
+            match text.parse::<i64>() {
+                Ok(n) => Ok(VmValue::Int(n)),
+                Err(_) => text.parse::<f64>().map(VmValue::Float).map_err(|_| self.err("잘못된 숫자")),
+            }
+        }
+    }
+    fn parse_array(&mut self) -> Result<VmValue, RuntimeError> {
+        self.pos += 1; // [
+        let mut items = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(']') { self.pos += 1; return Ok(VmValue::List(Arc::new(items))); }
+        loop {
+            items.push(self.parse_value()?);
+            self.skip_ws();
+            match self.peek() {
+                Some(',') => { self.pos += 1; }
+                Some(']') => { self.pos += 1; break; }
+                _ => return Err(self.err("배열에 ',' 또는 ']' 기대")),
+            }
+        }
+        Ok(VmValue::List(Arc::new(items)))
+    }
+    fn parse_object(&mut self) -> Result<VmValue, RuntimeError> {
+        self.pos += 1; // {
+        let mut map = HashMap::new();
+        self.skip_ws();
+        if self.peek() == Some('}') { self.pos += 1; return Ok(VmValue::Map(Arc::new(map))); }
+        loop {
+            self.skip_ws();
+            if self.peek() != Some('"') { return Err(self.err("객체 키는 문자열")); }
+            let key = self.parse_string()?;
+            self.skip_ws();
+            if self.peek() != Some(':') { return Err(self.err("키 뒤에 ':' 기대")); }
+            self.pos += 1;
+            let val = self.parse_value()?;
+            map.insert(key, val);
+            self.skip_ws();
+            match self.peek() {
+                Some(',') => { self.pos += 1; }
+                Some('}') => { self.pos += 1; break; }
+                _ => return Err(self.err("객체에 ',' 또는 '}' 기대")),
+            }
+        }
+        Ok(VmValue::Map(Arc::new(map)))
+    }
+}
+
+/// VmValue → JSON 텍스트. 함수/채널/Future는 직렬화 불가(에러).
+fn json_stringify(v: &VmValue, out: &mut String, span: Span) -> Result<(), RuntimeError> {
+    match v {
+        VmValue::Int(n) => { out.push_str(&n.to_string()); }
+        VmValue::Float(n) => { out.push_str(&n.to_string()); }
+        VmValue::Bool(b) => { out.push_str(if *b { "true" } else { "false" }); }
+        VmValue::Nil => { out.push_str("null"); }
+        VmValue::Str(s) => json_escape(s, out),
+        VmValue::List(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 { out.push(','); }
+                json_stringify(item, out, span)?;
+            }
+            out.push(']');
+        }
+        VmValue::Map(m) => {
+            out.push('{');
+            // 안정적 출력을 위해 키 정렬
+            let mut keys: Vec<&String> = m.keys().collect();
+            keys.sort();
+            for (i, k) in keys.iter().enumerate() {
+                if i > 0 { out.push(','); }
+                json_escape(k, out);
+                out.push(':');
+                json_stringify(&m[*k], out, span)?;
+            }
+            out.push('}');
+        }
+        other => return Err(RuntimeError::new(
+            format!("json_stringify: {} 타입은 직렬화할 수 없음", other.type_name()), span)),
+    }
+    Ok(())
+}
+
+fn json_escape(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000C}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 /// 런타임 값이 타입 힌트와 일치하는지 검사 (Any는 위에서 처리됨).

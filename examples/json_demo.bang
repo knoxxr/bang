@@ -1,0 +1,23 @@
+// JSON + 표준 라이브러리 데모 — 실무에 쓰는 모양
+// 기대 출력:
+// Alice
+// 2
+// {"count":2,"names":["Alice","Bob"]}
+// 27.5
+
+// JSON 문자열을 파싱 → 맵/리스트로
+let raw = "{\"users\": [{\"name\": \"Alice\", \"age\": 30}, {\"name\": \"Bob\", \"age\": 25}]}"
+let data = json_parse(raw)
+
+let users = data.users
+print(users[0].name)        // 첫 사용자 이름
+print(len(users))           // 사용자 수
+
+// 이름만 추출해 새 구조를 만들고 다시 JSON으로
+let names = map(users, fn(u) { return u.name })
+let summary = {"count": len(users), "names": names}
+print(json_stringify(summary))
+
+// 평균 나이 (reduce)
+let total = reduce(users, fn(acc, u) { return acc + u.age }, 0)
+print(total / len(users))

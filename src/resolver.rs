@@ -334,6 +334,12 @@ impl Resolver {
             ("merge",        Some(2)),
             ("repeat",       Some(2)),
             ("index_of",     Some(2)),
+            // stdlib: JSON / 시간 / 난수 (64-68)
+            ("json_parse",     Some(1)),
+            ("json_stringify", Some(1)),
+            ("now_ms",         Some(0)),
+            ("random",         Some(0)),
+            ("random_int",     Some(2)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {

@@ -200,3 +200,11 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                 Arc를 공유해 다중 스레드가 같은 Mutex를 경합(system 116s). 
                 fib 병렬 35s→1.9s (순차 대비 4.4x), loop 병렬 2.3x.
              값 의미론·spawn 격리는 오히려 더 정확해짐(작업별 독립 전역). 238 green, clippy 0.
+✅ Phase 19 — stdlib 실무 핵심: JSON + 시간 + 난수 (VM 빌트인 64-68)
+             json_parse(str)→value (손수 짠 재귀하강 파서: object→Map, array→List,
+             number→Int/Float, null→Nil, \uXXXX 지원), json_stringify(value)→str
+             (키 정렬로 안정 출력, 함수/채널은 직렬화 에러 → try/catch로 잡힘).
+             now_ms()→epoch millis, random()→[0,1) float, random_int(lo,hi)→[lo,hi] 정수.
+             난수는 xorshift64 PRNG(시간 시드, 의존성 없음). 예제: examples/json_demo.bang.
+             테스트: vm_test +6. (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 60 vm + 8 transpile + 7 cli + 5 import = 244 green, clippy 0)

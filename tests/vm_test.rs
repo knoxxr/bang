@@ -449,6 +449,62 @@ fn test_vm_index_of() {
     assert_eq!(run_vm("print(index_of([10,20], 99))"), vec!["-1"]);
 }
 
+// ============================================================================
+// JSON / 시간 / 난수 — Phase 19
+// ============================================================================
+
+#[test]
+fn test_vm_json_parse() {
+    let src = r#"
+let d = json_parse("{\"name\": \"Al\", \"age\": 30, \"tags\": [1, 2]}")
+print(d.name)
+print(d.age)
+print(d.tags)
+"#;
+    assert_eq!(run_vm(src), vec!["Al", "30", "[1, 2]"]);
+}
+
+#[test]
+fn test_vm_json_parse_primitives() {
+    assert_eq!(run_vm("print(json_parse(\"true\"))"), vec!["true"]);
+    assert_eq!(run_vm("print(json_parse(\"null\"))"), vec!["nil"]);
+    assert_eq!(run_vm("print(json_parse(\"3.5\"))"), vec!["3.5"]);
+    assert_eq!(run_vm("print(json_parse(\"42\"))"), vec!["42"]);
+}
+
+#[test]
+fn test_vm_json_stringify() {
+    // 맵 키는 정렬되어 안정적 출력
+    assert_eq!(run_vm("print(json_stringify({\"b\": 2, \"a\": 1}))"), vec!["{\"a\":1,\"b\":2}"]);
+    assert_eq!(run_vm("print(json_stringify([1, \"x\", true, nil]))"), vec!["[1,\"x\",true,null]"]);
+}
+
+#[test]
+fn test_vm_json_roundtrip() {
+    let src = r#"
+let original = {"id": 7, "items": [1, 2, 3]}
+let text = json_stringify(original)
+let back = json_parse(text)
+print(back.id)
+print(back.items)
+"#;
+    assert_eq!(run_vm(src), vec!["7", "[1, 2, 3]"]);
+}
+
+#[test]
+fn test_vm_json_stringify_rejects_function() {
+    // 함수는 직렬화 불가 → try/catch로 잡힘
+    let src = "try {\n json_stringify(fn(){ return 1 })\n} catch e {\n print(\"caught\")\n}";
+    assert_eq!(run_vm(src), vec!["caught"]);
+}
+
+#[test]
+fn test_vm_now_ms_and_random() {
+    assert_eq!(run_vm("print(now_ms() > 0)"), vec!["true"]);
+    assert_eq!(run_vm("let r = random()\nprint(r >= 0.0 and r < 1.0)"), vec!["true"]);
+    assert_eq!(run_vm("let n = random_int(5, 5)\nprint(n)"), vec!["5"]); // [5,5] → 5
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)
