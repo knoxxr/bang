@@ -279,3 +279,10 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              3) tcp_set_timeout(conn, ms): 읽기 타임아웃(멈춘 클라이언트가 워커 영구 점유 방지).
              빌트인 101-102 추가. http_server.bang이 read_until + set_timeout 사용.
              (tests: 277 green, clippy 0)
+✅ Phase 29 — 버그 수정: 채널이 List/Map을 Nil로 떨구던 문제 (이벤트 처리)
+             원인: 채널은 runtime::Value를 나르는데 to_runtime/from_runtime이 스칼라만
+             변환하고 컨테이너는 Nil로 떨굼 → 채널로 맵/리스트 전송 시 손실(+spawn 에러는 조용히 삼켜져 증상이 숨음).
+             수정: to_runtime/from_runtime이 List/Map을 재귀 변환. (함수 등 참조타입은 여전히 채널 전송 불가→Nil)
+             bang의 이벤트 모델: 이벤트 루프/리액터 없음. 채널+spawn+일급함수로 디스패치.
+             예제: examples/event_loop.bang. 테스트: vm_test +3(채널 맵/리스트/이벤트디스패치).
+             (tests: 280 green, clippy 0)

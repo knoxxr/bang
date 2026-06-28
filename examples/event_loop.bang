@@ -1,0 +1,35 @@
+// 이벤트 처리 — 채널 기반 이벤트 루프 + 일급 함수 핸들러 테이블
+// (bang에는 콜백/리액터가 없습니다. 채널 + spawn + 함수값으로 이벤트를 다룹니다.)
+// 기대 출력:
+// 로그인 처리: alice
+// 미처리 이벤트: click
+// 로그아웃 처리: alice
+// 이벤트 루프 종료
+
+// 이벤트 종류 → 핸들러 (함수는 일급 값)
+let handlers = {
+    "login": fn(data) { print("로그인 처리: " + data) },
+    "logout": fn(data) { print("로그아웃 처리: " + data) }
+}
+
+let bus = channel()
+
+// 소비자(이벤트 루프)를 별도 작업으로 — 채널이 닫힐 때까지 이벤트 디스패치
+fn event_loop(ch) {
+    for ev in ch {
+        let h = get(handlers, ev.kind, nil)
+        if h != nil {
+            h(ev.data)
+        } else {
+            print("미처리 이벤트: " + ev.kind)
+        }
+    }
+    print("이벤트 루프 종료")
+}
+spawn event_loop(bus)
+
+// 생산자: 이벤트 발행 (맵이 채널을 통해 그대로 전달됨)
+send(bus, {"kind": "login", "data": "alice"})
+send(bus, {"kind": "click", "data": "button1"})
+send(bus, {"kind": "logout", "data": "alice"})
+close(bus)

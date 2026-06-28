@@ -624,6 +624,59 @@ fn test_vm_set_ops() {
     assert_eq!(run_vm("print(union([1,1,2], [2,2,3]))"), vec!["[1, 2, 3]"]);
 }
 
+// ============================================================================
+// 채널 구조화 데이터 전송 — Phase 29 (회귀: 이전엔 List/Map이 Nil로 떨어짐)
+// ============================================================================
+
+#[test]
+fn test_vm_channel_carries_map() {
+    let src = r#"
+let ch = channel()
+send(ch, {"kind": "login", "id": 7})
+close(ch)
+let msg = recv(ch)
+print(msg.kind)
+print(msg.id)
+"#;
+    assert_eq!(run_vm(src), vec!["login", "7"]);
+}
+
+#[test]
+fn test_vm_channel_carries_list() {
+    let src = r#"
+let ch = channel()
+send(ch, [1, 2, 3])
+close(ch)
+let xs = recv(ch)
+print(sum(xs))
+"#;
+    assert_eq!(run_vm(src), vec!["6"]);
+}
+
+#[test]
+fn test_vm_event_dispatch_over_channel() {
+    // spawn된 소비자가 채널로 받은 맵을 필드 접근 + 핸들러 디스패치
+    let src = r#"
+let handlers = {"a": fn(d) { return d * 2 }}
+let bus = channel()
+let out = channel()
+fn loop_ev(ch, o) {
+    for ev in ch {
+        let h = get(handlers, ev.kind, nil)
+        if h != nil {
+            send(o, h(ev.val))
+        }
+    }
+    close(o)
+}
+spawn loop_ev(bus, out)
+send(bus, {"kind": "a", "val": 21})
+close(bus)
+print(recv(out))
+"#;
+    assert_eq!(run_vm(src), vec!["42"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

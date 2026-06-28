@@ -2772,23 +2772,31 @@ fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
 }
 
 fn to_runtime(v: &VmValue) -> crate::runtime::Value {
+    use crate::runtime::Value as RV;
     match v {
-        VmValue::Int(n)   => crate::runtime::Value::Int(*n),
-        VmValue::Float(n) => crate::runtime::Value::Float(*n),
-        VmValue::Bool(b)  => crate::runtime::Value::Bool(*b),
-        VmValue::Str(s)   => crate::runtime::Value::Str(s.clone()),
-        VmValue::Nil      => crate::runtime::Value::Nil,
-        _ => crate::runtime::Value::Nil,
+        VmValue::Int(n)   => RV::Int(*n),
+        VmValue::Float(n) => RV::Float(*n),
+        VmValue::Bool(b)  => RV::Bool(*b),
+        VmValue::Str(s)   => RV::Str(s.clone()),
+        VmValue::Nil      => RV::Nil,
+        // 컨테이너는 재귀 변환 (채널로 List/Map 전송 지원)
+        VmValue::List(items) => RV::List(items.iter().map(to_runtime).collect()),
+        VmValue::Map(m) => RV::Map(m.iter().map(|(k, v)| (k.clone(), to_runtime(v))).collect()),
+        // 함수/채널/Future/Tcp 등 참조 타입은 채널로 전송 불가 → Nil
+        _ => RV::Nil,
     }
 }
 
 fn from_runtime(v: crate::runtime::Value) -> VmValue {
+    use crate::runtime::Value as RV;
     match v {
-        crate::runtime::Value::Int(n)   => VmValue::Int(n),
-        crate::runtime::Value::Float(n) => VmValue::Float(n),
-        crate::runtime::Value::Bool(b)  => VmValue::Bool(b),
-        crate::runtime::Value::Str(s)   => VmValue::Str(s),
-        crate::runtime::Value::Nil      => VmValue::Nil,
+        RV::Int(n)   => VmValue::Int(n),
+        RV::Float(n) => VmValue::Float(n),
+        RV::Bool(b)  => VmValue::Bool(b),
+        RV::Str(s)   => VmValue::Str(s),
+        RV::Nil      => VmValue::Nil,
+        RV::List(items) => VmValue::List(Arc::new(items.into_iter().map(from_runtime).collect())),
+        RV::Map(m) => VmValue::Map(Arc::new(m.into_iter().map(|(k, v)| (k, from_runtime(v))).collect())),
         _ => VmValue::Nil,
     }
 }
