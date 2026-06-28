@@ -445,6 +445,30 @@ impl Resolver {
             }
 
             StmtKind::Break | StmtKind::Continue => false,
+
+            StmtKind::Try { body, catch_var, handler } => {
+                // try 본문은 자체 스코프
+                self.resolve_block(body);
+                // catch 변수는 handler와 같은 새 스코프에 선언
+                self.push_scope(FrameKind::Block);
+                let slot = self.scopes.last().map(|f| f.vars.len()).unwrap_or(0);
+                self.scopes.last_mut().unwrap().vars.push((catch_var.clone(), VarInfo {
+                    slot,
+                    state: VarState::Defined,
+                    // catch 변수는 미사용이어도 경고하지 않음 (관례)
+                    used: true,
+                    span: stmt.span,
+                    arity: None,
+                }));
+                self.resolve_stmts(&handler.stmts);
+                self.pop_scope(true);
+                false
+            }
+
+            StmtKind::Throw(expr) => {
+                self.resolve_expr(expr);
+                false
+            }
         }
     }
 

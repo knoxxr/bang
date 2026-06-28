@@ -22,6 +22,7 @@ use crate::compiler::{
     OP_FIELD_GET,
     OP_MAKE_ITER, OP_FOR_ITER,
     OP_SPAWN, OP_PARALLEL_ENTER, OP_PARALLEL_EXIT,
+    OP_SETUP_TRY, OP_POP_TRY, OP_THROW,
 };
 use crate::lexer::token::Span;
 use crate::runtime::{BangChannel, RuntimeError};
@@ -353,6 +354,18 @@ pub struct CallFrame {
     pub locals: Arc<Mutex<Vec<VmValue>>>,
 }
 
+/// try/catch 예외 핸들러. OP_SETUP_TRY 시점의 상태를 기록해 두었다가
+/// 예외 발생 시 그 지점으로 되감는다.
+#[derive(Clone)]
+pub struct TryHandler {
+    /// 핸들러 설정 시점의 프레임 수 (이 깊이까지 프레임을 되감는다).
+    pub frame_depth: usize,
+    /// 핸들러 설정 시점의 스택 높이 (이 높이로 자른 뒤 예외값을 push).
+    pub stack_len: usize,
+    /// catch 블록의 절대 코드 위치.
+    pub catch_ip: usize,
+}
+
 // ============================================================================
 // Vm
 // ============================================================================
@@ -368,6 +381,10 @@ pub struct Vm {
     /// 각 항목은 이 스코프 안에서 spawn된 Future 목록.
     /// parallel {} 진입 시 push, 종료 시 pop + join.
     pub spawn_scopes: Vec<Vec<Arc<VmFuture>>>,
+    /// 활성 try/catch 핸들러 스택 (innermost = top).
+    pub handlers: Vec<TryHandler>,
+    /// throw로 던져진 값(있으면). 빌트인/런타임 오류는 None → 메시지 문자열로 변환.
+    pub pending_exception: Option<VmValue>,
 }
 
 impl Vm {
@@ -378,6 +395,8 @@ impl Vm {
             globals: Arc::new(Mutex::new(vec![VmValue::Nil; global_count])),
             output,
             spawn_scopes: Vec::new(),
+            handlers: Vec::new(),
+            pending_exception: None,
         }
     }
 
@@ -416,6 +435,8 @@ impl Vm {
             globals: closure.globals.clone(),
             output,
             spawn_scopes: vec![Vec::new()],
+            handlers: Vec::new(),
+            pending_exception: None,
         };
         let local_count = closure.func.local_count;
         let mut locals_vec = vec![VmValue::Nil; local_count];
@@ -493,7 +514,55 @@ impl Vm {
     // stop_depth=N means run until the call at depth N returns.
     // -----------------------------------------------------------------------
 
+    /// 예외 처리 래퍼: exec_dispatch가 Err를 내면, 이 스코프(stop_depth) 안의
+    /// 핸들러가 있으면 되감아 catch에서 재개하고, 없으면 Err를 전파한다.
     fn exec_until(&mut self, stop_depth: usize) -> Result<(), RuntimeError> {
+        loop {
+            match self.exec_dispatch(stop_depth) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if let Some(h) = self.take_handler_above(stop_depth) {
+                        let exc = self.pending_exception.take()
+                            .unwrap_or_else(|| VmValue::Str(e.message.clone()));
+                        self.unwind_to(&h, exc);
+                        // 루프 계속 → catch 블록에서 재개
+                    } else if let Some(v) = self.pending_exception.take() {
+                        // 잡히지 않은 사용자 throw → 던진 값을 메시지에 표시
+                        return Err(RuntimeError::new(
+                            format!("잡히지 않은 예외: {v}"), e.span));
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 이 스코프(stop_depth보다 깊은 프레임에 설정된) 가장 안쪽 핸들러를 꺼낸다.
+    fn take_handler_above(&mut self, stop_depth: usize) -> Option<TryHandler> {
+        match self.handlers.last() {
+            Some(h) if h.frame_depth > stop_depth => self.handlers.pop(),
+            _ => None,
+        }
+    }
+
+    /// 핸들러 지점으로 되감기: 프레임/스택 정리 후 예외값을 스택에 올리고 catch로 점프.
+    fn unwind_to(&mut self, h: &TryHandler, exc: VmValue) {
+        while self.frames.len() > h.frame_depth {
+            self.frames.pop();
+        }
+        // 되감긴 프레임들에 남아있던 더 깊은 핸들러 제거
+        self.handlers.retain(|x| x.frame_depth <= self.frames.len());
+        if self.stack.len() > h.stack_len {
+            self.stack.truncate(h.stack_len);
+        }
+        self.stack.push(exc);
+        if let Some(frame) = self.frames.last_mut() {
+            frame.ip = h.catch_ip;
+        }
+    }
+
+    fn exec_dispatch(&mut self, stop_depth: usize) -> Result<(), RuntimeError> {
         loop {
             if self.frames.len() <= stop_depth { return Ok(()); }
 
@@ -504,6 +573,8 @@ impl Vm {
                 if ip >= frame.closure.func.chunk.code.len() {
                     // Implicit nil return
                     self.frames.pop();
+                    // 빠져나간 프레임에 남은 try 핸들러 정리 (try 안에서의 암묵 반환)
+                    self.handlers.retain(|h| h.frame_depth <= self.frames.len());
                     self.stack.push(VmValue::Nil);
                     if self.frames.len() <= stop_depth { return Ok(()); }
                     continue;
@@ -736,6 +807,8 @@ impl Vm {
                     let span = self.current_span();
                     let retval = auto_resolve(self.stack_pop(), span)?;
                     self.frames.pop();
+                    // 빠져나간 프레임에 남은 try 핸들러 정리 (try 안에서의 return)
+                    self.handlers.retain(|h| h.frame_depth <= self.frames.len());
                     self.stack.push(retval);
                     if self.frames.len() <= stop_depth { return Ok(()); }
                 }
@@ -828,6 +901,27 @@ impl Vm {
                     let scope = self.spawn_scopes.pop().unwrap_or_default();
                     // 모든 spawn 조인 (구조적 동시성)
                     for f in scope { f.resolve()?; }
+                }
+
+                // --- try / catch / throw ---
+                OP_SETUP_TRY => {
+                    let catch_ip = self.read_u16() as usize; // 절대 위치
+                    self.handlers.push(TryHandler {
+                        frame_depth: self.frames.len(),
+                        stack_len: self.stack.len(),
+                        catch_ip,
+                    });
+                }
+                OP_POP_TRY => {
+                    // try 본문 정상 종료 → 핸들러 제거
+                    self.handlers.pop();
+                }
+                OP_THROW => {
+                    let span = self.current_span();
+                    let val = auto_resolve(self.stack_pop(), span)?;
+                    // 던진 값을 보관하고 Err로 신호 → exec_until 래퍼가 핸들러로 라우팅
+                    self.pending_exception = Some(val);
+                    return Err(RuntimeError::new("throw", span));
                 }
 
                 // --- For loop ---

@@ -1,0 +1,45 @@
+// 에러 처리 — try / catch / throw
+// 기대 출력:
+// 잡음: 문제 발생
+// 0으로 나눌 수 없음
+// 안전: 10
+// 음수 불가
+// code=42
+
+// 사용자 throw + catch
+try {
+    throw "문제 발생"
+} catch e {
+    print("잡음: " + e)
+}
+
+// 내장 런타임 에러(0 나눗셈)도 catch — 메시지가 문자열로 바인딩됨
+try {
+    let x = 1 / 0
+    print(x)
+} catch e {
+    print(e)
+}
+
+// 함수에서 던진 예외가 호출자의 try로 전파
+fn checked_double(n) {
+    if n < 0 {
+        throw "음수 불가"
+    }
+    return n * 2
+}
+
+try {
+    print("안전: " + str(checked_double(5)))
+    print(checked_double(-1))
+    print("도달하지 않음")
+} catch e {
+    print(e)
+}
+
+// 임의의 값(맵)을 던져 구조화된 에러 전달
+try {
+    throw {"code": 42}
+} catch e {
+    print("code=" + str(e.code))
+}

@@ -240,6 +240,8 @@ impl Parser {
                 Some(Stmt { kind: StmtKind::Continue, span })
             }
             TokenKind::Parallel => self.parse_parallel(span),
+            TokenKind::Try      => self.parse_try(span),
+            TokenKind::Throw    => self.parse_throw(span),
             // 문장 자리의 { 는 블록 (표현식 자리의 { 는 맵 리터럴)
             TokenKind::LBrace   => {
                 let block = self.parse_block()?;
@@ -344,6 +346,29 @@ impl Parser {
         let body = self.parse_block()?;
         self.consume_stmt_end();
         Some(Stmt { kind: StmtKind::Parallel(body), span })
+    }
+
+    fn parse_try(&mut self, span: Span) -> Option<Stmt> {
+        self.advance(); // try
+        let body = self.parse_block()?;
+        // catch — 같은 줄 또는 Newline 하나 건너도 허용
+        if matches!(self.peek(), TokenKind::Newline)
+            && matches!(self.peek_n(1), TokenKind::Catch)
+        {
+            self.advance(); // newline
+        }
+        self.expect(&TokenKind::Catch)?;
+        let catch_var = self.expect_ident()?;
+        let handler = self.parse_block()?;
+        self.consume_stmt_end();
+        Some(Stmt { kind: StmtKind::Try { body, catch_var, handler }, span })
+    }
+
+    fn parse_throw(&mut self, span: Span) -> Option<Stmt> {
+        self.advance(); // throw
+        let expr = self.parse_expr()?;
+        self.consume_stmt_end();
+        Some(Stmt { kind: StmtKind::Throw(expr), span })
     }
 
     fn parse_expr_stmt(&mut self, span: Span) -> Option<Stmt> {

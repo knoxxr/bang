@@ -54,6 +54,9 @@ pub enum TokenKind {
     Not,
     Break,
     Continue,
+    Try,
+    Catch,
+    Throw,
 
     // === 연산자 ===
     Plus,    // +
@@ -104,6 +107,9 @@ impl TokenKind {
             "not" => Some(TokenKind::Not),
             "break" => Some(TokenKind::Break),
             "continue" => Some(TokenKind::Continue),
+            "try" => Some(TokenKind::Try),
+            "catch" => Some(TokenKind::Catch),
+            "throw" => Some(TokenKind::Throw),
             "true" => Some(TokenKind::True),
             "false" => Some(TokenKind::False),
             "nil" => Some(TokenKind::Nil),
@@ -137,6 +143,9 @@ impl fmt::Display for TokenKind {
             TokenKind::Not => write!(f, "Not"),
             TokenKind::Break => write!(f, "Break"),
             TokenKind::Continue => write!(f, "Continue"),
+            TokenKind::Try => write!(f, "Try"),
+            TokenKind::Catch => write!(f, "Catch"),
+            TokenKind::Throw => write!(f, "Throw"),
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
             TokenKind::Star => write!(f, "*"),

@@ -61,6 +61,9 @@ pub const OP_FOR_ITER:        u8 = 71;
 pub const OP_SPAWN:           u8 = 72;
 pub const OP_PARALLEL_ENTER:  u8 = 73;
 pub const OP_PARALLEL_EXIT:   u8 = 74;
+pub const OP_SETUP_TRY:       u8 = 75; // operand: u16 절대 catch ip
+pub const OP_POP_TRY:         u8 = 76; // try 본문 정상 종료 시 핸들러 제거
+pub const OP_THROW:           u8 = 77; // 스택 top 값을 예외로 던짐
 
 // ============================================================================
 // Compile error
@@ -105,6 +108,7 @@ struct LoopInfo {
     loop_start: usize,       // target for continue / for-loop top
     is_for:     bool,        // for-loops have an iterator on expression stack
     break_patches: Vec<usize>,
+    try_depth_at_entry: usize, // break/continue가 빠져나가야 할 try 핸들러 수 계산용
 }
 
 struct FnCompiler {
@@ -116,6 +120,7 @@ struct FnCompiler {
     loops: Vec<LoopInfo>,
     scope_depth: usize,
     local_peak: usize, // maximum locals used (= local_count for CompiledFn)
+    try_depth: usize,  // 현재 활성화된 try 핸들러(OP_SETUP_TRY) 수
 }
 
 impl FnCompiler {
@@ -129,6 +134,7 @@ impl FnCompiler {
             loops: Vec::new(),
             scope_depth: 0,
             local_peak: 0,
+            try_depth: 0,
         }
     }
 
@@ -421,10 +427,12 @@ impl Compiler {
 
             StmtKind::While { cond, body } => {
                 let loop_start = self.current_pos();
+                let td = self.cur().try_depth;
                 self.cur_mut().loops.push(LoopInfo {
                     loop_start,
                     is_for: false,
                     break_patches: Vec::new(),
+                    try_depth_at_entry: td,
                 });
 
                 self.compile_expr(cond);
@@ -456,10 +464,12 @@ impl Compiler {
                 let var_slot = self.cur_mut().declare_local(var);
 
                 let loop_start = self.current_pos();
+                let td = self.cur().try_depth;
                 self.cur_mut().loops.push(LoopInfo {
                     loop_start,
                     is_for: true,
                     break_patches: Vec::new(),
+                    try_depth_at_entry: td,
                 });
 
                 // FOR_ITER var_slot jump_done(i16)
@@ -512,11 +522,15 @@ impl Compiler {
 
             StmtKind::Break => {
                 let sp2 = sp;
-                let is_for = self.cur().loops.last().map(|l| l.is_for).unwrap_or(false);
                 if self.cur().loops.is_empty() {
                     self.error("break: 루프 밖", sp);
                     return;
                 }
+                let is_for = self.cur().loops.last().map(|l| l.is_for).unwrap_or(false);
+                // 빠져나가는 try 핸들러 제거 (try 본문 안에서의 break)
+                let escaped = self.cur().try_depth
+                    - self.cur().loops.last().unwrap().try_depth_at_entry;
+                for _ in 0..escaped { self.emit(OP_POP_TRY, sp2); }
                 if is_for {
                     self.emit(OP_POP, sp2); // pop iterator
                 }
@@ -530,9 +544,52 @@ impl Compiler {
                     self.error("continue: 루프 밖", sp);
                     return;
                 }
+                let escaped = self.cur().try_depth
+                    - self.cur().loops.last().unwrap().try_depth_at_entry;
+                for _ in 0..escaped { self.emit(OP_POP_TRY, sp2); }
                 let loop_start = self.cur().loops.last().unwrap().loop_start;
                 let back_offset = -(((self.current_pos() + 3) as isize) - loop_start as isize) as i16;
                 self.emit_u16(OP_JUMP, back_offset as u16, sp2);
+            }
+
+            StmtKind::Try { body, catch_var, handler } => {
+                // OP_SETUP_TRY <abs catch_ip:u16> (자리표시자 후 패치)
+                self.emit(OP_SETUP_TRY, sp);
+                let operand_pos = self.current_pos();
+                self.cur_mut().chunk.emit(0xff, sp);
+                self.cur_mut().chunk.emit(0xff, sp);
+                self.cur_mut().try_depth += 1;
+
+                // try 본문
+                self.cur_mut().begin_scope();
+                self.compile_stmts(&body.stmts);
+                self.cur_mut().end_scope();
+
+                // 정상 종료: 핸들러 제거 후 catch 건너뜀
+                self.cur_mut().try_depth -= 1;
+                self.emit(OP_POP_TRY, sp);
+                let end_jump = self.emit_jump(OP_JUMP, sp);
+
+                // catch 진입점 — SETUP_TRY 피연산자를 절대 위치로 패치
+                let catch_ip = self.current_pos();
+                {
+                    let chunk = &mut self.cur_mut().chunk;
+                    chunk.code[operand_pos]     = (catch_ip as u16 & 0xff) as u8;
+                    chunk.code[operand_pos + 1] = (catch_ip as u16 >> 8) as u8;
+                }
+                // 던져진 값을 catch 변수에 바인딩 후 핸들러 실행
+                self.cur_mut().begin_scope();
+                let slot = self.cur_mut().declare_local(catch_var);
+                self.emit_u8(OP_STORE_LOCAL, slot, sp);
+                self.compile_stmts(&handler.stmts);
+                self.cur_mut().end_scope();
+
+                self.patch_jump(end_jump);
+            }
+
+            StmtKind::Throw(expr) => {
+                self.compile_expr(expr);
+                self.emit(OP_THROW, sp);
             }
         }
     }

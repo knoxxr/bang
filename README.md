@@ -208,6 +208,53 @@ print(math.area(2))      // 12.56636
 - 모듈은 import 시점에 한 번 실행된다(최상위 코드의 부수효과 포함).
 - import는 기본 실행 엔진인 VM에서 동작한다(`--interp` 모드는 미지원).
 
+## 에러 처리 (try / catch / throw)
+
+런타임 에러는 `try`/`catch`로 잡아 복구하고, `throw`로 임의의 값을 던진다.
+
+```
+// 사용자 throw
+try {
+    throw "문제 발생"
+} catch e {
+    print("잡음: " + e)
+}
+
+// 내장 런타임 에러(0 나눗셈 등)도 잡힌다 — 메시지가 문자열로 바인딩
+try {
+    let x = 1 / 0
+} catch e {
+    print(e)              // "0으로 나눌 수 없음"
+}
+
+// 중첩 함수에서 던진 예외가 호출자의 try로 전파
+fn checked(n) {
+    if n < 0 {
+        throw "음수 불가"
+    }
+    return n
+}
+try {
+    print(checked(-1))
+} catch e {
+    print(e)             // "음수 불가"
+}
+
+// 임의의 값(맵)을 던져 구조화된 에러 전달
+try {
+    throw {"code": 404, "msg": "not found"}
+} catch e {
+    print(e.code)
+}
+```
+
+- `throw <식>`은 문자열·맵·숫자 등 **임의의 값**을 던지며, 가장 가까운 바깥
+  `try`의 `catch`로 (호출 스택을 가로질러) 전파된다.
+- 내장 런타임 에러도 `catch`로 잡히며, catch 변수엔 에러 **메시지 문자열**이 바인딩된다.
+- `catch` 안에서 다시 `throw`하면 더 바깥 `try`로 전파된다(re-throw).
+- 잡히지 않은 예외는 프로그램을 종료시킨다.
+- 기본 실행 엔진인 VM에서 동작한다(`--interp` / AOT `compile`은 미지원).
+
 ## 개발
 
 ```bash

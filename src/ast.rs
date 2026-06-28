@@ -52,6 +52,10 @@ pub enum StmtKind {
     Parallel(Block),
     Break,
     Continue,
+    /// `try { body } catch name { handler }`
+    Try { body: Block, catch_var: String, handler: Block },
+    /// `throw expr`
+    Throw(Expr),
 }
 
 // =============================================================================
@@ -221,6 +225,17 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
         }
         StmtKind::Continue => {
             out.push_str(&format!("{pad}Continue [{}:{}]\n", stmt.span.line, stmt.span.col));
+        }
+        StmtKind::Try { body, catch_var, handler } => {
+            out.push_str(&format!("{pad}Try [{}:{}]\n", stmt.span.line, stmt.span.col));
+            out.push_str(&format!("{pad}  body:\n"));
+            dump_block(out, body, depth + 2);
+            out.push_str(&format!("{pad}  catch {catch_var}:\n"));
+            dump_block(out, handler, depth + 2);
+        }
+        StmtKind::Throw(expr) => {
+            out.push_str(&format!("{pad}Throw [{}:{}]\n", stmt.span.line, stmt.span.col));
+            dump_expr(out, expr, depth + 1);
         }
     }
 }

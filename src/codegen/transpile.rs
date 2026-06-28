@@ -419,6 +419,12 @@ impl Transpiler {
             StmtKind::Parallel(_) => {
                 self.err("parallel AOT 미지원", sp);
             }
+            StmtKind::Try { .. } => {
+                self.err("try/catch AOT 미지원", sp);
+            }
+            StmtKind::Throw(_) => {
+                self.err("throw AOT 미지원", sp);
+            }
         }
     }
 

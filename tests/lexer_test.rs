@@ -43,7 +43,7 @@ fn test_all_examples_tokenize_without_error() {
         count += 1;
     }
 
-    assert_eq!(count, 12, "examples/ 에 .bang 파일 12개 기대, {count}개 발견");
+    assert_eq!(count, 13, "examples/ 에 .bang 파일 13개 기대, {count}개 발견");
 }
 
 /// hello.bang 파일의 토큰화 결과가 예상과 일치하는지 확인

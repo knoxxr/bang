@@ -227,6 +227,11 @@ impl Interpreter {
             }
             StmtKind::Break => Ok(StmtResult::Break),
             StmtKind::Continue => Ok(StmtResult::Continue),
+            // try/catch/throw는 VM(기본 실행 엔진)에서만 지원한다.
+            StmtKind::Try { .. } | StmtKind::Throw(_) => Err(RuntimeError::new(
+                "try/catch/throw는 VM에서 실행하세요 (트리워킹 인터프리터 --interp 미지원)",
+                span,
+            )),
         }
     }
 

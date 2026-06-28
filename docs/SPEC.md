@@ -37,6 +37,7 @@ let   fn    if    else   while  for   in    return
 break continue
 and   or    not
 spawn parallel
+try   catch  throw
 true  false  nil
 ```
 
@@ -301,3 +302,44 @@ let results = parallel_map(items, fn(item) {
 - **LexError**: 예상하지 못한 문자, 종료되지 않은 문자열, 잘못된 이스케이프
 - **ParseError**: 문법 오류 (기대하지 않은 토큰 등)
 - **RuntimeError**: 타입 불일치, 정의되지 않은 변수, 0 나눗셈 등
+
+### 8.1 예외 (try / catch / throw)
+
+런타임 에러는 `try`/`catch`로 잡아 복구할 수 있고, `throw`로 임의의 값을 던질 수 있다.
+
+```
+try {
+    <문장들>
+} catch <이름> {
+    <문장들>   // <이름>에 던져진 값이 바인딩됨
+}
+
+throw <식>
+```
+
+규칙:
+- `throw <식>`은 임의의 값(문자열·맵·숫자 등)을 예외로 던진다. 현재 함수에서
+  즉시 빠져나와 가장 가까운 바깥 `try`의 `catch`로 전파된다. 호출 스택을 가로질러
+  전파되므로, 중첩 함수에서 던진 예외도 호출자의 `try`에서 잡힌다.
+- 내장 런타임 에러(0 나눗셈, 타입 불일치 등)도 `catch`로 잡힌다. 이 경우 catch
+  변수에는 에러 **메시지 문자열**이 바인딩된다.
+- `catch` 블록은 그 try 자신의 핸들러로 보호되지 않는다. catch 안에서 다시
+  `throw`하면 더 바깥의 `try`로 전파된다(re-throw).
+- 잡히지 않은 예외는 프로그램을 비정상 종료시킨다("잡히지 않은 예외: …").
+- `try` 본문 안에서의 `return`/`break`/`continue`는 핸들러를 올바르게 정리한다.
+- 구현: 기본 실행 엔진인 VM에서 동작한다. 트리워킹 인터프리터(`--interp`)와
+  AOT 트랜스파일(`bang compile`)은 미지원이다.
+
+```
+fn parse_int(s) {
+    let n = int(s)        // 변환 실패 시 런타임 에러
+    return n
+}
+
+try {
+    print(parse_int("42"))     // 42
+    print(parse_int("abc"))    // 여기서 에러 발생 → catch로
+} catch e {
+    print("파싱 실패: " + e)
+}
+```

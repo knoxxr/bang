@@ -196,6 +196,103 @@ print(total)
     assert_eq!(run_vm(src), vec!["499500"]);
 }
 
+// ============================================================================
+// try / catch / throw (VM 전용 — Phase 13)
+// ============================================================================
+
+#[test]
+fn test_vm_try_catch_user_throw() {
+    let src = "try {\n throw \"boom\"\n} catch e {\n print(e)\n}";
+    assert_eq!(run_vm(src), vec!["boom"]);
+}
+
+#[test]
+fn test_vm_try_catch_runtime_error() {
+    // 0 나눗셈 같은 내장 런타임 에러도 catch 가능 (메시지 문자열로 바인딩)
+    let src = "try {\n let x = 1 / 0\n print(x)\n} catch e {\n print(\"caught\")\n}";
+    assert_eq!(run_vm(src), vec!["caught"]);
+}
+
+#[test]
+fn test_vm_try_continues_after_catch() {
+    let src = "try {\n throw \"x\"\n} catch e {\n print(\"handled\")\n}\nprint(\"after\")";
+    assert_eq!(run_vm(src), vec!["handled", "after"]);
+}
+
+#[test]
+fn test_vm_throw_propagates_from_function() {
+    let src = r#"
+fn risky(n) {
+    if n < 0 {
+        throw "negative"
+    }
+    return n
+}
+try {
+    print(risky(3))
+    print(risky(-1))
+    print("unreached")
+} catch e {
+    print(e)
+}
+"#;
+    assert_eq!(run_vm(src), vec!["3", "negative"]);
+}
+
+#[test]
+fn test_vm_nested_try_rethrow() {
+    let src = r#"
+try {
+    try {
+        throw "inner"
+    } catch e {
+        throw "outer"
+    }
+} catch e {
+    print(e)
+}
+"#;
+    assert_eq!(run_vm(src), vec!["outer"]);
+}
+
+#[test]
+fn test_vm_throw_non_string_value() {
+    let src = "try {\n throw {\"code\": 7}\n} catch e {\n print(e[\"code\"])\n}";
+    assert_eq!(run_vm(src), vec!["7"]);
+}
+
+#[test]
+fn test_vm_break_inside_try_no_leak() {
+    // try 안에서 break — 핸들러가 누수되지 않아야 (이후 정상 실행)
+    let src = r#"
+let i = 0
+while i < 3 {
+    try {
+        if i == 1 {
+            break
+        }
+        print(i)
+    } catch e {
+        print("never")
+    }
+    i = i + 1
+}
+print("done")
+"#;
+    assert_eq!(run_vm(src), vec!["0", "done"]);
+}
+
+#[test]
+fn test_vm_uncaught_throw_is_error() {
+    let prog = lex_parse("throw \"oops\"");
+    let out = compile(&prog).expect("컴파일 실패");
+    let output = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mut vm = Vm::new(out.global_count as usize, output);
+    let result = vm.run(out.main_fn);
+    assert!(result.is_err(), "미캐치 throw는 에러여야 함");
+    assert!(result.unwrap_err().message.contains("oops"));
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

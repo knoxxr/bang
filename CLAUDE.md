@@ -150,3 +150,13 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              전역까지 깊은 복사해 격리 유지. import는 sub_vm 전역 Arc가 함수에 실려 유지됨.
              통합 테스트: tests/import_test.rs (4개). 참고: import는 VM 전용(--interp 미지원).
              (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver + 28 vm + 8 transpile + 7 cli + 4 import = 211 green, clippy 0)
+✅ Phase 13 — 에러 처리: try/catch/throw (VM) — 범용 언어로의 1순위 기능
+             문법: try { } catch e { } + throw <식> (finally는 v1 제외)
+             키워드 추가: try, catch, throw. 예외는 임의의 값(throw)이며 내장 런타임
+             에러도 catch로 잡힘(메시지 문자열로 바인딩). 호출 스택 가로질러 전파.
+             VM 구현: exec_until을 exec_dispatch 래퍼로 감싸 Err를 가로채 핸들러 스택으로
+             되감기(OP_SETUP_TRY/OP_POP_TRY/OP_THROW). 던진 값은 self.pending_exception에 보관.
+             break/continue/return의 try 핸들러 정리, 미캐치 시 "잡히지 않은 예외" 종료.
+             인터프리터/AOT는 "VM 전용" 명확한 에러 반환. 예제: examples/error_handling.bang.
+             테스트: vm_test +8. (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 36 vm + 8 transpile + 7 cli + 4 import = 219 green, clippy 0)
