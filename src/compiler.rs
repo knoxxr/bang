@@ -165,7 +165,7 @@ impl FnCompiler {
         self.chunk.current_pos()
     }
 
-    fn add_constant(&mut self, val: VmValue) -> u8 {
+    fn add_constant(&mut self, val: VmValue) -> u16 {
         self.chunk.add_constant(val)
     }
 
@@ -263,13 +263,13 @@ impl Compiler {
 
     // ---- constant pool ----
 
-    fn add_const(&mut self, val: VmValue) -> u8 {
+    fn add_const(&mut self, val: VmValue) -> u16 {
         self.cur_mut().add_constant(val)
     }
 
     fn emit_const(&mut self, val: VmValue, span: Span) {
         let idx = self.add_const(val);
-        self.emit_u8(OP_CONST, idx, span);
+        self.emit_u16(OP_CONST, idx, span); // 상수 인덱스는 u16 (256개 초과 지원)
     }
 
     // ---- name resolution ----
@@ -709,7 +709,7 @@ impl Compiler {
             ExprKind::Field { target, name } => {
                 self.compile_expr(target);
                 let name_idx = self.add_const(VmValue::Str(name.clone()));
-                self.emit_u8(OP_FIELD_GET, name_idx, sp);
+                self.emit_u16(OP_FIELD_GET, name_idx, sp);
             }
 
             ExprKind::Function { name, params, param_types, ret_type, body } => {
@@ -779,7 +779,7 @@ impl Compiler {
                     let loc = self.resolve_name(var_name);
                     self.emit_load(loc.clone(), sp);
                     let key_idx = self.add_const(VmValue::Str(field.clone()));
-                    self.emit_u8(OP_CONST, key_idx, sp);
+                    self.emit_u16(OP_CONST, key_idx, sp);
                     self.compile_expr(value);
                     self.emit(OP_INDEX_SET, sp);
                     self.emit(OP_DUP, sp);
@@ -858,7 +858,7 @@ impl Compiler {
         let fn_const_idx = self.add_const(VmValue::Function(compiled_fn));
         let uv_count = upvalue_descs.len() as u8;
 
-        self.emit_u8(OP_CLOSURE, fn_const_idx, sp);
+        self.emit_u16(OP_CLOSURE, fn_const_idx, sp); // fn 상수 인덱스도 u16
         self.emit(uv_count, sp);
         for uv in &upvalue_descs {
             self.emit(uv.is_local as u8, sp);

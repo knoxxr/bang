@@ -218,10 +218,16 @@ impl Chunk {
         self.code[pos + 1] = (offset as u16 >> 8) as u8;
     }
 
-    pub fn add_constant(&mut self, val: VmValue) -> u8 {
+    /// 상수를 풀에 추가하고 인덱스(u16)를 반환한다.
+    /// 단순 상수(Int/Float/Bool/Str/Nil)는 중복 제거해 풀 크기를 절약한다.
+    /// 함수 등 참조 타입은 매번 새로 추가한다.
+    pub fn add_constant(&mut self, val: VmValue) -> u16 {
+        if let Some(i) = self.constants.iter().position(|c| const_eq(c, &val)) {
+            return i as u16;
+        }
         let idx = self.constants.len();
         self.constants.push(val);
-        idx as u8
+        idx as u16
     }
 
     pub fn current_pos(&self) -> usize { self.code.len() }
@@ -561,7 +567,7 @@ impl Vm {
 
     fn read_i16(&mut self) -> i16 { self.read_u16() as i16 }
 
-    fn get_constant(&self, idx: u8) -> VmValue {
+    fn get_constant(&self, idx: u16) -> VmValue {
         let fi = self.frames.len() - 1;
         self.frames[fi].closure.func.chunk.constants[idx as usize].clone()
     }
@@ -685,7 +691,7 @@ impl Vm {
                 }
 
                 OP_CONST => {
-                    let idx = self.read_byte();
+                    let idx = self.read_u16();
                     let v = self.get_constant(idx);
                     self.stack.push(v);
                 }
@@ -855,7 +861,7 @@ impl Vm {
 
                 // --- Closure ---
                 OP_CLOSURE => {
-                    let fn_const_idx = self.read_byte();
+                    let fn_const_idx = self.read_u16();
                     let uv_count = self.read_byte() as usize;
 
                     let compiled_fn = match self.get_constant(fn_const_idx) {
@@ -942,7 +948,7 @@ impl Vm {
                 }
                 OP_FIELD_GET => {
                     let span = self.current_span();
-                    let name_idx = self.read_byte();
+                    let name_idx = self.read_u16();
                     let name = match self.get_constant(name_idx) {
                         VmValue::Str(s) => s,
                         _ => return Err(RuntimeError::no_span("OP_FIELD_GET: non-string name")),
@@ -2808,6 +2814,19 @@ fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
         }
     }
     Arc::new(VmClosure { func: c.func.clone(), upvalues, globals: new_globals })
+}
+
+/// 상수 풀 중복 제거용 동등성 비교. 단순 값만 같다고 판정하고,
+/// 함수 등 참조 타입은 항상 다르게 취급(매번 새 슬롯).
+fn const_eq(a: &VmValue, b: &VmValue) -> bool {
+    match (a, b) {
+        (VmValue::Int(x),   VmValue::Int(y))   => x == y,
+        (VmValue::Float(x), VmValue::Float(y)) => x.to_bits() == y.to_bits(),
+        (VmValue::Bool(x),  VmValue::Bool(y))  => x == y,
+        (VmValue::Str(x),   VmValue::Str(y))   => x == y,
+        (VmValue::Nil,      VmValue::Nil)       => true,
+        _ => false,
+    }
 }
 
 /// spawn된 작업이 에러로 끝나면 stderr에 경고를 출력한다(제어 흐름은 유지).

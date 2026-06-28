@@ -709,6 +709,32 @@ print(select([a, b]))
     assert_eq!(run_vm(src), vec!["nil"]);
 }
 
+// ============================================================================
+// 상수 풀 인덱스 폭 — Phase 32 (회귀: u8 wrap-around로 256↑ 상수가 엉뚱한 값)
+// ============================================================================
+
+#[test]
+fn test_vm_constant_pool_over_256() {
+    // 서로 다른 문자열 상수 270개 선언 후 256 이후 인덱스를 출력 → 정확해야 함
+    let mut src = String::new();
+    for i in 0..270 {
+        src.push_str(&format!("let s{i} = \"VAL_{i}\"\n"));
+    }
+    src.push_str("print(s260)\nprint(s269)\n");
+    assert_eq!(run_vm(&src), vec!["VAL_260", "VAL_269"]);
+}
+
+#[test]
+fn test_vm_constant_dedup() {
+    // 같은 상수는 풀에서 1슬롯만 차지 (중복 제거) — 300번 같은 값 써도 정상
+    let mut src = String::from("let total = 0\n");
+    for _ in 0..300 {
+        src.push_str("total = total + 7\n");
+    }
+    src.push_str("print(total)\n");
+    assert_eq!(run_vm(&src), vec!["2100"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

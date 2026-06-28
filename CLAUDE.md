@@ -307,3 +307,14 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              둘 다 의미 불변(정상 프로그램 동일), 종료성/파싱 정확성만 개선.
              회귀: parser +3(떠도는'}'종료/다중문클로저인자/다중라인맵), lexer +2(블록내 줄바꿈).
              (tests: 287 green, clippy 0)
+✅ Phase 32 — VM 상수 풀 인덱스 폭 버그 수정 (u8→u16) — v0.23.2
+             증상: 한 청크에 상수가 256개를 넘으면 OP_CONST 피연산자(u8)가 wrap-around되어
+             엉뚱한 상수를 읽음(예: s260이 VAL_4 출력). bang-web test/run.bang도 288상수로 깨짐.
+             수정: 상수 인덱스를 u16으로 확장. Chunk::add_constant→u16(+중복제거),
+             get_constant(u16), 컴파일러 add_const/add_constant→u16.
+             u8→u16 emit·디코드 일치: OP_CONST, OP_CLOSURE(fn_const_idx), OP_FIELD_GET(name_idx).
+             중복제거: const_eq로 Int/Float/Bool/Str/Nil 동일값 1슬롯 재사용(함수는 매번).
+             JIT(jit.rs)도 OP_CONST 크기 2→3, 피연산자 u16 디코드로 일치.
+             (참고: --features jit 자체는 cranelift 버전 비호환으로 기존부터 빌드 불가 — 별개.)
+             회귀: vm_test +2(상수 270개 인덱스 정확 / 중복 300회). 의미 불변.
+             (tests: 289 green, clippy 0)

@@ -103,11 +103,11 @@ pub fn can_jit(func: &CompiledFn) -> bool {
             | OP_EQ | OP_NE | OP_LT | OP_LE | OP_GT | OP_GE | OP_NOT
             | OP_RETURN => 1,
 
-            // 1-byte 피연산자
-            OP_CONST | OP_LOAD_LOCAL | OP_STORE_LOCAL => 2,
+            // 1-byte 피연산자 (지역 슬롯)
+            OP_LOAD_LOCAL | OP_STORE_LOCAL => 2,
 
-            // 2-byte (i16) 점프
-            OP_JUMP | OP_JUMP_FALSE => 3,
+            // 2-byte 피연산자 (상수 인덱스 u16, i16 점프)
+            OP_CONST | OP_JUMP | OP_JUMP_FALSE => 3,
 
             // 비지원 opcode → 즉시 false
             _ => return false,
@@ -136,7 +136,8 @@ fn find_block_entries(code: &[u8]) -> BTreeSet<usize> {
                 entries.insert(i + 3); // fall-through 도 새 블록
                 i += 3;
             }
-            OP_CONST | OP_LOAD_LOCAL | OP_STORE_LOCAL => i += 2,
+            OP_CONST => i += 3, // u16 상수 인덱스
+            OP_LOAD_LOCAL | OP_STORE_LOCAL => i += 2,
             _ => i += 1,
         }
     }
@@ -249,8 +250,8 @@ fn compile_one(state: &mut JitState, func: &Arc<CompiledFn>) -> Result<JitFnPtr,
                 // 종결된 블록의 dead code — 다음 블록 경계까지 skip
                 let op = code[i];
                 i += match op {
-                    OP_CONST | OP_LOAD_LOCAL | OP_STORE_LOCAL => 2,
-                    OP_JUMP | OP_JUMP_FALSE                   => 3,
+                    OP_LOAD_LOCAL | OP_STORE_LOCAL            => 2,
+                    OP_CONST | OP_JUMP | OP_JUMP_FALSE        => 3,
                     _                                         => 1,
                 };
                 continue;
@@ -268,7 +269,7 @@ fn compile_one(state: &mut JitState, func: &Arc<CompiledFn>) -> Result<JitFnPtr,
                     stack_push(&mut builder, &mut stack_depth, local_count, v);
                 }
                 OP_CONST => {
-                    let idx = code[i] as usize; i += 1;
+                    let idx = u16::from_le_bytes([code[i], code[i + 1]]) as usize; i += 2;
                     let n = match &func.chunk.constants[idx] {
                         VmValue::Int(n) => *n,
                         _ => return Err("JIT: 비-Int 상수".into()),
