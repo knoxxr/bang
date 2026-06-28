@@ -677,6 +677,38 @@ print(recv(out))
     assert_eq!(run_vm(src), vec!["42"]);
 }
 
+// ============================================================================
+// select — 멀티 채널 대기 — Phase 30
+// ============================================================================
+
+#[test]
+fn test_vm_select_ready_channel() {
+    // a에 값이 있으면 [0, 값] 반환 (a를 먼저 검사하므로 결정적)
+    let src = r#"
+let a = channel()
+let b = channel()
+send(a, "x")
+close(a)
+close(b)
+let r = select([a, b])
+print(r[0])
+print(r[1])
+"#;
+    assert_eq!(run_vm(src), vec!["0", "x"]);
+}
+
+#[test]
+fn test_vm_select_all_closed_nil() {
+    let src = r#"
+let a = channel()
+let b = channel()
+close(a)
+close(b)
+print(select([a, b]))
+"#;
+    assert_eq!(run_vm(src), vec!["nil"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

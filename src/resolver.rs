@@ -379,6 +379,8 @@ impl Resolver {
             ("tcp_close",  Some(1)),
             ("tcp_read_until",  Some(2)),
             ("tcp_set_timeout", Some(2)),
+            // 동시성: 멀티 채널 대기 (103)
+            ("select",          Some(1)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {

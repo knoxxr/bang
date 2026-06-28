@@ -286,3 +286,10 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              bang의 이벤트 모델: 이벤트 루프/리액터 없음. 채널+spawn+일급함수로 디스패치.
              예제: examples/event_loop.bang. 테스트: vm_test +3(채널 맵/리스트/이벤트디스패치).
              (tests: 280 green, clippy 0)
+✅ Phase 30 — spawn 에러 가시화 + select(멀티 채널 대기)
+             (1) spawn 에러 가시화: run/run_spawned 조인 시 에러를 삼키지 않고 stderr 경고
+                 (warn_if_spawn_err). 제어 흐름 불변(부모 중단 안 함). parallel 블록은 기존대로 전파.
+             (2) select(channels) → [index, value] (먼저 준비된 채널), 모두 닫히면 nil.
+                 BangChannel::try_recv(논블로킹) 추가, 폴링(1ms) 기반. 빌트인 103.
+             테스트: vm_test +2(select ready/all-closed). 
+             (tests: 282 green, clippy 0)

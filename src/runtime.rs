@@ -218,6 +218,13 @@ impl std::fmt::Debug for BangChannel {
     }
 }
 
+/// 논블로킹 수신 결과.
+pub enum TryRecv {
+    Value(Value),
+    Empty,  // 아직 값 없음 (열려 있음)
+    Closed, // 닫혔고 버퍼 비어 있음
+}
+
 impl BangChannel {
     pub fn new(_capacity: usize) -> Self {
         let (tx, rx) = mpsc::channel();
@@ -239,6 +246,15 @@ impl BangChannel {
     pub fn recv(&self) -> Option<Value> {
         // Mutex 를 취득한 채로 recv() 블록 → 단일 소비자면 문제 없음
         self.receiver.lock().unwrap().recv().ok()
+    }
+
+    /// 논블로킹 수신 (select 용).
+    pub fn try_recv(&self) -> TryRecv {
+        match self.receiver.lock().unwrap().try_recv() {
+            Ok(v) => TryRecv::Value(v),
+            Err(mpsc::TryRecvError::Empty) => TryRecv::Empty,
+            Err(mpsc::TryRecvError::Disconnected) => TryRecv::Closed,
+        }
     }
 
     pub fn close(&self) {

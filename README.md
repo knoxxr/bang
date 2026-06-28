@@ -162,7 +162,7 @@ let sorted = sort(xs)  // sorted = [1, 2, 3], xs 는 그대로
 | 문자열 | `split(s,sep)` `join(l,sep)` `trim(s)` `trim_start(s)` `trim_end(s)` `replace(s,a,b)` `contains(s,sub)` `starts_with(s,p)` `ends_with(s,p)` `upper(s)` `lower(s)` `find(s,sub)` `chars(s)` `slice(s,start,end)` `repeat(s,n)` |
 | 수학 | `abs(x)` `sqrt(x)` `floor(x)` `ceil(x)` `round(x)` `pow(b,e)` `min(...)` `max(...)` `gcd(a,b)` `clamp(x,lo,hi)` `sign(x)` `sin(x)` `cos(x)` `tan(x)` `log(x)` `log10(x)` `exp(x)` `pi()` `e()` |
 | 집합(리스트) | `union(a,b)` `intersect(a,b)` `difference(a,b)` (중복 제거) |
-| 동시성 | `channel(...)` `send(c,v)` `recv(c)` `close(c)` `wait(f)` `parallel_map(l,f)` |
+| 동시성 | `channel(...)` `send(c,v)` `recv(c)` `select(chans)` `close(c)` `wait(f)` `parallel_map(l,f)` |
 | 네트워킹 | `tcp_listen(addr)` `tcp_accept(s)` `tcp_read(c)` `tcp_read_until(c,marker)` `tcp_write(c,s)` `tcp_set_timeout(c,ms)` `tcp_close(c)` |
 | JSON | `json_parse(s)` `json_stringify(v)` |
 | 정규식 | `regex_match(s,pat)` `regex_find(s,pat)` `regex_find_all(s,pat)` `regex_replace(s,pat,repl)` `regex_groups(s,pat)` |

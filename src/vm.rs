@@ -400,6 +400,7 @@ pub const BUILTINS: &[&str] = &[
     "tcp_close",  // 100
     "tcp_read_until",  // 101
     "tcp_set_timeout", // 102
+    "select",          // 103
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -501,7 +502,7 @@ impl Vm {
 
         // 프로그램 종료 시 모든 잔여 spawn 조인 (누수 방지)
         let scope = self.spawn_scopes.pop().unwrap_or_default();
-        for f in scope { let _ = f.resolve(); }
+        for f in scope { warn_if_spawn_err(f.resolve()); }
 
         Ok(())
     }
@@ -536,7 +537,7 @@ impl Vm {
 
         // 서브-VM 내 잔여 spawn 조인
         let scope = vm.spawn_scopes.pop().unwrap_or_default();
-        for f in scope { let _ = f.resolve(); }
+        for f in scope { warn_if_spawn_err(f.resolve()); }
 
         Ok(vm.stack.pop().unwrap_or(VmValue::Nil))
     }
@@ -2202,6 +2203,44 @@ impl Vm {
                 }
             }
 
+            103 => { // select(channels) → [index, value] (먼저 준비된 채널), 모두 닫히면 nil
+                req_args("select", &args, 1, span)?;
+                let list = list_arg("select", &args[0], span)?;
+                // 모든 인자가 채널인지 확인
+                let mut chans = Vec::with_capacity(list.len());
+                for v in &list {
+                    match v {
+                        VmValue::Channel(c) => chans.push(c.clone()),
+                        other => return Err(RuntimeError::new(
+                            format!("select: 채널 리스트 필요, {} 발견", other.type_name()), span)),
+                    }
+                }
+                if chans.is_empty() {
+                    return Err(RuntimeError::new("select: 빈 채널 리스트", span));
+                }
+                use crate::runtime::TryRecv;
+                loop {
+                    let mut all_closed = true;
+                    for (i, ch) in chans.iter().enumerate() {
+                        match ch.try_recv() {
+                            TryRecv::Value(v) => {
+                                return Ok(VmValue::List(Arc::new(vec![
+                                    VmValue::Int(i as i64),
+                                    from_runtime(v),
+                                ])));
+                            }
+                            TryRecv::Empty => all_closed = false,
+                            TryRecv::Closed => {}
+                        }
+                    }
+                    if all_closed {
+                        return Ok(VmValue::Nil); // 모든 채널 닫힘
+                    }
+                    // 준비된 채널 없음 → 잠깐 양보 후 재시도 (폴링 select)
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
         }
     }
@@ -2769,6 +2808,14 @@ fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
         }
     }
     Arc::new(VmClosure { func: c.func.clone(), upvalues, globals: new_globals })
+}
+
+/// spawn된 작업이 에러로 끝나면 stderr에 경고를 출력한다(제어 흐름은 유지).
+/// 구조적 동시성상 부모를 중단시키진 않지만, 에러가 조용히 사라지지 않게 한다.
+fn warn_if_spawn_err(result: Result<VmValue, RuntimeError>) {
+    if let Err(e) = result {
+        eprintln!("경고: spawn된 작업에서 처리되지 않은 에러: {e}");
+    }
 }
 
 fn to_runtime(v: &VmValue) -> crate::runtime::Value {
