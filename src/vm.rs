@@ -820,16 +820,15 @@ impl Vm {
                 OP_LOAD_GLOBAL => {
                     let slot = self.read_u16() as usize;
                     let fi = self.frames.len() - 1;
-                    let g_arc = self.frames[fi].closure.globals.clone();
-                    let v = g_arc.lock().unwrap()[slot].clone();
+                    // Arc 복제 없이 lock (guard는 문장 끝에 drop → stack.push와 충돌 없음)
+                    let v = self.frames[fi].closure.globals.lock().unwrap()[slot].clone();
                     self.stack.push(v);
                 }
                 OP_STORE_GLOBAL => {
                     let slot = self.read_u16() as usize;
                     let val = self.stack_pop();
                     let fi = self.frames.len() - 1;
-                    let g_arc = self.frames[fi].closure.globals.clone();
-                    g_arc.lock().unwrap()[slot] = val;
+                    self.frames[fi].closure.globals.lock().unwrap()[slot] = val;
                 }
 
                 // --- Builtins ---
