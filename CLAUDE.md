@@ -160,3 +160,12 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              인터프리터/AOT는 "VM 전용" 명확한 에러 반환. 예제: examples/error_handling.bang.
              테스트: vm_test +8. (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 36 vm + 8 transpile + 7 cli + 4 import = 219 green, clippy 0)
+✅ Phase 14 — 값 컨테이너 copy-on-write (VM 성능) — 의미 불변, 성능만 개선
+             VmValue::List/Map을 Arc<Vec>/Arc<HashMap>로 변경. clone은 Arc 공유(O(1)),
+             변경은 Arc::make_mut으로 공유 중일 때만 실제 복사(copy-on-write).
+             관찰되는 값 의미론·동시성 안전은 깊은 복사와 동일(별칭 격리 유지).
+             효과: 큰 리스트를 바인딩/인자/반환/spawn에 넘길 때 O(n)→O(1).
+             (벤치: 1만 원소 리스트 1만회 전달 0.02s). 인덱스/push 등 변경 지점만 make_mut.
+             테스트: vm_test +5 COW(별칭격리/맵/인자/push/대용량). 
+             (tests: 90 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 41 vm + 8 transpile + 7 cli + 4 import = 224 green, clippy 0)

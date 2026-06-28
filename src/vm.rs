@@ -70,8 +70,10 @@ pub enum VmValue {
     Bool(bool),
     Str(String),
     Nil,
-    List(Vec<VmValue>),
-    Map(HashMap<String, VmValue>),
+    // 값 의미론 + copy-on-write: clone은 Arc 공유(O(1)), 변경은 Arc::make_mut로
+    // 공유 중일 때만 실제 복사. 관찰되는 의미는 깊은 복사와 동일.
+    List(Arc<Vec<VmValue>>),
+    Map(Arc<HashMap<String, VmValue>>),
     Closure(Arc<VmClosure>),
     Function(Arc<CompiledFn>),  // stored in constant pool only; not user-visible
     Builtin(usize),
@@ -86,7 +88,7 @@ unsafe impl Sync for VmValue {}
 
 #[derive(Debug)]
 pub enum VmIter {
-    List { items: Vec<VmValue>, idx: usize },
+    List { items: Arc<Vec<VmValue>>, idx: usize },
     Channel(Arc<BangChannel>),
 }
 
@@ -818,7 +820,7 @@ impl Vm {
                     let count = self.read_u16() as usize;
                     let start = self.stack.len() - count;
                     let items: Vec<VmValue> = self.stack.drain(start..).collect();
-                    self.stack.push(VmValue::List(items));
+                    self.stack.push(VmValue::List(Arc::new(items)));
                 }
                 OP_MAKE_MAP => {
                     let pair_count = self.read_u16() as usize;
@@ -832,7 +834,7 @@ impl Vm {
                         };
                         map.insert(key, pair[1].clone());
                     }
-                    self.stack.push(VmValue::Map(map));
+                    self.stack.push(VmValue::Map(Arc::new(map)));
                 }
 
                 OP_INDEX_GET => {
@@ -1141,7 +1143,7 @@ impl Vm {
             11 => { // parallel_map(list, fn) — sequential in Part A
                 req_args("parallel_map", &args, 2, span)?;
                 let list = match &args[0] {
-                    VmValue::List(v) => v.clone(),
+                    VmValue::List(v) => (**v).clone(),
                     other => return Err(RuntimeError::new(
                         format!("parallel_map(): List 필요, {} 발견", other.type_name()), span)),
                 };
@@ -1159,7 +1161,7 @@ impl Vm {
                     // Return value is on top of stack
                     results.push(self.stack_pop());
                 }
-                Ok(VmValue::List(results))
+                Ok(VmValue::List(Arc::new(results)))
             }
             12 => { // wait(f) — Part A: value is already resolved
                 req_args("wait", &args, 1, span)?;
@@ -1169,7 +1171,7 @@ impl Vm {
                 req_args("push", &args, 2, span)?;
                 match args[0].clone() {
                     VmValue::List(mut v) => {
-                        v.push(args[1].clone());
+                        Arc::make_mut(&mut v).push(args[1].clone());
                         Ok(VmValue::List(v))
                     }
                     other => Err(RuntimeError::new(
@@ -1179,7 +1181,7 @@ impl Vm {
             14 => { // pop(list)
                 req_args("pop", &args, 1, span)?;
                 match args[0].clone() {
-                    VmValue::List(mut v) => Ok(v.pop().unwrap_or(VmValue::Nil)),
+                    VmValue::List(v) => Ok(v.last().cloned().unwrap_or(VmValue::Nil)),
                     other => Err(RuntimeError::new(
                         format!("pop(): List 필요, {} 발견", other.type_name()), span)),
                 }
@@ -1191,7 +1193,7 @@ impl Vm {
                         let mut keys: Vec<VmValue> =
                             m.keys().map(|k| VmValue::Str(k.clone())).collect();
                         keys.sort_by_key(|a| a.to_string());
-                        Ok(VmValue::List(keys))
+                        Ok(VmValue::List(Arc::new(keys)))
                     }
                     other => Err(RuntimeError::new(
                         format!("keys(): Map 필요, {} 발견", other.type_name()), span)),
@@ -1203,7 +1205,7 @@ impl Vm {
                     VmValue::Map(m) => {
                         let mut pairs: Vec<_> = m.iter().collect();
                         pairs.sort_by_key(|(k, _)| k.as_str());
-                        Ok(VmValue::List(pairs.into_iter().map(|(_, v)| v.clone()).collect()))
+                        Ok(VmValue::List(Arc::new(pairs.into_iter().map(|(_, v)| v.clone()).collect())))
                     }
                     other => Err(RuntimeError::new(
                         format!("values(): Map 필요, {} 발견", other.type_name()), span)),
@@ -1213,12 +1215,12 @@ impl Vm {
                 match args.len() {
                     1 => {
                         let n = as_int(&args[0], span)?;
-                        Ok(VmValue::List((0..n).map(VmValue::Int).collect()))
+                        Ok(VmValue::List(Arc::new((0..n).map(VmValue::Int).collect())))
                     }
                     2 => {
                         let s = as_int(&args[0], span)?;
                         let e = as_int(&args[1], span)?;
-                        Ok(VmValue::List((s..e).map(VmValue::Int).collect()))
+                        Ok(VmValue::List(Arc::new((s..e).map(VmValue::Int).collect())))
                     }
                     3 => {
                         let s    = as_int(&args[0], span)?;
@@ -1233,7 +1235,7 @@ impl Vm {
                             v.push(VmValue::Int(i));
                             i += step;
                         }
-                        Ok(VmValue::List(v))
+                        Ok(VmValue::List(Arc::new(v)))
                     }
                     _ => Err(RuntimeError::new("range: 인자 1~3개 필요", span)),
                 }
@@ -1263,7 +1265,7 @@ impl Vm {
                 req_args("split", &args, 2, span)?;
                 let s = str_arg("split", &args[0], span)?;
                 let sep = str_arg("split", &args[1], span)?;
-                Ok(VmValue::List(s.split(sep.as_str()).map(|p| VmValue::Str(p.to_string())).collect()))
+                Ok(VmValue::List(Arc::new(s.split(sep.as_str()).map(|p| VmValue::Str(p.to_string())).collect())))
             }
             21 => { // join(list, sep)
                 req_args("join", &args, 2, span)?;
@@ -1329,7 +1331,7 @@ impl Vm {
             32 => { // chars(s) → List of single-char strings
                 req_args("chars", &args, 1, span)?;
                 let s = str_arg("chars", &args[0], span)?;
-                Ok(VmValue::List(s.chars().map(|c| VmValue::Str(c.to_string())).collect()))
+                Ok(VmValue::List(Arc::new(s.chars().map(|c| VmValue::Str(c.to_string())).collect())))
             }
 
             // ── 리스트 (33-43) ──────────────────────────────────────────────────
@@ -1345,13 +1347,13 @@ impl Vm {
                     }
                 });
                 if let Some(e) = err { return Err(e); }
-                Ok(VmValue::List(list))
+                Ok(VmValue::List(Arc::new(list)))
             }
             34 => { // reverse(list) → reversed copy
                 req_args("reverse", &args, 1, span)?;
                 let mut list = list_arg("reverse", &args[0], span)?;
                 list.reverse();
-                Ok(VmValue::List(list))
+                Ok(VmValue::List(Arc::new(list)))
             }
             35 => { // map(list, fn) → List
                 req_args("map", &args, 2, span)?;
@@ -1368,7 +1370,7 @@ impl Vm {
                     }
                     results.push(self.stack_pop());
                 }
-                Ok(VmValue::List(results))
+                Ok(VmValue::List(Arc::new(results)))
             }
             36 => { // filter(list, fn) → List
                 req_args("filter", &args, 2, span)?;
@@ -1385,7 +1387,7 @@ impl Vm {
                     }
                     if self.stack_pop().is_truthy() { results.push(item); }
                 }
-                Ok(VmValue::List(results))
+                Ok(VmValue::List(Arc::new(results)))
             }
             37 => { // reduce(list, fn, init) → value
                 req_args("reduce", &args, 3, span)?;
@@ -1443,28 +1445,28 @@ impl Vm {
                 let mut out = Vec::new();
                 for item in list {
                     match item {
-                        VmValue::List(inner) => out.extend(inner),
+                        VmValue::List(inner) => out.extend(inner.iter().cloned()),
                         other => out.push(other),
                     }
                 }
-                Ok(VmValue::List(out))
+                Ok(VmValue::List(Arc::new(out)))
             }
             41 => { // enumerate(list) → List of [i, val]
                 req_args("enumerate", &args, 1, span)?;
                 let list = list_arg("enumerate", &args[0], span)?;
                 let out = list.into_iter().enumerate()
-                    .map(|(i, v)| VmValue::List(vec![VmValue::Int(i as i64), v]))
+                    .map(|(i, v)| VmValue::List(Arc::new(vec![VmValue::Int(i as i64), v])))
                     .collect();
-                Ok(VmValue::List(out))
+                Ok(VmValue::List(Arc::new(out)))
             }
             42 => { // zip(list1, list2) → List of [a, b]
                 req_args("zip", &args, 2, span)?;
                 let l1 = list_arg("zip", &args[0], span)?;
                 let l2 = list_arg("zip", &args[1], span)?;
                 let out = l1.into_iter().zip(l2)
-                    .map(|(a, b)| VmValue::List(vec![a, b]))
+                    .map(|(a, b)| VmValue::List(Arc::new(vec![a, b])))
                     .collect();
-                Ok(VmValue::List(out))
+                Ok(VmValue::List(Arc::new(out)))
             }
             43 => { // sum(list) → number
                 req_args("sum", &args, 1, span)?;
@@ -1614,7 +1616,7 @@ impl Vm {
                 let cli_args: Vec<VmValue> = std::env::args()
                     .map(VmValue::Str)
                     .collect();
-                Ok(VmValue::List(cli_args))
+                Ok(VmValue::List(Arc::new(cli_args)))
             }
 
             // ── 모듈 (57) ───────────────────────────────────────────────────────
@@ -1648,7 +1650,7 @@ impl Vm {
                         map.insert(name.clone(), g[*slot as usize].clone());
                     }
                 }
-                Ok(VmValue::Map(map))
+                Ok(VmValue::Map(Arc::new(map)))
             }
 
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
@@ -1667,7 +1669,7 @@ fn vm_add(l: VmValue, r: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
         (VmValue::Int(a),   VmValue::Float(b)) => Ok(VmValue::Float(a as f64 + b)),
         (VmValue::Float(a), VmValue::Int(b))   => Ok(VmValue::Float(a + b as f64)),
         (VmValue::Str(a),   VmValue::Str(b))   => Ok(VmValue::Str(a + &b)),
-        (VmValue::List(mut a), VmValue::List(b)) => { a.extend(b); Ok(VmValue::List(a)) }
+        (VmValue::List(mut a), VmValue::List(b)) => { Arc::make_mut(&mut a).extend(b.iter().cloned()); Ok(VmValue::List(a)) }
         (l, r) => Err(RuntimeError::new(
             format!("+: {} + {} 연산 불가", l.type_name(), r.type_name()), span)),
     }
@@ -1719,7 +1721,7 @@ fn vm_eq(l: &VmValue, r: &VmValue) -> bool {
         (VmValue::Str(a),   VmValue::Str(b))   => a == b,
         (VmValue::Nil,      VmValue::Nil)       => true,
         (VmValue::List(a),  VmValue::List(b))  =>
-            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| vm_eq(x, y)),
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| vm_eq(x, y)),
         _ => false,
     }
 }
@@ -1775,11 +1777,11 @@ fn vm_index_set(container: VmValue, idx: VmValue, val: VmValue, span: Span) -> R
                 return Err(RuntimeError::new(
                     format!("인덱스 범위 초과: {i} (길이 {len})"), span));
             }
-            items[i as usize] = val;
+            Arc::make_mut(&mut items)[i as usize] = val;
             Ok(VmValue::List(items))
         }
         (VmValue::Map(mut map), _) => {
-            map.insert(idx.to_string(), val);
+            Arc::make_mut(&mut map).insert(idx.to_string(), val);
             Ok(VmValue::Map(map))
         }
         (container, _) => Err(RuntimeError::new(
@@ -1805,7 +1807,7 @@ fn str_arg(name: &str, v: &VmValue, span: Span) -> Result<String, RuntimeError> 
 
 fn list_arg(name: &str, v: &VmValue, span: Span) -> Result<Vec<VmValue>, RuntimeError> {
     match v {
-        VmValue::List(items) => Ok(items.clone()),
+        VmValue::List(items) => Ok((**items).clone()),
         other => Err(RuntimeError::new(
             format!("{name}(): 리스트 필요, {} 발견", other.type_name()), span)),
     }
@@ -1852,13 +1854,13 @@ fn deep_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
     match v {
         VmValue::List(items) => {
             let mut resolved = Vec::with_capacity(items.len());
-            for item in items { resolved.push(deep_resolve(item, span)?); }
-            Ok(VmValue::List(resolved))
+            for item in items.iter() { resolved.push(deep_resolve(item.clone(), span)?); }
+            Ok(VmValue::List(Arc::new(resolved)))
         }
         VmValue::Map(map) => {
             let mut resolved = HashMap::new();
-            for (k, val) in map { resolved.insert(k, deep_resolve(val, span)?); }
-            Ok(VmValue::Map(resolved))
+            for (k, val) in map.iter() { resolved.insert(k.clone(), deep_resolve(val.clone(), span)?); }
+            Ok(VmValue::Map(Arc::new(resolved)))
         }
         other => Ok(other),
     }

@@ -293,6 +293,61 @@ fn test_vm_uncaught_throw_is_error() {
     assert!(result.unwrap_err().message.contains("oops"));
 }
 
+// ============================================================================
+// 값 의미론 + copy-on-write (Arc COW) — Phase 14
+// 클론은 Arc 공유(O(1))지만, 변경 시 COW로 관찰상 독립성이 유지되어야 한다.
+// ============================================================================
+
+#[test]
+fn test_vm_cow_list_alias_isolation() {
+    let src = "let a = [1,2,3]\nlet b = a\nb[0] = 99\nprint(a)\nprint(b)";
+    assert_eq!(run_vm(src), vec!["[1, 2, 3]", "[99, 2, 3]"]);
+}
+
+#[test]
+fn test_vm_cow_map_alias_isolation() {
+    let src = "let m = {\"k\": 1}\nlet n = m\nn[\"k\"] = 42\nprint(m[\"k\"])\nprint(n[\"k\"])";
+    assert_eq!(run_vm(src), vec!["1", "42"]);
+}
+
+#[test]
+fn test_vm_cow_function_arg_isolation() {
+    let src = r#"
+fn mutate(lst) {
+    lst[0] = -1
+    return lst
+}
+let orig = [10, 20]
+let changed = mutate(orig)
+print(orig)
+print(changed)
+"#;
+    assert_eq!(run_vm(src), vec!["[10, 20]", "[-1, 20]"]);
+}
+
+#[test]
+fn test_vm_cow_push_does_not_mutate_source() {
+    let src = "let xs = [1, 2]\nlet ys = push(xs, 3)\nprint(xs)\nprint(ys)";
+    assert_eq!(run_vm(src), vec!["[1, 2]", "[1, 2, 3]"]);
+}
+
+#[test]
+fn test_vm_cow_large_data_cheap_clone() {
+    // COW면 큰 리스트를 여러 번 전달해도 빠르게 완료 (deep copy면 매우 느림)
+    let src = r#"
+fn touch(lst) { return len(lst) }
+let big = range(5000)
+let i = 0
+let acc = 0
+while i < 5000 {
+    acc = acc + touch(big)
+    i = i + 1
+}
+print(acc)
+"#;
+    assert_eq!(run_vm(src), vec!["25000000"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)
