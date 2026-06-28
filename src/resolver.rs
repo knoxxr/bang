@@ -371,6 +371,12 @@ impl Resolver {
             ("union",      Some(2)),
             ("intersect",  Some(2)),
             ("difference", Some(2)),
+            // stdlib: 네트워킹 TCP (96-100)
+            ("tcp_listen", Some(1)),
+            ("tcp_accept", Some(1)),
+            ("tcp_read",   Some(1)),
+            ("tcp_write",  Some(2)),
+            ("tcp_close",  Some(1)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {

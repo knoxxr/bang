@@ -294,6 +294,8 @@ impl Lexer {
                     match esc {
                         'n' => value.push('\n'),
                         't' => value.push('\t'),
+                        'r' => value.push('\r'),
+                        '0' => value.push('\0'),
                         '\\' => value.push('\\'),
                         '"' => value.push('"'),
                         _ => {

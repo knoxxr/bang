@@ -1,0 +1,32 @@
+// 동시성 HTTP 서버 — 연결마다 spawn (async/await 색칠 없음)
+//
+// 실행:  bang examples/http_server.bang
+// 테스트: curl http://127.0.0.1:8080/
+// (무한 루프 서버라 자동 테스트 대상이 아님 — 직접 실행해 보세요)
+
+fn handle(conn) {
+    let req = tcp_read(conn)
+    // 요청 첫 줄에서 경로 추출 (정규식)
+    let m = regex_groups(req, "^(\\w+) (\\S+)")
+    let path = "?"
+    if m != nil {
+        path = m[2]
+    }
+
+    let body = json_stringify({"message": "hello from bang", "path": path})
+    let resp = "HTTP/1.1 200 OK\r\n" +
+        "Content-Type: application/json\r\n" +
+        "Content-Length: " + str(len(body)) + "\r\n" +
+        "Connection: close\r\n" +
+        "\r\n" +
+        body
+    tcp_write(conn, resp)
+    tcp_close(conn)
+}
+
+let server = tcp_listen("127.0.0.1:8080")
+print("listening on http://127.0.0.1:8080")
+while true {
+    let conn = tcp_accept(server)
+    spawn handle(conn)        // 연결마다 새 작업 — 락도, await도 없이 동시 처리
+}

@@ -81,6 +81,9 @@ pub enum VmValue {
     Channel(Arc<BangChannel>),
     Iter(Arc<Mutex<VmIter>>),   // internal — for for-loop iteration
     Future(Arc<VmFuture>),      // spawn 결과
+    // 네트워크 핸들 — 참조 의미론 (Arc 공유, 채널과 동일)
+    TcpListener(Arc<std::net::TcpListener>),
+    TcpConn(Arc<Mutex<std::net::TcpStream>>),
 }
 
 // Safety: all shared mutable state is behind Arc<Mutex<>> or Arc<BangChannel>
@@ -109,6 +112,8 @@ impl VmValue {
             VmValue::Channel(_)  => "Channel",
             VmValue::Iter(_)     => "Iter",
             VmValue::Future(_)   => "Future",
+            VmValue::TcpListener(_) => "TcpListener",
+            VmValue::TcpConn(_)  => "TcpConn",
         }
     }
 
@@ -155,6 +160,8 @@ impl fmt::Display for VmValue {
             VmValue::Channel(_)  => write!(f, "<channel>"),
             VmValue::Iter(_)     => write!(f, "<iter>"),
             VmValue::Future(_)   => write!(f, "<future>"),
+            VmValue::TcpListener(_) => write!(f, "<tcp listener>"),
+            VmValue::TcpConn(_)  => write!(f, "<tcp conn>"),
         }
     }
 }
@@ -385,6 +392,12 @@ pub const BUILTINS: &[&str] = &[
     "union",      // 93
     "intersect",  // 94
     "difference", // 95
+    // stdlib: 네트워킹 TCP (96-100)
+    "tcp_listen", // 96
+    "tcp_accept", // 97
+    "tcp_read",   // 98
+    "tcp_write",  // 99
+    "tcp_close",  // 100
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -2079,6 +2092,71 @@ impl Vm {
                     }
                 }
                 Ok(VmValue::List(Arc::new(out)))
+            }
+
+            // ── 네트워킹 TCP (96-100) ─────────────────────────────────────────
+            96 => { // tcp_listen(addr) → TcpListener  (예: "127.0.0.1:8080")
+                req_args("tcp_listen", &args, 1, span)?;
+                let addr = str_arg("tcp_listen", &args[0], span)?;
+                let listener = std::net::TcpListener::bind(&addr)
+                    .map_err(|e| RuntimeError::new(format!("tcp_listen('{addr}'): {e}"), span))?;
+                Ok(VmValue::TcpListener(Arc::new(listener)))
+            }
+            97 => { // tcp_accept(server) → TcpConn  (블로킹)
+                req_args("tcp_accept", &args, 1, span)?;
+                match &args[0] {
+                    VmValue::TcpListener(l) => {
+                        let (stream, _peer) = l.accept()
+                            .map_err(|e| RuntimeError::new(format!("tcp_accept(): {e}"), span))?;
+                        Ok(VmValue::TcpConn(Arc::new(Mutex::new(stream))))
+                    }
+                    other => Err(RuntimeError::new(
+                        format!("tcp_accept: TcpListener 필요, {} 발견", other.type_name()), span)),
+                }
+            }
+            98 => { // tcp_read(conn) → str  (최대 4096바이트 1회 읽기, EOF면 "")
+                req_args("tcp_read", &args, 1, span)?;
+                match &args[0] {
+                    VmValue::TcpConn(c) => {
+                        use std::io::Read;
+                        let mut buf = [0u8; 4096];
+                        let n = {
+                            let mut s = c.lock().unwrap();
+                            s.read(&mut buf)
+                                .map_err(|e| RuntimeError::new(format!("tcp_read(): {e}"), span))?
+                        };
+                        Ok(VmValue::Str(String::from_utf8_lossy(&buf[..n]).into_owned()))
+                    }
+                    other => Err(RuntimeError::new(
+                        format!("tcp_read: TcpConn 필요, {} 발견", other.type_name()), span)),
+                }
+            }
+            99 => { // tcp_write(conn, str) → nil
+                req_args("tcp_write", &args, 2, span)?;
+                let data = str_arg("tcp_write", &args[1], span)?;
+                match &args[0] {
+                    VmValue::TcpConn(c) => {
+                        use std::io::Write;
+                        let mut s = c.lock().unwrap();
+                        s.write_all(data.as_bytes())
+                            .map_err(|e| RuntimeError::new(format!("tcp_write(): {e}"), span))?;
+                        Ok(VmValue::Nil)
+                    }
+                    other => Err(RuntimeError::new(
+                        format!("tcp_write: TcpConn 필요, {} 발견", other.type_name()), span)),
+                }
+            }
+            100 => { // tcp_close(conn) → nil
+                req_args("tcp_close", &args, 1, span)?;
+                match &args[0] {
+                    VmValue::TcpConn(c) => {
+                        let s = c.lock().unwrap();
+                        let _ = s.shutdown(std::net::Shutdown::Both);
+                        Ok(VmValue::Nil)
+                    }
+                    other => Err(RuntimeError::new(
+                        format!("tcp_close: TcpConn 필요, {} 발견", other.type_name()), span)),
+                }
             }
 
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),

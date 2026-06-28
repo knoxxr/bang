@@ -260,3 +260,14 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              설치~동시성~에러처리~타입~모듈/패키지~stdlib까지 따라 하며 배우는 구성.
              모든 코드 스니펫은 실행 검증. README 문서 섹션 추가, GUIDE.md에 최신 안내 배너.
              (문서만 변경 — 코드/테스트/버전 불변)
+✅ Phase 27 — TCP 네트워킹 빌트인 (웹 프레임워크 1단계 전제)
+             VmValue에 참조 타입 2개 추가: TcpListener(Arc<TcpListener>),
+             TcpConn(Arc<Mutex<TcpStream>>). 채널처럼 Arc 공유(참조 의미론).
+             빌트인(96-100): tcp_listen(addr), tcp_accept(s)→블로킹, tcp_read(c)→str(4096),
+             tcp_write(c,s), tcp_close(c). 렉서에 \r \0 이스케이프 추가(HTTP CRLF).
+             예제: examples/http_server.bang — 연결마다 spawn하는 동시성 HTTP 서버
+             (curl로 동시 요청 10개 처리 검증). 정규식+JSON으로 요청 파싱/응답.
+             제약: 블로킹 I/O + 고정 스레드풀 → 고동시성엔 추후 논블로킹 I/O 필요.
+             웹 프레임워크 자체는 별도 패키지(bang_modules)로 분리 예정.
+             (tests: 107 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 75 vm + 8 transpile + 7 cli + 6 import = 277 green, clippy 0)
