@@ -377,6 +377,8 @@ impl Resolver {
             ("tcp_read",   Some(1)),
             ("tcp_write",  Some(2)),
             ("tcp_close",  Some(1)),
+            ("tcp_read_until",  Some(2)),
+            ("tcp_set_timeout", Some(2)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {

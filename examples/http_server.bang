@@ -5,7 +5,8 @@
 // (무한 루프 서버라 자동 테스트 대상이 아님 — 직접 실행해 보세요)
 
 fn handle(conn) {
-    let req = tcp_read(conn)
+    tcp_set_timeout(conn, 5000)            // 멈춘 클라이언트가 워커를 영구 점유하지 못하게
+    let req = tcp_read_until(conn, "\r\n\r\n")   // 요청 헤더 전체를 읽음
     // 요청 첫 줄에서 경로 추출 (정규식)
     let m = regex_groups(req, "^(\\w+) (\\S+)")
     let path = "?"

@@ -398,6 +398,8 @@ pub const BUILTINS: &[&str] = &[
     "tcp_read",   // 98
     "tcp_write",  // 99
     "tcp_close",  // 100
+    "tcp_read_until",  // 101
+    "tcp_set_timeout", // 102
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -2156,6 +2158,47 @@ impl Vm {
                     }
                     other => Err(RuntimeError::new(
                         format!("tcp_close: TcpConn 필요, {} 발견", other.type_name()), span)),
+                }
+            }
+
+            101 => { // tcp_read_until(conn, marker) → marker 나올 때까지 누적 읽기
+                req_args("tcp_read_until", &args, 2, span)?;
+                let marker = str_arg("tcp_read_until", &args[1], span)?;
+                match &args[0] {
+                    VmValue::TcpConn(c) => {
+                        use std::io::Read;
+                        let mut acc = String::new();
+                        let mut buf = [0u8; 1024];
+                        loop {
+                            if !marker.is_empty() && acc.contains(&marker) { break; }
+                            let n = {
+                                let mut s = c.lock().unwrap();
+                                s.read(&mut buf)
+                                    .map_err(|e| RuntimeError::new(format!("tcp_read_until(): {e}"), span))?
+                            };
+                            if n == 0 { break; } // EOF
+                            acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        }
+                        Ok(VmValue::Str(acc))
+                    }
+                    other => Err(RuntimeError::new(
+                        format!("tcp_read_until: TcpConn 필요, {} 발견", other.type_name()), span)),
+                }
+            }
+            102 => { // tcp_set_timeout(conn, ms) → 읽기 타임아웃 설정 (0 = 무제한)
+                req_args("tcp_set_timeout", &args, 2, span)?;
+                let ms = int_of("tcp_set_timeout", &args[1], span)?;
+                match &args[0] {
+                    VmValue::TcpConn(c) => {
+                        let dur = if ms <= 0 { None }
+                            else { Some(std::time::Duration::from_millis(ms as u64)) };
+                        let s = c.lock().unwrap();
+                        s.set_read_timeout(dur)
+                            .map_err(|e| RuntimeError::new(format!("tcp_set_timeout(): {e}"), span))?;
+                        Ok(VmValue::Nil)
+                    }
+                    other => Err(RuntimeError::new(
+                        format!("tcp_set_timeout: TcpConn 필요, {} 발견", other.type_name()), span)),
                 }
             }
 

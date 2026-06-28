@@ -10,52 +10,76 @@ use std::thread;
 
 type Task = Box<dyn FnOnce() + Send + 'static>;
 
+/// 임시(overflow) 워커가 유휴 상태로 이 시간을 넘기면 종료한다.
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 struct Inner {
     queue:  VecDeque<Task>,
     closed: bool,
+    idle:   usize, // 현재 태스크를 기다리는(유휴) 워커 수
+    total:  usize, // 살아있는 워커 수
+    base:   usize, // 항상 유지하는 기본 워커 수
+    cap:    usize, // 최대 워커 수 (블로킹 작업 폭증 대비 상한)
 }
 
 pub struct Scheduler {
-    inner:   Arc<(Mutex<Inner>, Condvar)>,
-    // JoinHandle 을 보유해 컴파일러가 "unused field" 경고를 내지 않도록 _로 시작
-    _workers: Vec<thread::JoinHandle<()>>,
+    inner: Arc<(Mutex<Inner>, Condvar)>,
+}
+
+/// 워커 루프. base 초과로 생성된 임시 워커는 유휴 타임아웃 시 스스로 종료한다.
+fn worker_loop(inner: Arc<(Mutex<Inner>, Condvar)>) {
+    let (lock, cvar) = &*inner;
+    loop {
+        let task: Option<Task> = {
+            let mut guard = lock.lock().unwrap();
+            loop {
+                if let Some(t) = guard.queue.pop_front() {
+                    break Some(t);
+                }
+                if guard.closed {
+                    guard.total -= 1;
+                    break None;
+                }
+                guard.idle += 1;
+                let (g, res) = cvar.wait_timeout(guard, IDLE_TIMEOUT).unwrap();
+                guard = g;
+                guard.idle -= 1;
+                // 임시 워커(base 초과)는 유휴 타임아웃 시 종료
+                if res.timed_out() && guard.queue.is_empty()
+                    && !guard.closed && guard.total > guard.base {
+                    guard.total -= 1;
+                    break None;
+                }
+            }
+        };
+        match task {
+            Some(f) => f(),   // 락 해제 상태에서 실행
+            None    => break, // 종료
+        }
+    }
 }
 
 impl Scheduler {
     pub fn new(num_threads: usize) -> Self {
+        let base = num_threads.max(1);
         let inner: Arc<(Mutex<Inner>, Condvar)> = Arc::new((
-            Mutex::new(Inner { queue: VecDeque::new(), closed: false }),
+            Mutex::new(Inner {
+                queue: VecDeque::new(),
+                closed: false,
+                idle: 0,
+                total: base,
+                base,
+                cap: base.max(512), // 블로킹 I/O 동시성 상한
+            }),
             Condvar::new(),
         ));
 
-        let mut workers = Vec::with_capacity(num_threads);
-        for _ in 0..num_threads {
+        for _ in 0..base {
             let inner = inner.clone();
-            workers.push(thread::spawn(move || {
-                let (lock, cvar) = &*inner;
-                loop {
-                    // 락 취득 → 태스크 대기 (대기 중 락 해제) → 태스크 수신 → 락 해제 후 실행
-                    let task: Option<Task> = {
-                        let mut guard = lock.lock().unwrap();
-                        loop {
-                            if let Some(t) = guard.queue.pop_front() {
-                                break Some(t);
-                            }
-                            if guard.closed {
-                                break None;
-                            }
-                            guard = cvar.wait(guard).unwrap();
-                        }
-                    };
-                    match task {
-                        Some(f) => f(),   // 락 해제된 상태에서 태스크 실행
-                        None    => break, // 풀 종료
-                    }
-                }
-            }));
+            thread::spawn(move || worker_loop(inner));
         }
 
-        Self { inner, _workers: workers }
+        Self { inner }
     }
 
     /// 태스크를 풀에 제출한다.
@@ -66,16 +90,25 @@ impl Scheduler {
         F: FnOnce() + Send + 'static,
     {
         let (lock, cvar) = &*self.inner;
-        {
-            let mut guard = lock.lock().unwrap();
-            if guard.closed {
-                // 폴백: 새 OS 스레드 생성 (정상 경로에서는 불필요)
-                thread::spawn(f);
-                return;
-            }
-            guard.queue.push_back(Box::new(f));
+        let mut guard = lock.lock().unwrap();
+        if guard.closed {
+            // 폴백: 새 OS 스레드 생성 (정상 경로에서는 불필요)
+            drop(guard);
+            thread::spawn(f);
+            return;
         }
-        cvar.notify_one();
+        guard.queue.push_back(Box::new(f));
+        // 유휴 워커가 없고 상한 미만이면 임시 워커를 띄운다
+        // (블로킹 I/O로 모든 워커가 막혀도 새 연결을 처리할 수 있게 함).
+        if guard.idle == 0 && guard.total < guard.cap {
+            guard.total += 1;
+            drop(guard);
+            let inner = self.inner.clone();
+            thread::spawn(move || worker_loop(inner));
+        } else {
+            drop(guard);
+            cvar.notify_one();
+        }
     }
 
     /// 현재 큐에 쌓인 태스크 수 (테스트·진단용)

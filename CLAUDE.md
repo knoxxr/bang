@@ -271,3 +271,11 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              웹 프레임워크 자체는 별도 패키지(bang_modules)로 분리 예정.
              (tests: 107 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 75 vm + 8 transpile + 7 cli + 6 import = 277 green, clippy 0)
+✅ Phase 28 — 네트워킹 제약 보완 (탄력 풀 + 전체 읽기 + 타임아웃)
+             1) scheduler.rs 탄력 풀: idle==0이고 cap 미만이면 임시 워커 생성,
+                임시 워커는 유휴 10s 후 종료(base는 유지). cap=max(base,512).
+                → 블로킹 핸들러가 고정 풀(num_cpus)을 초과해도 동시 처리(검증: 동시 30/30).
+             2) tcp_read_until(conn, marker): marker까지 누적 읽기(HTTP 헤더 전체).
+             3) tcp_set_timeout(conn, ms): 읽기 타임아웃(멈춘 클라이언트가 워커 영구 점유 방지).
+             빌트인 101-102 추가. http_server.bang이 read_until + set_timeout 사용.
+             (tests: 277 green, clippy 0)
