@@ -19,6 +19,9 @@ name = "bang"
 path = "src/lib.rs"
 
 [dependencies]
+# 논블로킹 I/O 리액터(epoll/kqueue/IOCP 크로스플랫폼 래퍼). C10K급 동시연결의 토대.
+# 이유: epoll/kqueue/IOCP를 직접 unsafe로 다루는 대신 검증된 얇은 래퍼 사용(의존성 1개).
+polling = "3"
 # Phase 9 Part B: Cranelift JIT (선택적 기능 — `--features jit` 빌드 시 활성화)
 cranelift-codegen  = { version = "0.109", optional = true }
 cranelift-jit      = { version = "0.109", optional = true }

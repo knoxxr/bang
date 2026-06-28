@@ -12,5 +12,6 @@ pub mod runtime;
 pub mod stdlib;
 pub mod regex;
 pub mod pkg;
+pub mod reactor;
 pub mod scheduler;
 pub mod codegen;

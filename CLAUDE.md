@@ -326,3 +326,14 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              → bang-web가 헤더는 tcp_write, 본문은 tcp_send_file로 보내 바이너리(이미지 등) 무손실.
              회귀: tests/binary_test.rs +3 (file_size / 없는파일 에러 / 소켓 바이너리 왕복 cmp).
              기존 빌트인 번호·시그니처 불변(추가만). (tests: 292 green, clippy 0)
+🚧 Phase 34 — 논블로킹 I/O (C10K) — 단계 0: 리액터 골격 (진행 중)
+             목표: 적은 스레드로 수많은 동시연결. 단계적 진행(실행모델 변경이라 큼).
+             단계 0(완료, 추가만 — VM/스케줄러/표면API 무변경):
+               - 의존성 polling 3.x 추가(epoll/kqueue/IOCP 크로스플랫폼 래퍼).
+               - src/reactor.rs: Reactor(add_readable/modify_readable/deregister/wait).
+                 fd readiness 대기. 단위 테스트 3(생성/접속시 readable/타임아웃).
+             남은 단계(별 PR): set_nonblocking 소켓 + WouldBlock→yield, 리액터 readiness시
+               태스크 resume(대기태스크↔fd 매핑 + 준비큐), 타임아웃·정리.
+               난점: VM 중단/재개(yield/resume) — 현재 스케줄러는 태스크를 끝까지 실행.
+               접근 결정 필요(코루틴 vs VM 상태머신). CPU 병렬(OS스레드 spawn)과의 양립도 과제.
+             단계0은 표면 변경 없어 릴리스 없음. (tests: 295 green, clippy 0)
