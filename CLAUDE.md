@@ -293,3 +293,17 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                  BangChannel::try_recv(논블로킹) 추가, 폴링(1ms) 기반. 빌트인 103.
              테스트: vm_test +2(select ready/all-closed). 
              (tests: 282 green, clippy 0)
+✅ Phase 31 — 컴파일러 무한루프(종료성) 버그 수정 — v0.23.1
+             증상: import 모듈 함수에 다중문(let 포함) 클로저를 인자로 넘기면 bang check가 무한루프(CPU 100%).
+             근본 원인 2개 (resolver/typeck가 아니라 parser+lexer):
+             (1) 파서 에러 복구의 진행 보장 누락: parse_program/parse_block 루프가
+                 parse_stmt()==None인데 토큰을 소비 못 하면(예: 떠도는 '}') 무한 반복.
+                 → 진행 안 되면 에러 기록 후 1토큰 강제 스킵(종료 보장).
+             (2) 렉서가 '(' 안의 '{ }' 블록에서도 줄바꿈을 억제 → 다중문 클로저 인자가
+                 한 줄로 뭉쳐 파스 에러/불균형 '}' 생성 → (1)의 무한루프 유발.
+                 → paren_depth(usize)를 브래킷 스택(Vec<char>)으로 교체: 가장 안쪽이
+                 '{'면 줄바꿈 유효, '('/'['면 억제. 다중라인 맵은 parse_map이 줄바꿈을
+                 skip하므로 영향 없음.
+             둘 다 의미 불변(정상 프로그램 동일), 종료성/파싱 정확성만 개선.
+             회귀: parser +3(떠도는'}'종료/다중문클로저인자/다중라인맵), lexer +2(블록내 줄바꿈).
+             (tests: 287 green, clippy 0)

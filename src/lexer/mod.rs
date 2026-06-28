@@ -52,8 +52,11 @@ pub struct Lexer {
     pos: usize,
     line: usize,
     col: usize,
-    // `(` 와 `[` 깊이만 추적한다. `{` 는 블록 문장 구분을 위해 억제하지 않음.
-    paren_depth: usize,
+    // 열린 괄호 스택 ('(' '[' '{'). 줄바꿈 억제는 "가장 안쪽" 괄호 종류로 결정한다:
+    // 가장 안쪽이 '(' 또는 '[' 면 억제, '{'(블록/맵)이거나 비어 있으면 줄바꿈 유효.
+    // → `(` 안에 있더라도 `{ }` 블록 안에서는 문장 줄바꿈이 살아 있다
+    //   (예: 함수 인자로 넘기는 다중문 클로저).
+    brackets: Vec<char>,
 }
 
 impl Lexer {
@@ -63,8 +66,14 @@ impl Lexer {
             pos: 0,
             line: 1,
             col: 1,
-            paren_depth: 0,
+            brackets: Vec::new(),
         }
+    }
+
+    /// 현재 위치에서 줄바꿈이 문장 종결자로 유효한가
+    /// (가장 안쪽 괄호가 '{'이거나 최상위면 유효, '(' / '[' 안이면 억제).
+    fn newlines_active(&self) -> bool {
+        matches!(self.brackets.last(), None | Some('{'))
     }
 
     /// 소스 코드를 토큰화하여 반환.
@@ -93,8 +102,8 @@ impl Lexer {
                     self.advance();
                     self.skip_blanks_and_line_comments();
                 }
-                // 종결 가능한 토큰 뒤이고 괄호 밖이면 Newline 방출
-                if self.paren_depth == 0 {
+                // 종결 가능한 토큰 뒤이고 줄바꿈이 유효한 컨텍스트면 Newline 방출
+                if self.newlines_active() {
                     if let Some(ref k) = last_kind {
                         if Self::is_newline_terminable(k) {
                             let span = self.span();
@@ -108,7 +117,7 @@ impl Lexer {
 
             if self.is_at_end() {
                 // 파일 끝에서도 Newline 자동 삽입
-                if self.paren_depth == 0 {
+                if self.newlines_active() {
                     if let Some(ref k) = last_kind {
                         if Self::is_newline_terminable(k) {
                             tokens.push(Token::new(TokenKind::Newline, self.span()));
@@ -128,12 +137,14 @@ impl Lexer {
 
             match result {
                 Ok(tok) => {
-                    // 괄호 깊이 추적 (`(` 과 `[` 만)
+                    // 괄호 스택 추적 ('(' '[' '{' 모두). 닫을 때 짝이 맞을 때만 pop.
                     match tok.kind {
-                        TokenKind::LParen | TokenKind::LBracket => self.paren_depth += 1,
-                        TokenKind::RParen | TokenKind::RBracket => {
-                            self.paren_depth = self.paren_depth.saturating_sub(1);
-                        }
+                        TokenKind::LParen   => self.brackets.push('('),
+                        TokenKind::LBracket => self.brackets.push('['),
+                        TokenKind::LBrace   => self.brackets.push('{'),
+                        TokenKind::RParen   if self.brackets.last() == Some(&'(') => { self.brackets.pop(); }
+                        TokenKind::RBracket if self.brackets.last() == Some(&'[') => { self.brackets.pop(); }
+                        TokenKind::RBrace   if self.brackets.last() == Some(&'{') => { self.brackets.pop(); }
                         _ => {}
                     }
                     last_kind = Some(tok.kind.clone());
@@ -437,6 +448,28 @@ mod tests {
             .into_iter()
             .map(|t| t.kind)
             .collect()
+    }
+
+    // 회귀: `(` 안의 `{ }` 블록에서는 줄바꿈이 유효해야 한다(브래킷 스택).
+    // foo({ a \n b }) → a 와 b 사이에 Newline 이 방출됨.
+    #[test]
+    fn test_newline_active_inside_braces_within_parens() {
+        let ks = kinds_with_newlines("foo({\na\nb\n})");
+        let has_nl = ks.windows(2).any(|w|
+            matches!(&w[0], TokenKind::Ident(x) if x == "a")
+                && w[1] == TokenKind::Newline);
+        assert!(has_nl, "블록 안 'a' 뒤에 Newline 이 있어야 함: {ks:?}");
+    }
+
+    // 대조: `(` 안에서 `{ }` 없이 줄바꿈은 여전히 억제된다.
+    // (끝의 ')' 뒤 EOF 자동 Newline은 정상이므로, a~b 사이 억제만 확인)
+    #[test]
+    fn test_newline_suppressed_inside_parens_only() {
+        let ks = kinds_with_newlines("foo(a\nb)");
+        let a_then_nl = ks.windows(2).any(|w|
+            matches!(&w[0], TokenKind::Ident(x) if x == "a")
+                && w[1] == TokenKind::Newline);
+        assert!(!a_then_nl, "괄호 안(블록 없음) a~b 줄바꿈은 억제돼야 함: {ks:?}");
     }
 
     // =================================================================

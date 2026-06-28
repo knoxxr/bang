@@ -173,9 +173,18 @@ impl Parser {
             if self.is_at_end() {
                 break;
             }
+            let before = self.pos;
             match self.parse_stmt() {
                 Some(s) => stmts.push(s),
                 None => { /* 에러 복구 후 계속 */ }
+            }
+            // 진행 보장: parse_stmt가 토큰을 하나도 소비하지 못했으면(예: 떠도는 '}')
+            // 무한루프가 되므로 에러를 남기고 한 토큰을 강제로 건너뛴다.
+            if self.pos == before {
+                let sp = self.peek_span();
+                let msg = format!("예상치 못한 토큰: '{}'", self.peek());
+                self.error_at(sp, &msg);
+                self.advance();
             }
         }
         stmts
@@ -195,8 +204,16 @@ impl Parser {
             if matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
                 break;
             }
+            let before = self.pos;
             if let Some(s) = self.parse_stmt() {
                 stmts.push(s);
+            }
+            // 진행 보장: 토큰을 소비하지 못한 에러 상황에서 무한루프 방지.
+            if self.pos == before {
+                let sp = self.peek_span();
+                let msg = format!("예상치 못한 토큰: '{}'", self.peek());
+                self.error_at(sp, &msg);
+                self.advance();
             }
         }
 
@@ -742,6 +759,36 @@ mod tests {
             StmtKind::Expr(e) => e,
             other => panic!("표현식 문장 기대, 발견: {other:?}"),
         }
+    }
+
+    fn try_parse(src: &str) -> Result<Program, Vec<ParseError>> {
+        let toks = Lexer::new(src).tokenize().expect("렉싱 실패");
+        Parser::new(toks).parse()
+    }
+
+    // 회귀: 파서 에러 복구의 진행 보장 (무한루프 종료성 버그).
+    // 떠도는 '}' 가 무한루프 없이 파스 에러로 즉시 종료해야 한다.
+    // (이 테스트가 끝까지 도는 것 자체가 무한루프가 없다는 증거)
+    #[test]
+    fn test_stray_rbrace_terminates_with_error() {
+        assert!(try_parse("}\n").is_err(), "떠도는 '}}' 는 파스 에러여야 함");
+        assert!(try_parse("let x = 1\n}\nlet y = 2\n").is_err());
+        assert!(try_parse("}\nlet x = 1\n").is_err());
+    }
+
+    // 회귀: 함수 인자로 넘기는 다중문 클로저(본문에 let)가 파싱돼야 한다.
+    // 괄호 안 '{ }' 블록에서 줄바꿈이 유효해야 함 (렉서 브래킷 스택).
+    #[test]
+    fn test_multiline_closure_as_call_argument() {
+        let prog = parse("register(\"/x\", fn(req) {\n    let d = req\n    return d\n})\n");
+        assert_eq!(prog.stmts.len(), 1, "호출식 문 1개");
+    }
+
+    // 회귀: 다중라인 맵 리터럴(인자)도 여전히 파싱돼야 한다 (렉서 변경 부작용 없음).
+    #[test]
+    fn test_multiline_map_literal_as_argument() {
+        let prog = parse("f({\n    \"a\": 1,\n    \"b\": 2\n})\n");
+        assert_eq!(prog.stmts.len(), 1);
     }
 
     // -------------------------------------------------------------------------
