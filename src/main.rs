@@ -29,6 +29,8 @@ fn main() {
         "repl"     => cmd_repl(),
         "tokenize" => cmd_tokenize(&args[2..]),
         "parse"    => cmd_parse(&args[2..]),
+        "add"      => cmd_add(&args[2..]),
+        "install"  => cmd_install(&args[2..]),
         "help" | "--help" | "-h" => print_usage(),
         "version" | "--version" | "-V" => print_version(),
         other => {
@@ -67,6 +69,8 @@ fn print_usage() {
     eprintln!("  parse   <파일>   AST 출력");
     eprintln!("  tokenize <파일>  토큰화 출력 (디버그)");
     eprintln!("  repl             대화형 셸(REPL) 시작");
+    eprintln!("  add <이름> <git-url[@rev]>  의존성 추가 (bang.toml + bang_modules/ 설치)");
+    eprintln!("  install          bang.toml의 모든 의존성 설치");
     eprintln!("  version          버전 출력");
     eprintln!("  help             도움말 출력");
 }
@@ -511,6 +515,91 @@ fn cmd_compile(args: &[String]) {
         eprintln!("      Windows는 MSYS2(MinGW) 또는 LLVM(clang)을 PATH에 설치하세요.");
         process::exit(1);
     }
+}
+
+// ============================================================================
+// 패키지 관리: bang add / bang install
+// ============================================================================
+
+const MANIFEST: &str = "bang.toml";
+
+fn read_deps() -> Vec<bang::pkg::Dependency> {
+    match fs::read_to_string(MANIFEST) {
+        Ok(content) => bang::pkg::parse_manifest(&content),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn write_deps(deps: &[bang::pkg::Dependency]) {
+    let text = bang::pkg::serialize_manifest(deps);
+    if let Err(e) = fs::write(MANIFEST, text) {
+        eprintln!("오류: {MANIFEST} 쓰기 실패: {e}");
+        process::exit(1);
+    }
+}
+
+/// git clone 으로 의존성을 bang_modules/<name> 에 설치한다.
+fn install_dep(dep: &bang::pkg::Dependency) -> bool {
+    let dest = format!("bang_modules/{}", dep.name);
+    if std::path::Path::new(&dest).exists() {
+        println!("이미 설치됨: {} ({dest})", dep.name);
+        return true;
+    }
+    let _ = fs::create_dir_all("bang_modules");
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("clone").arg("--depth").arg("1");
+    if let Some(rev) = &dep.rev {
+        cmd.arg("--branch").arg(rev);
+    }
+    cmd.arg(&dep.url).arg(&dest);
+    println!("설치 중: {} ← {}{}", dep.name, dep.url,
+        dep.rev.as_ref().map(|r| format!("@{r}")).unwrap_or_default());
+    match cmd.status() {
+        Ok(s) if s.success() => { println!("완료: {}", dep.name); true }
+        Ok(s) => { eprintln!("git clone 실패 ({}): 종료 코드 {:?}", dep.name, s.code()); false }
+        Err(e) => { eprintln!("git 실행 오류: {e} (git이 설치돼 있는지 확인)"); false }
+    }
+}
+
+fn cmd_add(args: &[String]) {
+    if args.len() < 2 {
+        eprintln!("사용법: bang add <이름> <git-url[@rev]>");
+        process::exit(1);
+    }
+    let name = args[0].clone();
+    let spec = &args[1];
+    let (url, rev) = match spec.rsplit_once('@') {
+        Some((u, r)) if u.contains("://") => (u.to_string(), Some(r.to_string())),
+        _ => (spec.clone(), None),
+    };
+    let dep = bang::pkg::Dependency { name: name.clone(), url, rev };
+
+    if !install_dep(&dep) {
+        process::exit(1);
+    }
+    let mut deps = read_deps();
+    bang::pkg::upsert(&mut deps, dep);
+    write_deps(&deps);
+    println!("{MANIFEST} 에 '{name}' 추가됨");
+}
+
+fn cmd_install(_args: &[String]) {
+    let deps = read_deps();
+    if deps.is_empty() {
+        println!("{MANIFEST} 에 의존성이 없습니다.");
+        return;
+    }
+    let mut failed = 0;
+    for dep in &deps {
+        if !install_dep(dep) {
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        eprintln!("{failed}개 의존성 설치 실패");
+        process::exit(1);
+    }
+    println!("모든 의존성 설치 완료 ({}개)", deps.len());
 }
 
 /// 한 줄에서 괄호 깊이 변화량 계산 (문자열 리터럴 대략 처리)

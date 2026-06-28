@@ -41,6 +41,30 @@ fn run_with_module(module_src: &str, main_src: &str) -> String {
     String::from_utf8(out.stdout).expect("stdout UTF-8 아님")
 }
 
+/// 패키지: 바레 이름 import가 bang_modules/<name>/<name>.bang 으로 해석된다.
+#[test]
+fn test_named_module_resolution() {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("bang_pkg_{}_{n}", std::process::id()));
+    let modir = dir.join("bang_modules").join("mathutils");
+    let _ = fs::create_dir_all(&modir);
+    fs::write(modir.join("mathutils.bang"),
+        "let pi = 3.14159\nfn square(x) { return x * x }\n").expect("모듈 쓰기");
+    fs::write(dir.join("app.bang"),
+        "let m = import(\"mathutils\")\nprint(m.square(5))\n").expect("앱 쓰기");
+
+    let out = Command::new(BANG)
+        .arg("app.bang")
+        .current_dir(&dir)
+        .output()
+        .expect("실행 실패");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(stdout, "25\n");
+}
+
 /// 회귀: 모듈 함수가 형제 함수와 모듈 상수를 참조 (이전엔 패닉).
 #[test]
 fn test_module_function_references_siblings() {

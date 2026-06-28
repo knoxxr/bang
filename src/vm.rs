@@ -1703,10 +1703,15 @@ impl Vm {
             }
 
             // ── 모듈 (57) ───────────────────────────────────────────────────────
-            57 => { // import(path) → Map of module exports (캐시된 싱글톤)
+            57 => { // import(spec) → Map of module exports (캐시된 싱글톤)
                 req_args("import", &args, 1, span)?;
-                let path = str_arg("import", &args[0], span)?;
-                // 캐시 키: 정규화된 절대경로 (실패 시 원본 경로)
+                let spec = str_arg("import", &args[0], span)?;
+                // 이름 해석: 바레 이름은 bang_modules/ 및 BANG_PATH에서 검색,
+                // .bang/경로 구분자 포함이면 직접 경로.
+                let path = resolve_module(&spec).ok_or_else(|| RuntimeError::new(
+                    format!("import(): 모듈을 찾을 수 없음: '{spec}' (bang_modules/ 또는 BANG_PATH 확인)"), span))?;
+                let path = path.to_string_lossy().into_owned();
+                // 캐시 키: 정규화된 절대경로 (실패 시 해석된 경로)
                 let key = std::fs::canonicalize(&path)
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_else(|_| path.clone());
@@ -2221,6 +2226,31 @@ fn deep_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
 fn module_cache() -> &'static Mutex<HashMap<String, VmValue>> {
     static CACHE: OnceLock<Mutex<HashMap<String, VmValue>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// import 모듈 해석. 바레 이름은 검색 경로에서 찾고, 경로/확장자가 있으면 직접 경로.
+fn resolve_module(spec: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    // 직접 경로: .bang 확장자나 경로 구분자 포함
+    if spec.ends_with(".bang") || spec.contains('/') || spec.contains('\\') {
+        let p = PathBuf::from(spec);
+        return if p.is_file() { Some(p) } else { None };
+    }
+    // 바레 이름: 검색 후보
+    let mut candidates: Vec<PathBuf> = vec![
+        PathBuf::from(format!("{spec}.bang")),
+        PathBuf::from(format!("bang_modules/{spec}/{spec}.bang")),
+        PathBuf::from(format!("bang_modules/{spec}/main.bang")),
+        PathBuf::from(format!("bang_modules/{spec}/lib.bang")),
+    ];
+    if let Ok(bp) = std::env::var("BANG_PATH") {
+        for dir in bp.split(':').filter(|d| !d.is_empty()) {
+            candidates.push(PathBuf::from(format!("{dir}/{spec}.bang")));
+            candidates.push(PathBuf::from(format!("{dir}/{spec}/{spec}.bang")));
+            candidates.push(PathBuf::from(format!("{dir}/{spec}/main.bang")));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 /// 정규식 패턴 컴파일 (에러는 try/catch로 잡히는 런타임 에러).

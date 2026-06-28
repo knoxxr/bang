@@ -214,6 +214,34 @@ print(math.area(2))      // 12.56636
   최상위 코드는 한 번만 실행되며, 모든 import가 같은 모듈 인스턴스를 공유한다.
 - import는 기본 실행 엔진인 VM에서 동작한다(`--interp` 모드는 미지원).
 
+### 패키지 (git 의존성)
+
+중앙 레지스트리 없이 **git 기반**으로 패키지를 관리한다.
+
+```bash
+# 의존성 추가 (git clone → bang_modules/, bang.toml 기록)
+bang add mathutils https://github.com/user/mathutils@v1.0.0
+
+# bang.toml의 모든 의존성 설치 (협업자가 클론 후)
+bang install
+```
+
+`bang.toml`:
+```toml
+[dependencies]
+mathutils = "https://github.com/user/mathutils@v1.0.0"
+```
+
+설치된 패키지는 **바레 이름**으로 import한다 — 검색 순서:
+`./<name>.bang` → `bang_modules/<name>/<name>.bang` (또는 `main.bang`/`lib.bang`) →
+`BANG_PATH` 의 디렉토리.
+
+```
+let math = import("mathutils")   // bang_modules/mathutils/ 에서 해석
+print(math.square(5))
+```
+(경로/`.bang` 확장자가 있으면 기존처럼 파일 경로로 직접 import.)
+
 ## 에러 처리 (try / catch / throw)
 
 런타임 에러는 `try`/`catch`로 잡아 복구하고, `throw`로 임의의 값을 던진다.

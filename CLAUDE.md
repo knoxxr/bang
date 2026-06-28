@@ -230,3 +230,13 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              (역참조는 여전히 미지원). 테스트: regex 단위 +1, vm_test +1.
              (tests: 98 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 72 vm + 8 transpile + 7 cli + 5 import = 264 green, clippy 0)
+✅ Phase 23 — 패키지 시스템 (git 기반, 레지스트리 없음)
+             A) 이름 기반 모듈 해석(vm.rs resolve_module): 바레 이름 import는
+                ./<name>.bang → bang_modules/<name>/{name,main,lib}.bang → BANG_PATH 순서로 검색.
+                .bang/경로 구분자 포함이면 기존처럼 직접 경로.
+             B) 매니페스트(src/pkg.rs): bang.toml [dependencies] 최소 파서/직렬화.
+                CLI: bang add <name> <git-url[@rev]> (git clone → bang_modules/ + bang.toml 기록),
+                bang install (bang.toml 의존성 일괄 clone). git/네트워크는 thin 래퍼.
+             테스트: pkg 단위 4, import 통합 +1(이름 해석). git clone은 수동 검증.
+             (tests: 102 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 72 vm + 8 transpile + 7 cli + 6 import = 269 green, clippy 0)
