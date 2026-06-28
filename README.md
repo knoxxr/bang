@@ -160,7 +160,8 @@ let sorted = sort(xs)  // sorted = [1, 2, 3], xs 는 그대로
 | 리스트 | `push(l,x)` `pop(l)` `sort(l)` `sort_by(l,keyfn)` `reverse(l)` `map(l,f)` `filter(l,f)` `reduce(l,f,init)` `any(l,f)` `all(l,f)` `sum(l)` `flat(l)` `enumerate(l)` `zip(a,b)` `range(...)` `slice(l,s,e)` `index_of(l,x)` `unique(l)` |
 | 맵 | `keys(m)` `values(m)` `has(m,k)` `get(m,k,default)` `merge(m1,m2)` |
 | 문자열 | `split(s,sep)` `join(l,sep)` `trim(s)` `trim_start(s)` `trim_end(s)` `replace(s,a,b)` `contains(s,sub)` `starts_with(s,p)` `ends_with(s,p)` `upper(s)` `lower(s)` `find(s,sub)` `chars(s)` `slice(s,start,end)` `repeat(s,n)` |
-| 수학 | `abs(x)` `sqrt(x)` `floor(x)` `ceil(x)` `round(x)` `pow(b,e)` `min(...)` `max(...)` |
+| 수학 | `abs(x)` `sqrt(x)` `floor(x)` `ceil(x)` `round(x)` `pow(b,e)` `min(...)` `max(...)` `gcd(a,b)` `clamp(x,lo,hi)` `sign(x)` `sin(x)` `cos(x)` `tan(x)` `log(x)` `log10(x)` `exp(x)` `pi()` `e()` |
+| 집합(리스트) | `union(a,b)` `intersect(a,b)` `difference(a,b)` (중복 제거) |
 | 동시성 | `channel(...)` `send(c,v)` `recv(c)` `close(c)` `wait(f)` `parallel_map(l,f)` |
 | JSON | `json_parse(s)` `json_stringify(v)` |
 | 정규식 | `regex_match(s,pat)` `regex_find(s,pat)` `regex_find_all(s,pat)` `regex_replace(s,pat,repl)` `regex_groups(s,pat)` |

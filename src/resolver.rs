@@ -355,6 +355,22 @@ impl Resolver {
             ("regex_find_all", Some(2)),
             ("regex_replace",  Some(3)),
             ("regex_groups",   Some(2)),
+            // stdlib: math (82-92)
+            ("gcd",        Some(2)),
+            ("clamp",      Some(3)),
+            ("sign",       Some(1)),
+            ("sin",        Some(1)),
+            ("cos",        Some(1)),
+            ("tan",        Some(1)),
+            ("log",        Some(1)),
+            ("log10",      Some(1)),
+            ("exp",        Some(1)),
+            ("pi",         Some(0)),
+            ("e",          Some(0)),
+            // stdlib: 집합 연산 (리스트 기반) (93-95)
+            ("union",      Some(2)),
+            ("intersect",  Some(2)),
+            ("difference", Some(2)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {

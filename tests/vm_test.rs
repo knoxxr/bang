@@ -592,6 +592,38 @@ fn test_vm_regex_bad_pattern_catchable() {
     assert_eq!(run_vm(src), vec!["caught"]);
 }
 
+// ============================================================================
+// math + 집합 연산 — Phase 24
+// ============================================================================
+
+#[test]
+fn test_vm_math_basics() {
+    assert_eq!(run_vm("print(gcd(12, 18))"), vec!["6"]);
+    assert_eq!(run_vm("print(clamp(15, 0, 10))"), vec!["10"]);
+    assert_eq!(run_vm("print(clamp(5, 0, 10))"), vec!["5"]);
+    assert_eq!(run_vm("print(sign(-3))"), vec!["-1"]);
+    assert_eq!(run_vm("print(sign(0))"), vec!["0"]);
+    assert_eq!(run_vm("print(sign(7))"), vec!["1"]);
+}
+
+#[test]
+fn test_vm_math_trig_log() {
+    assert_eq!(run_vm("print(round(sin(0.0)))"), vec!["0"]);
+    assert_eq!(run_vm("print(round(cos(0.0)))"), vec!["1"]);
+    assert_eq!(run_vm("print(round(exp(0.0)))"), vec!["1"]);
+    assert_eq!(run_vm("print(round(log(exp(1.0))))"), vec!["1"]);
+    assert_eq!(run_vm("print(round(pi() * 100.0))"), vec!["314"]);
+}
+
+#[test]
+fn test_vm_set_ops() {
+    assert_eq!(run_vm("print(union([1,2,3], [3,4,5]))"), vec!["[1, 2, 3, 4, 5]"]);
+    assert_eq!(run_vm("print(intersect([1,2,3], [2,3,4]))"), vec!["[2, 3]"]);
+    assert_eq!(run_vm("print(difference([1,2,3], [2]))"), vec!["[1, 3]"]);
+    // 중복 제거
+    assert_eq!(run_vm("print(union([1,1,2], [2,2,3]))"), vec!["[1, 2, 3]"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

@@ -369,6 +369,22 @@ pub const BUILTINS: &[&str] = &[
     "regex_find_all", // 79
     "regex_replace",  // 80
     "regex_groups",   // 81
+    // stdlib: math (82-92)
+    "gcd",        // 82
+    "clamp",      // 83
+    "sign",       // 84
+    "sin",        // 85
+    "cos",        // 86
+    "tan",        // 87
+    "log",        // 88
+    "log10",      // 89
+    "exp",        // 90
+    "pi",         // 91
+    "e",          // 92
+    // stdlib: 집합 연산 (93-95)
+    "union",      // 93
+    "intersect",  // 94
+    "difference", // 95
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -1998,6 +2014,74 @@ impl Vm {
                 }
             }
 
+            // ── math (82-92) ──────────────────────────────────────────────────
+            82 => { // gcd(a, b)
+                req_args("gcd", &args, 2, span)?;
+                let mut a = int_of("gcd", &args[0], span)?.abs();
+                let mut b = int_of("gcd", &args[1], span)?.abs();
+                while b != 0 { let t = b; b = a % b; a = t; }
+                Ok(VmValue::Int(a))
+            }
+            83 => { // clamp(x, lo, hi) → 원본 타입 유지
+                req_args("clamp", &args, 3, span)?;
+                if vm_cmp(&args[0], &args[1], span)? == Ordering::Less {
+                    Ok(args[1].clone())
+                } else if vm_cmp(&args[0], &args[2], span)? == Ordering::Greater {
+                    Ok(args[2].clone())
+                } else {
+                    Ok(args[0].clone())
+                }
+            }
+            84 => { // sign(x) → -1 / 0 / 1
+                req_args("sign", &args, 1, span)?;
+                let x = num_of("sign", &args[0], span)?;
+                Ok(VmValue::Int(if x > 0.0 { 1 } else if x < 0.0 { -1 } else { 0 }))
+            }
+            85 => { req_args("sin", &args, 1, span)?; Ok(VmValue::Float(num_of("sin", &args[0], span)?.sin())) }
+            86 => { req_args("cos", &args, 1, span)?; Ok(VmValue::Float(num_of("cos", &args[0], span)?.cos())) }
+            87 => { req_args("tan", &args, 1, span)?; Ok(VmValue::Float(num_of("tan", &args[0], span)?.tan())) }
+            88 => { req_args("log", &args, 1, span)?; Ok(VmValue::Float(num_of("log", &args[0], span)?.ln())) }
+            89 => { req_args("log10", &args, 1, span)?; Ok(VmValue::Float(num_of("log10", &args[0], span)?.log10())) }
+            90 => { req_args("exp", &args, 1, span)?; Ok(VmValue::Float(num_of("exp", &args[0], span)?.exp())) }
+            91 => { req_args("pi", &args, 0, span)?; Ok(VmValue::Float(std::f64::consts::PI)) }
+            92 => { req_args("e", &args, 0, span)?; Ok(VmValue::Float(std::f64::consts::E)) }
+
+            // ── 집합 연산 (리스트 기반) (93-95) ───────────────────────────────
+            93 => { // union(a, b) → 중복 제거 합집합 (a 순서 후 b의 새 원소)
+                req_args("union", &args, 2, span)?;
+                let a = list_arg("union", &args[0], span)?;
+                let b = list_arg("union", &args[1], span)?;
+                let mut out: Vec<VmValue> = Vec::new();
+                for item in a.into_iter().chain(b) {
+                    if !out.iter().any(|e| vm_eq(e, &item)) { out.push(item); }
+                }
+                Ok(VmValue::List(Arc::new(out)))
+            }
+            94 => { // intersect(a, b) → a 중 b에도 있는 원소 (중복 제거)
+                req_args("intersect", &args, 2, span)?;
+                let a = list_arg("intersect", &args[0], span)?;
+                let b = list_arg("intersect", &args[1], span)?;
+                let mut out: Vec<VmValue> = Vec::new();
+                for item in a {
+                    if b.iter().any(|e| vm_eq(e, &item)) && !out.iter().any(|e| vm_eq(e, &item)) {
+                        out.push(item);
+                    }
+                }
+                Ok(VmValue::List(Arc::new(out)))
+            }
+            95 => { // difference(a, b) → a 중 b에 없는 원소 (중복 제거)
+                req_args("difference", &args, 2, span)?;
+                let a = list_arg("difference", &args[0], span)?;
+                let b = list_arg("difference", &args[1], span)?;
+                let mut out: Vec<VmValue> = Vec::new();
+                for item in a {
+                    if !b.iter().any(|e| vm_eq(e, &item)) && !out.iter().any(|e| vm_eq(e, &item)) {
+                        out.push(item);
+                    }
+                }
+                Ok(VmValue::List(Arc::new(out)))
+            }
+
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
         }
     }
@@ -2139,6 +2223,15 @@ fn vm_field_get(target: VmValue, name: &str, span: Span) -> Result<VmValue, Runt
         VmValue::Map(map) => Ok(map.get(name).cloned().unwrap_or(VmValue::Nil)),
         other => Err(RuntimeError::new(
             format!("필드 접근: {} 에 필드 '{}' 없음", other.type_name(), name), span)),
+    }
+}
+
+fn num_of(name: &str, v: &VmValue, span: Span) -> Result<f64, RuntimeError> {
+    match v {
+        VmValue::Int(n) => Ok(*n as f64),
+        VmValue::Float(n) => Ok(*n),
+        other => Err(RuntimeError::new(
+            format!("{name}(): 숫자 필요, {} 발견", other.type_name()), span)),
     }
 }
 

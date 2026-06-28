@@ -240,3 +240,10 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              테스트: pkg 단위 4, import 통합 +1(이름 해석). git clone은 수동 검증.
              (tests: 102 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 72 vm + 8 transpile + 7 cli + 6 import = 269 green, clippy 0)
+✅ Phase 24 — math 확장 + 집합 연산 (VM 빌트인 82-95)
+             math: gcd, clamp(원본 타입 유지), sign, sin/cos/tan, log/log10/exp, pi(), e().
+             집합(리스트 기반, 새 타입 도입 안 함): union/intersect/difference (모두 중복 제거).
+             (Set 새 값 타입은 코어 전체 영향이라 의도적으로 리스트 기반으로 대체.)
+             헬퍼 num_of(Int/Float→f64) 추가. 테스트: vm_test +3.
+             (tests: 102 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
+             + 75 vm + 8 transpile + 7 cli + 6 import = 272 green, clippy 0)
