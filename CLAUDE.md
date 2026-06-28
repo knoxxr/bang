@@ -63,12 +63,19 @@ src/
   interpreter/  트리 워킹 평가 + 동시성 의미 (Phase 3)
   compiler/     AST → 바이트코드 (Phase 5)
   vm/           스택 VM + GC (Phase 5)
-  runtime/      스케줄러·채널·Future (Phase 3 OS스레드 → Phase 5 M:N)
-  stdlib/       내장 함수·모듈 (Phase 6)
-  scheduler/    M:N 스케줄러 (Phase 9)
-  codegen/      Cranelift JIT(jit) + AOT C 트랜스파일러(transpile) (Phase 9~10)
-docs/SPEC.md    언어 명세 (동시성 모델 섹션 포함). 의미 변경 시 함께 갱신.
-docs/GUIDE.md   사용자 가이드.
+  runtime/      스케줄러·채널·Future (Phase 3 OS스레드 → Phase 5 M:N). BangChannel::try_recv(select용)
+  stdlib/       내장 함수·모듈 (Phase 6) — 실제 빌트인 구현은 vm.rs call_builtin
+  scheduler/    M:N 스케줄러 (Phase 9) + 탄력 풀(Phase 28: idle 0이면 임시워커, cap 512)
+  codegen/      Cranelift JIT(jit, cranelift 버전 비호환으로 현재 빌드불가) + AOT C 트랜스파일러(transpile)
+  typeck/       정적 타입 검사 (Phase 25, bang check 통합)
+  regex/        자체 정규식 엔진 (Phase 21~22, 백트래킹 VM + 캡처)
+  pkg/          bang.toml 매니페스트 파서 (Phase 23, bang add/install)
+  reactor/      논블로킹 I/O 리액터 (Phase 34, polling 기반; serve_event가 사용)
+docs/SPEC.md    언어 명세 (동시성·serve_event 한계 포함). 의미 변경 시 함께 갱신.
+docs/TUTORIAL.md 진행형 입문 튜토리얼 (먼저 읽는 문서).
+docs/GUIDE.md   사용자 가이드 (초기 버전 기준 — 최신은 TUTORIAL/SPEC).
+빌트인 인덱스: resolver.rs 등록 순서 == vm.rs BUILTINS 배열 == call_builtin match. 끝에만 추가(번호 불변).
+의존성: polling(리액터). cranelift는 jit feature(현재 비호환).
 examples/       기본 샘플 + 동시성 샘플(channels/parallel_block/spawn_basic 등)이 한 디렉토리에 평면 배치.
                 상단 주석의 기대 출력이 통합 테스트 정답지.
 
@@ -337,7 +344,7 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                난점: VM 중단/재개(yield/resume) — 현재 스케줄러는 태스크를 끝까지 실행.
                접근 결정 필요(코루틴 vs VM 상태머신). CPU 병렬(OS스레드 spawn)과의 양립도 과제.
              단계0은 표면 변경 없어 릴리스 없음. (tests: 295 green, clippy 0)
-✅ Phase 35 — 논블로킹 I/O 단계 1: 이벤트 루프 서버 serve_event (107) — v0.24.0
+✅ Phase 35 — 논블로킹 I/O 단계 1: 이벤트 루프 서버 serve_event (106) — v0.24.0
              결정: B(의존성 없는 길) 선택 → VM 중단/재개(코루틴) 대신 "연결 단위 상태머신을
              런타임에" 두는 방식. VM 실행 모델·spawn·기존 빌트인 전부 무변경(추가만).
              serve_event(addr, handler): 단일 스레드가 리액터(polling)로 다수 연결을 멀티플렉싱.
