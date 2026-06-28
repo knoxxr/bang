@@ -247,3 +247,12 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              헬퍼 num_of(Int/Float→f64) 추가. 테스트: vm_test +3.
              (tests: 102 unit + 26 interp + 3 lexer + 9 parser + 36 resolver
              + 75 vm + 8 transpile + 7 cli + 6 import = 272 green, clippy 0)
+✅ Phase 25 — 정적 타입 검사 (gradual) — src/typeck.rs, bang check 통합
+             타입 힌트를 실행 전 정적 분석. 동적 언어이므로 "둘 다 구체 타입이고 서로
+             다른 확실한 충돌"만 보고(Unknown/any는 통과 → 거짓 양성 회피).
+             검사: 타입된 let, 함수 호출 인자(최상위/지역 시그니처), 타입된 반환값.
+             식 타입 추론(리터럴/연산/호출 반환/변수 스코프). bang check에 통합(오류 시 exit 1).
+             참고: VM 미세 최적화(전역 Arc 복제 제거)는 측정상 무효과 → globals Mutex는
+             병목 아님 확인. 진짜 순차 성능엔 unsafe/재작성 필요(보류).
+             테스트: typeck 단위 5. (tests: 107 unit + 26 interp + 3 lexer + 9 parser
+             + 36 resolver + 75 vm + 8 transpile + 7 cli + 6 import = 277 green, clippy 0)

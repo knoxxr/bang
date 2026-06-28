@@ -251,6 +251,16 @@ fn cmd_check(args: &[String]) {
         process::exit(1);
     }
 
+    // 정적 타입 검사 (gradual): 확실한 타입 충돌만 보고
+    let type_errors = bang::typeck::check(&prog);
+    if !type_errors.is_empty() {
+        for e in &type_errors {
+            eprintln!("{}", format_with_context(
+                &format!("타입 오류: {}", e.message), e.span, &source));
+        }
+        process::exit(1);
+    }
+
     match compile(&prog) {
         Ok(out) => {
             println!("OK: {path}");

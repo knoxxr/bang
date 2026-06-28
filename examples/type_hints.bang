@@ -22,10 +22,13 @@ fn echo(x) {
 }
 print(echo(label))
 
-// 타입 불일치는 try/catch로 잡히는 런타임 에러
+// 동적 값의 타입 불일치는 런타임에 잡힌다 (정적 검사로는 알 수 없는 경우)
+let vals = [1, "둘"]
+fn need_int(n: int) {
+    return n
+}
 try {
-    let bad: int = "문자열"
-    print(bad)
+    print(need_int(vals[1]))   // vals[1]은 정적으로 미지(any), 런타임엔 str → 에러
 } catch e {
     print("타입 에러 잡음")
 }

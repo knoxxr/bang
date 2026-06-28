@@ -95,7 +95,7 @@ bang run     [--interp] [--jit] [--dump-ast] <파일|->   실행 (기본: VM)
                           --jit 은 소스에서 --features jit 로 빌드한 경우에만 동작
                           (Homebrew/curl 배포본은 미포함)
 bang compile -o <출력> <파일>   AOT 컴파일 (C 트랜스파일 + cc/clang/gcc -O2)
-bang check   <파일>       오류 검사 (실행 없음)
+bang check   <파일>       오류 검사 + 정적 타입 검사 (실행 없음)
 bang build   <파일>       컴파일 검증 + 통계
 bang parse   <파일>       AST 출력
 bang tokenize <파일>      토큰 출력 (디버그)
@@ -315,7 +315,15 @@ fn id(v: any) -> any { return v }
 ```
 
 타입: `int` `float` `bool` `str` `nil` `list` `map` `fn` `any`.
-(VM 전용 — `--interp`/AOT는 힌트를 무시한다.)
+(런타임 검증은 VM 전용 — `--interp`/AOT는 힌트를 무시한다.)
+
+**정적 검사**: `bang check <파일>` 은 실행 전에 타입 힌트를 정적 분석해
+**확실한 충돌만** 보고한다(거짓 양성을 피하기 위해 동적/미지 타입은 통과).
+
+```bash
+$ bang check app.bang
+# 타입 오류: '...'은 int 인데 str 값이 대입됨   (let / 함수 인자 / 반환값 검사)
+```
 
 ## 개발
 
