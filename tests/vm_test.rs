@@ -735,6 +735,46 @@ fn test_vm_constant_dedup() {
     assert_eq!(run_vm(&src), vec!["2100"]);
 }
 
+// ============================================================================
+// 정수 오버플로 의미 통일 — Phase 36
+// (회귀: debug는 panic, release는 조용히 wrap이던 것을 catch 가능한 에러로 통일)
+// ============================================================================
+
+#[test]
+fn test_vm_int_overflow_catchable() {
+    let src = r#"
+let max = 9223372036854775807
+let min = -9223372036854775807 - 1
+try { print(max + 1) } catch e { print("add") }
+try { print(min - 1) } catch e { print("sub") }
+try { print(max * 2) } catch e { print("mul") }
+try { print(min / -1) } catch e { print("div") }
+try { print(min % -1) } catch e { print("mod") }
+try { print(-min) } catch e { print("neg") }
+try { print(abs(min)) } catch e { print("abs") }
+try { print(sum([max, 1])) } catch e { print("sum") }
+try { print(gcd(min, min)) } catch e { print("gcd") }
+print(max + 0)
+"#;
+    assert_eq!(run_vm(src), vec![
+        "add", "sub", "mul", "div", "mod", "neg", "abs", "sum", "gcd",
+        "9223372036854775807",
+    ]);
+}
+
+#[test]
+fn test_vm_const_fold_overflow_not_folded() {
+    // 리터럴끼리의 오버플로도 (폴딩 포기 후) 런타임 에러로 잡힘
+    let src = "try {\n print(9223372036854775807 + 1)\n} catch e {\n print(\"caught\")\n}";
+    assert_eq!(run_vm(src), vec!["caught"]);
+}
+
+#[test]
+fn test_vm_mod_zero_still_errors() {
+    let src = "try {\n print(10 % 0)\n} catch e {\n print(\"caught\")\n}";
+    assert_eq!(run_vm(src), vec!["caught"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

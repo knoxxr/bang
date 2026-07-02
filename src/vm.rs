@@ -823,7 +823,8 @@ impl Vm {
                     let span = self.current_span();
                     let v = auto_resolve(self.stack_pop(), span)?;
                     self.stack.push(match v {
-                        VmValue::Int(n)   => VmValue::Int(-n),
+                        VmValue::Int(n)   => VmValue::Int(n.checked_neg()
+                            .ok_or_else(|| overflow_err("단항 -", span))?),
                         VmValue::Float(n) => VmValue::Float(-n),
                         other => return Err(RuntimeError::new(
                             format!("단항 -: 숫자 필요, {} 발견", other.type_name()), span)),
@@ -1688,7 +1689,8 @@ impl Vm {
                 let mut has_float = false;
                 for v in list {
                     match v {
-                        VmValue::Int(n)   => total_i += n,
+                        VmValue::Int(n)   => total_i = total_i.checked_add(n)
+                            .ok_or_else(|| overflow_err("sum", span))?,
                         VmValue::Float(n) => { total_f += n; has_float = true; }
                         other => return Err(RuntimeError::new(
                             format!("sum(): 숫자 리스트 필요, {} 발견", other.type_name()), span)),
@@ -1705,7 +1707,8 @@ impl Vm {
             44 => { // abs(x)
                 req_args("abs", &args, 1, span)?;
                 match &args[0] {
-                    VmValue::Int(n)   => Ok(VmValue::Int(n.abs())),
+                    VmValue::Int(n)   => n.checked_abs().map(VmValue::Int)
+                        .ok_or_else(|| overflow_err("abs", span)),
                     VmValue::Float(n) => Ok(VmValue::Float(n.abs())),
                     other => Err(RuntimeError::new(format!("abs(): 숫자 필요, {} 발견", other.type_name()), span)),
                 }
@@ -2130,10 +2133,12 @@ impl Vm {
             // ── math (82-92) ──────────────────────────────────────────────────
             82 => { // gcd(a, b)
                 req_args("gcd", &args, 2, span)?;
-                let mut a = int_of("gcd", &args[0], span)?.abs();
-                let mut b = int_of("gcd", &args[1], span)?.abs();
+                // unsigned_abs: i64::MIN.abs() 오버플로 회피. 결과가 i64 범위를 넘으면 에러.
+                let mut a = int_of("gcd", &args[0], span)?.unsigned_abs();
+                let mut b = int_of("gcd", &args[1], span)?.unsigned_abs();
                 while b != 0 { let t = b; b = a % b; a = t; }
-                Ok(VmValue::Int(a))
+                i64::try_from(a).map(VmValue::Int)
+                    .map_err(|_| overflow_err("gcd", span))
             }
             83 => { // clamp(x, lo, hi) → 원본 타입 유지
                 req_args("clamp", &args, 3, span)?;
@@ -2387,9 +2392,15 @@ impl Vm {
 // Pure helpers (free functions)
 // ============================================================================
 
+/// 정수 오버플로 에러 (try/catch로 잡힘). debug/release 의미 동일.
+fn overflow_err(op: &str, span: Span) -> RuntimeError {
+    RuntimeError::new(format!("정수 오버플로: {op} 결과가 64비트 범위를 벗어남"), span)
+}
+
 fn vm_add(l: VmValue, r: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
     match (l, r) {
-        (VmValue::Int(a),   VmValue::Int(b))   => Ok(VmValue::Int(a + b)),
+        (VmValue::Int(a),   VmValue::Int(b))   => a.checked_add(b)
+            .map(VmValue::Int).ok_or_else(|| overflow_err("+", span)),
         (VmValue::Float(a), VmValue::Float(b)) => Ok(VmValue::Float(a + b)),
         (VmValue::Int(a),   VmValue::Float(b)) => Ok(VmValue::Float(a as f64 + b)),
         (VmValue::Float(a), VmValue::Int(b))   => Ok(VmValue::Float(a + b as f64)),
@@ -2408,16 +2419,21 @@ fn vm_arith(l: VmValue, r: VmValue, span: Span, op: char) -> Result<VmValue, Run
     };
     match (&l, &r) {
         (VmValue::Int(a), VmValue::Int(b)) => match op {
-            '-' => Ok(VmValue::Int(a - b)),
-            '*' => Ok(VmValue::Int(a * b)),
+            '-' => a.checked_sub(*b).map(VmValue::Int).ok_or_else(|| overflow_err("-", span)),
+            '*' => a.checked_mul(*b).map(VmValue::Int).ok_or_else(|| overflow_err("*", span)),
             '/' => {
                 if *b == 0 { return Err(RuntimeError::new("0으로 나눌 수 없음", span)); }
-                if a % b == 0 { Ok(VmValue::Int(a / b)) }
-                else { Ok(VmValue::Float(*a as f64 / *b as f64)) }
+                // checked_rem: i64::MIN % -1 도 오버플로(debug panic) → checked로 방어
+                match a.checked_rem(*b) {
+                    Some(0) => a.checked_div(*b).map(VmValue::Int)
+                        .ok_or_else(|| overflow_err("/", span)),
+                    Some(_) => Ok(VmValue::Float(*a as f64 / *b as f64)),
+                    None => Err(overflow_err("/", span)), // i64::MIN / -1
+                }
             }
             '%' => {
                 if *b == 0 { return Err(RuntimeError::new("나머지: 0으로 나눌 수 없음", span)); }
-                Ok(VmValue::Int(a % b))
+                a.checked_rem(*b).map(VmValue::Int).ok_or_else(|| overflow_err("%", span))
             }
             _ => unreachable!(),
         },

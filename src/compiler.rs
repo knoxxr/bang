@@ -937,26 +937,32 @@ pub fn compile(prog: &Program) -> Result<CompileOutput, Vec<CompileError>> {
 
 fn const_fold_value(op: &BinaryOp, l: VmValue, r: VmValue) -> Option<VmValue> {
     match (op, l, r) {
-        (BinaryOp::Add, VmValue::Int(a),   VmValue::Int(b))   => Some(VmValue::Int(a + b)),
+        // Int 산술은 checked: 오버플로면 폴딩 포기(None) → 런타임에서 잡히는 에러로 일관
+        (BinaryOp::Add, VmValue::Int(a),   VmValue::Int(b))   => a.checked_add(b).map(VmValue::Int),
         (BinaryOp::Add, VmValue::Float(a), VmValue::Float(b)) => Some(VmValue::Float(a + b)),
         (BinaryOp::Add, VmValue::Int(a),   VmValue::Float(b)) => Some(VmValue::Float(a as f64 + b)),
         (BinaryOp::Add, VmValue::Float(a), VmValue::Int(b))   => Some(VmValue::Float(a + b as f64)),
         (BinaryOp::Add, VmValue::Str(a),   VmValue::Str(b))   => Some(VmValue::Str(a + &b)),
-        (BinaryOp::Sub, VmValue::Int(a),   VmValue::Int(b))   => Some(VmValue::Int(a - b)),
+        (BinaryOp::Sub, VmValue::Int(a),   VmValue::Int(b))   => a.checked_sub(b).map(VmValue::Int),
         (BinaryOp::Sub, VmValue::Float(a), VmValue::Float(b)) => Some(VmValue::Float(a - b)),
         (BinaryOp::Sub, VmValue::Int(a),   VmValue::Float(b)) => Some(VmValue::Float(a as f64 - b)),
         (BinaryOp::Sub, VmValue::Float(a), VmValue::Int(b))   => Some(VmValue::Float(a - b as f64)),
-        (BinaryOp::Mul, VmValue::Int(a),   VmValue::Int(b))   => Some(VmValue::Int(a * b)),
+        (BinaryOp::Mul, VmValue::Int(a),   VmValue::Int(b))   => a.checked_mul(b).map(VmValue::Int),
         (BinaryOp::Mul, VmValue::Float(a), VmValue::Float(b)) => Some(VmValue::Float(a * b)),
         (BinaryOp::Mul, VmValue::Int(a),   VmValue::Float(b)) => Some(VmValue::Float(a as f64 * b)),
         (BinaryOp::Mul, VmValue::Float(a), VmValue::Int(b))   => Some(VmValue::Float(a * b as f64)),
         (BinaryOp::Div, VmValue::Int(a),   VmValue::Int(b)) if b != 0 => {
-            if a % b == 0 { Some(VmValue::Int(a / b)) } else { Some(VmValue::Float(a as f64 / b as f64)) }
+            // i64::MIN % -1 / MIN / -1 도 오버플로 → checked, 실패 시 폴딩 포기
+            match a.checked_rem(b) {
+                Some(0) => a.checked_div(b).map(VmValue::Int),
+                Some(_) => Some(VmValue::Float(a as f64 / b as f64)),
+                None => None,
+            }
         }
         (BinaryOp::Div, VmValue::Float(a), VmValue::Float(b)) => Some(VmValue::Float(a / b)),
         (BinaryOp::Div, VmValue::Int(a),   VmValue::Float(b)) => Some(VmValue::Float(a as f64 / b)),
         (BinaryOp::Div, VmValue::Float(a), VmValue::Int(b))   => Some(VmValue::Float(a / b as f64)),
-        (BinaryOp::Mod, VmValue::Int(a),   VmValue::Int(b)) if b != 0 => Some(VmValue::Int(a % b)),
+        (BinaryOp::Mod, VmValue::Int(a),   VmValue::Int(b)) if b != 0 => a.checked_rem(b).map(VmValue::Int),
         (BinaryOp::Eq,  VmValue::Int(a),   VmValue::Int(b))   => Some(VmValue::Bool(a == b)),
         (BinaryOp::Eq,  VmValue::Float(a), VmValue::Float(b)) => Some(VmValue::Bool(a == b)),
         (BinaryOp::Eq,  VmValue::Bool(a),  VmValue::Bool(b))  => Some(VmValue::Bool(a == b)),
@@ -990,7 +996,7 @@ fn const_eval(expr: &Expr) -> Option<VmValue> {
         ExprKind::Unary { op, expr } => {
             let v = const_eval(expr)?;
             match (op, v) {
-                (UnaryOp::Neg, VmValue::Int(n))   => Some(VmValue::Int(-n)),
+                (UnaryOp::Neg, VmValue::Int(n))   => n.checked_neg().map(VmValue::Int),
                 (UnaryOp::Neg, VmValue::Float(n)) => Some(VmValue::Float(-n)),
                 (UnaryOp::Not, v) => Some(VmValue::Bool(!v.is_truthy())),
                 _ => None,

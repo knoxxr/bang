@@ -511,7 +511,8 @@ impl Interpreter {
     fn eval_unary(&self, op: UnaryOp, val: Value, span: Span) -> Result<Value, RuntimeError> {
         match op {
             UnaryOp::Neg => match val {
-                Value::Int(n) => Ok(Value::Int(-n)),
+                Value::Int(n) => n.checked_neg().map(Value::Int).ok_or_else(||
+                    RuntimeError::new("정수 오버플로: 단항 - 결과가 64비트 범위를 벗어남", span)),
                 Value::Float(n) => Ok(Value::Float(-n)),
                 _ => Err(RuntimeError::new(
                     format!("단항 - : 숫자 필요, {} 발견", val.type_name()), span)),
@@ -615,10 +616,11 @@ fn eval_field(target: Value, name: &str, span: Span) -> Result<Value, RuntimeErr
 fn eval_binary(op: BinaryOp, l: Value, r: Value, span: Span) -> Result<Value, RuntimeError> {
     match op {
         BinaryOp::Add => eval_add(l, r, span),
-        BinaryOp::Sub => eval_num(l, r, span, "−", |a, b| Value::Int(a.wrapping_sub(b)), |a, b| Value::Float(a - b)),
-        BinaryOp::Mul => eval_num(l, r, span, "×", |a, b| Value::Int(a.wrapping_mul(b)), |a, b| Value::Float(a * b)),
+        // Int 산술은 checked: 오버플로(및 % 0)는 잡을 수 있는 런타임 에러 (VM과 의미 일치)
+        BinaryOp::Sub => eval_num(l, r, span, "-", |a, b| a.checked_sub(b), |a, b| Value::Float(a - b)),
+        BinaryOp::Mul => eval_num(l, r, span, "*", |a, b| a.checked_mul(b), |a, b| Value::Float(a * b)),
         BinaryOp::Div => eval_div(l, r, span),
-        BinaryOp::Mod => eval_num(l, r, span, "%", |a, b| Value::Int(a.wrapping_rem(b)), |a, b| Value::Float(a % b)),
+        BinaryOp::Mod => eval_num(l, r, span, "%", |a, b| a.checked_rem(b), |a, b| Value::Float(a % b)),
         BinaryOp::Eq  => Ok(Value::Bool(values_eq(&l, &r))),
         BinaryOp::Ne  => Ok(Value::Bool(!values_eq(&l, &r))),
         BinaryOp::Lt  => eval_cmp(l, r, span, std::cmp::Ordering::Less, false),
@@ -631,7 +633,8 @@ fn eval_binary(op: BinaryOp, l: Value, r: Value, span: Span) -> Result<Value, Ru
 
 fn eval_add(l: Value, r: Value, span: Span) -> Result<Value, RuntimeError> {
     match (l, r) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_add(b))),
+        (Value::Int(a), Value::Int(b)) => a.checked_add(b).map(Value::Int).ok_or_else(||
+            RuntimeError::new("정수 오버플로: + 결과가 64비트 범위를 벗어남", span)),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
         (Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 + b)),
         (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + b as f64)),
@@ -646,12 +649,14 @@ fn eval_num(
     l: Value,
     r: Value,
     span: Span,
-    _op_name: &str,
-    int_op: fn(i64, i64) -> Value,
+    op_name: &str,
+    int_op: fn(i64, i64) -> Option<i64>,
     float_op: fn(f64, f64) -> Value,
 ) -> Result<Value, RuntimeError> {
     match (l, r) {
-        (Value::Int(a), Value::Int(b)) => Ok(int_op(a, b)),
+        (Value::Int(a), Value::Int(b)) => int_op(a, b).map(Value::Int).ok_or_else(||
+            RuntimeError::new(
+                format!("정수 산술 오류({op_name}): 오버플로 또는 0으로 나눔"), span)),
         (Value::Float(a), Value::Float(b)) => Ok(float_op(a, b)),
         (Value::Int(a), Value::Float(b)) => Ok(float_op(a as f64, b)),
         (Value::Float(a), Value::Int(b)) => Ok(float_op(a, b as f64)),
@@ -664,7 +669,13 @@ fn eval_div(l: Value, r: Value, span: Span) -> Result<Value, RuntimeError> {
     match (l, r) {
         (Value::Int(a), Value::Int(b)) => {
             if b == 0 { return Err(RuntimeError::new("0으로 나누기", span)); }
-            if a % b == 0 { Ok(Value::Int(a / b)) } else { Ok(Value::Float(a as f64 / b as f64)) }
+            // checked: i64::MIN / -1 오버플로 방어
+            match a.checked_rem(b) {
+                Some(0) => a.checked_div(b).map(Value::Int).ok_or_else(||
+                    RuntimeError::new("정수 오버플로: / 결과가 64비트 범위를 벗어남", span)),
+                Some(_) => Ok(Value::Float(a as f64 / b as f64)),
+                None => Err(RuntimeError::new("정수 오버플로: / 결과가 64비트 범위를 벗어남", span)),
+            }
         }
         (Value::Float(a), Value::Float(b)) => {
             if b == 0.0 { return Err(RuntimeError::new("0으로 나누기", span)); }
