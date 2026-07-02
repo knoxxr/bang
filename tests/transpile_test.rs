@@ -63,7 +63,9 @@ fn compile_and_run(src: &str, tag: &str) -> Option<String> {
         "네이티브 바이너리 비정상 종료: {:?}",
         output.status.code()
     );
-    Some(String::from_utf8(output.stdout).expect("stdout가 UTF-8이 아님"))
+    // Windows C 런타임은 텍스트 모드 stdout에서 \n을 \r\n으로 출력 → 비교 전 정규화
+    let s = String::from_utf8(output.stdout).expect("stdout가 UTF-8이 아님");
+    Some(s.replace("\r\n", "\n"))
 }
 
 /// 회귀 테스트: print() 문장이 세미콜론을 포함한 유효한 C를 생성해야 한다.
