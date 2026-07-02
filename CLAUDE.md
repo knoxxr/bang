@@ -373,3 +373,12 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              정상 경로는 resolver가 선차단이라 영향 없음). 에러 후에도 세션 유지.
              검증: 상태 유지/함수 정의/try·catch/json_parse/regex_find/타입힌트/import/exit 전부 REPL 동작.
              (tests: 300 green, clippy 0)
+✅ Phase 39 — 크래시급 버그 4종 수정: 스택 오버플로 abort → 잡히는 에러
+             재검토 실측으로 발견 (모두 try/catch 불가한 프로세스 abort였음):
+             (1) 순환 import(a→b→a) 무한 재귀 → module_loading 집합으로 감지, 에러에 순환 경로 표시.
+             (2) 깊은 JSON 중첩([[[…) → JsonParser depth 가드(512).
+             (3) 깊은 괄호/블록 중첩 → 파서 enter_nest/exit_nest 가드(MAX_NEST_DEPTH=128;
+                 spawn 워커/테스트 스레드 스택 2MB 기준 보수적. import 리팩터: import_module 메서드).
+             (4) 정규식 깊은 그룹 중첩 + 거대 {n,m} 반복(디슈가 폭주) → 깊이 200/반복 1000 상한.
+             참고: bang 자체 깊은 재귀(10만 프레임)는 정상 — VM 프레임이 힙에 있음(설계 검증).
+             회귀: parser +1, import 통합 +1, vm_test +4. (tests: 306 green, clippy 0)

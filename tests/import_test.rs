@@ -99,6 +99,28 @@ fn test_bracket_access() {
     assert_eq!(run_with_module(module, main), "hi\n");
 }
 
+/// 순환 import(a→b→a)가 무한 재귀(스택 오버플로 abort) 대신 에러로 종료된다.
+#[test]
+fn test_circular_import_errors_not_crash() {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("bang_cyc_{}_{n}", std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    fs::write(dir.join("a.bang"), "let b = import(\"b.bang\")\nlet va = 1\n").unwrap();
+    fs::write(dir.join("b.bang"), "let a = import(\"a.bang\")\nlet vb = 2\n").unwrap();
+    fs::write(dir.join("main.bang"), "let a = import(\"a.bang\")\nprint(\"no\")\n").unwrap();
+
+    let out = Command::new(BANG)
+        .arg("main.bang")
+        .current_dir(&dir)
+        .output()
+        .expect("실행 실패");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let _ = fs::remove_dir_all(&dir);
+
+    assert!(!out.status.success(), "순환 import는 에러 종료여야 함");
+    assert!(stderr.contains("순환 import"), "순환 감지 메시지 기대: {stderr}");
+}
+
 /// 패키지 캐싱: 같은 모듈을 두 번 import해도 top-level 코드는 한 번만 실행된다.
 #[test]
 fn test_module_imported_once() {

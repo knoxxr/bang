@@ -44,10 +44,14 @@ enum Re {
 // 파서
 // ============================================================================
 
+/// 그룹 중첩 깊이 상한 (재귀 파서의 스택 오버플로 방지).
+const MAX_GROUP_DEPTH: usize = 200;
+
 struct ReParser {
     chars: Vec<char>,
     pos: usize,
     group_count: usize,
+    depth: usize,
 }
 
 impl ReParser {
@@ -127,6 +131,10 @@ impl ReParser {
         if let Some(mx) = max {
             if mx < min { return Err("{n,m} 에서 m < n".into()); }
         }
+        // 반복 상한: 디슈가(복제)가 폭주하지 않게 방어
+        if min > 1000 || max.is_some_and(|m| m > 1000) {
+            return Err("{n,m} 반복 횟수가 너무 큼 (최대 1000)".into());
+        }
         // 디슈가: n개 필수 + (max-n)개 선택 / 또는 무제한이면 Star
         let mut parts: Vec<Re> = Vec::new();
         for _ in 0..min { parts.push(atom.clone()); }
@@ -145,10 +153,16 @@ impl ReParser {
         match self.next() {
             None => Err("예상치 못한 패턴 끝".into()),
             Some('(') => {
+                // 깊이 가드: 깊은 그룹 중첩에서 스택 오버플로 방지
+                self.depth += 1;
+                if self.depth > MAX_GROUP_DEPTH {
+                    return Err("그룹 중첩이 너무 깊음".into());
+                }
                 // 캡처 그룹 인덱스를 여는 괄호 순서대로 부여
                 self.group_count += 1;
                 let idx = self.group_count;
                 let inner = self.parse_alt()?;
+                self.depth -= 1;
                 if self.next() != Some(')') {
                     return Err("닫는 ')' 없음".into());
                 }
@@ -323,7 +337,7 @@ pub struct Regex {
 }
 
 pub fn compile(pattern: &str) -> Result<Regex, String> {
-    let mut p = ReParser { chars: pattern.chars().collect(), pos: 0, group_count: 0 };
+    let mut p = ReParser { chars: pattern.chars().collect(), pos: 0, group_count: 0, depth: 0 };
     let ast = p.parse_alt()?;
     if p.pos != p.chars.len() {
         return Err("패턴을 끝까지 파싱하지 못함".into());

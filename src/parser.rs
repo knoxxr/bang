@@ -39,15 +39,38 @@ impl std::error::Error for ParseError {}
 // Parser
 // =============================================================================
 
+/// 파서 재귀(식·블록 중첩) 깊이 상한. 재귀 하강 파서가 악의적/우발적 깊은
+/// 중첩(예: 수만 개의 '(' 또는 '{')에서 Rust 스택 오버플로로 abort하지 않게 한다.
+/// 주의: spawn 워커/테스트 스레드는 스택이 2MB라(메인 8MB) 한도를 보수적으로 잡는다.
+/// (실사용 코드의 중첩은 수십 수준 — 128이면 충분히 관대함)
+const MAX_NEST_DEPTH: usize = 128;
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     pub errors: Vec<ParseError>,
+    /// 현재 식/블록 중첩 깊이 (MAX_NEST_DEPTH 초과 시 파스 에러)
+    depth: usize,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, errors: Vec::new() }
+        Self { tokens, pos: 0, errors: Vec::new(), depth: 0 }
+    }
+
+    /// 중첩 깊이 증가. 상한 초과면 에러 기록 후 false (호출자는 None 반환).
+    fn enter_nest(&mut self) -> bool {
+        self.depth += 1;
+        if self.depth > MAX_NEST_DEPTH {
+            let span = self.peek_span();
+            self.error_at(span, "중첩이 너무 깊습니다 (식/블록 중첩 한도 초과)");
+            return false;
+        }
+        true
+    }
+
+    fn exit_nest(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     pub fn parse(mut self) -> Result<Program, Vec<ParseError>> {
@@ -191,6 +214,19 @@ impl Parser {
     }
 
     fn parse_block(&mut self) -> Option<Block> {
+        // 깊이 가드: 깊은 '{' 중첩에서 스택 오버플로 방지
+        if !self.enter_nest() {
+            self.exit_nest();
+            // 진행 보장: 여는 '{'를 소비해 무한루프 방지
+            if matches!(self.peek(), TokenKind::LBrace) { self.advance(); }
+            return None;
+        }
+        let r = self.parse_block_inner();
+        self.exit_nest();
+        r
+    }
+
+    fn parse_block_inner(&mut self) -> Option<Block> {
         let span = self.peek_span();
         if !matches!(self.peek(), TokenKind::LBrace) {
             self.error_at(span, &format!("블록 시작 '{{' 기대, '{}' 발견", self.peek()));
@@ -459,7 +495,14 @@ impl Parser {
     // =========================================================================
 
     pub fn parse_expr(&mut self) -> Option<Expr> {
-        self.parse_expr_bp(0)
+        // 깊이 가드: 깊은 '(' 중첩 등에서 스택 오버플로 방지
+        if !self.enter_nest() {
+            self.exit_nest();
+            return None;
+        }
+        let r = self.parse_expr_bp(0);
+        self.exit_nest();
+        r
     }
 
     fn parse_expr_bp(&mut self, min_bp: u8) -> Option<Expr> {
@@ -774,6 +817,18 @@ mod tests {
         assert!(try_parse("}\n").is_err(), "떠도는 '}}' 는 파스 에러여야 함");
         assert!(try_parse("let x = 1\n}\nlet y = 2\n").is_err());
         assert!(try_parse("}\nlet x = 1\n").is_err());
+    }
+
+    // 회귀: 아주 깊은 괄호/블록 중첩이 스택 오버플로(abort) 대신 파스 에러로 종료.
+    #[test]
+    fn test_deep_nesting_errors_not_crash() {
+        let deep_parens = format!("let x = {}1{}", "(".repeat(5000), ")".repeat(5000));
+        assert!(try_parse(&deep_parens).is_err(), "깊은 괄호 → 파스 에러");
+        let deep_braces = format!("fn f() {}{}", "{".repeat(5000), "}".repeat(5000));
+        assert!(try_parse(&deep_braces).is_err(), "깊은 블록 → 파스 에러");
+        // 정상 깊이는 통과
+        let ok = format!("let x = {}1{}", "(".repeat(100), ")".repeat(100));
+        assert!(try_parse(&ok).is_ok(), "100겹은 정상");
     }
 
     // 회귀: 함수 인자로 넘기는 다중문 클로저(본문에 let)가 파싱돼야 한다.

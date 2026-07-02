@@ -775,6 +775,43 @@ fn test_vm_mod_zero_still_errors() {
     assert_eq!(run_vm(src), vec!["caught"]);
 }
 
+// ============================================================================
+// 스택 오버플로(abort) → 잡히는 에러 — Phase 39
+// (회귀: 깊은 중첩/순환이 fatal stack overflow로 프로세스를 죽이던 문제)
+// ============================================================================
+
+#[test]
+fn test_vm_deep_json_nesting_catchable() {
+    let opens = "[".repeat(5000);
+    let closes = "]".repeat(5000);
+    let src = format!(
+        "let s = \"{opens}{closes}\"\ntry {{\n json_parse(s)\n print(\"no\")\n}} catch e {{\n print(\"caught\")\n}}"
+    );
+    assert_eq!(run_vm(&src), vec!["caught"]);
+}
+
+#[test]
+fn test_vm_deep_regex_group_nesting_catchable() {
+    let pat = format!("{}x{}", "(".repeat(5000), ")".repeat(5000));
+    let src = format!(
+        "try {{\n regex_match(\"x\", \"{pat}\")\n}} catch e {{\n print(\"caught\")\n}}"
+    );
+    assert_eq!(run_vm(&src), vec!["caught"]);
+}
+
+#[test]
+fn test_vm_regex_huge_repeat_catchable() {
+    let src = "try {\n regex_match(\"x\", \"a{999999}\")\n} catch e {\n print(\"caught\")\n}";
+    assert_eq!(run_vm(src), vec!["caught"]);
+}
+
+#[test]
+fn test_vm_reasonable_nesting_still_works() {
+    // 정상적인 깊이(100겹)는 여전히 통과
+    let src = format!("print({}1{})", "(".repeat(100), ")".repeat(100));
+    assert_eq!(run_vm(&src), vec!["1"]);
+}
+
 #[test]
 fn test_vm_interp_flag_still_works() {
     // Ensure Phase 3 interpreter is accessible (not removed)

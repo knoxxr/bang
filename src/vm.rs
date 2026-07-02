@@ -571,6 +571,43 @@ impl Vm {
         Ok(vm.stack.pop().unwrap_or(VmValue::Nil))
     }
 
+    /// 모듈 파일을 읽어 sub-VM에서 실행하고 export 맵을 만들어 캐시에 넣는다.
+    /// (호출자는 module_loading 표시/해제로 순환 import를 감지한다.)
+    fn import_module(&mut self, path: &str, key: &str, span: Span)
+        -> Result<VmValue, RuntimeError>
+    {
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| RuntimeError::new(format!("import(): '{path}': {e}"), span))?;
+        let tokens = crate::lexer::Lexer::new(&source)
+            .tokenize()
+            .map_err(|e| RuntimeError::new(
+                format!("import(): 렉서 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span))?;
+        let prog = crate::parser::Parser::new(tokens)
+            .parse()
+            .map_err(|e| RuntimeError::new(
+                format!("import(): 파서 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span))?;
+        let out = crate::compiler::compile(&prog)
+            .map_err(|e| RuntimeError::new(
+                format!("import(): 컴파일 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span))?;
+        // 모듈의 top-level print는 메인 프로그램 출력으로 보낸다.
+        let mut sub_vm = Vm::new(out.global_count as usize, self.output.clone());
+        sub_vm.run(out.main_fn)
+            .map_err(|e| RuntimeError::new(format!("import(): 모듈 실행 오류 in '{path}': {e}"), span))?;
+        // 모듈의 export(최상위 바인딩)를 Map으로. 함수 값은 sub_vm의
+        // 모듈 전역 Arc를 그대로 들고 있어, 메인 VM에서 호출돼도
+        // 자기 모듈 전역을 참조한다(sub_vm 드롭 후에도 Arc로 유지).
+        let mut map = HashMap::new();
+        {
+            let g = sub_vm.globals.lock().unwrap();
+            for (name, slot) in &out.global_names {
+                map.insert(name.clone(), g[*slot as usize].clone());
+            }
+        }
+        let result = VmValue::Map(Arc::new(map));
+        module_cache().lock().unwrap().insert(key.to_string(), result.clone());
+        Ok(result)
+    }
+
     /// 논블로킹 이벤트 루프 서버. 단일 스레드가 리액터로 다수 연결을 멀티플렉싱한다.
     /// handler: fn(req_str) -> resp_str (전체 HTTP 응답 문자열을 반환).
     /// 유휴 keep-alive 연결은 리액터에 파킹되어 스레드를 점유하지 않는다(C10K 1차).
@@ -1868,36 +1905,14 @@ impl Vm {
                 if let Some(cached) = module_cache().lock().unwrap().get(&key).cloned() {
                     return Ok(cached); // 이미 로드됨 → 같은 모듈 인스턴스 반환
                 }
-                let source = std::fs::read_to_string(&path)
-                    .map_err(|e| RuntimeError::new(format!("import(): '{path}': {e}"), span))?;
-                let tokens = crate::lexer::Lexer::new(&source)
-                    .tokenize()
-                    .map_err(|e| RuntimeError::new(
-                        format!("import(): 렉서 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span))?;
-                let prog = crate::parser::Parser::new(tokens)
-                    .parse()
-                    .map_err(|e| RuntimeError::new(
-                        format!("import(): 파서 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span))?;
-                let out = crate::compiler::compile(&prog)
-                    .map_err(|e| RuntimeError::new(
-                        format!("import(): 컴파일 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span))?;
-                // 모듈의 top-level print는 메인 프로그램 출력으로 보낸다.
-                let mut sub_vm = Vm::new(out.global_count as usize, self.output.clone());
-                sub_vm.run(out.main_fn)
-                    .map_err(|e| RuntimeError::new(format!("import(): 모듈 실행 오류 in '{path}': {e}"), span))?;
-                // 모듈의 export(최상위 바인딩)를 Map으로. 함수 값은 sub_vm의
-                // 모듈 전역 Arc를 그대로 들고 있어, 메인 VM에서 호출돼도
-                // 자기 모듈 전역을 참조한다(sub_vm 드롭 후에도 Arc로 유지).
-                let mut map = HashMap::new();
-                {
-                    let g = sub_vm.globals.lock().unwrap();
-                    for (name, slot) in &out.global_names {
-                        map.insert(name.clone(), g[*slot as usize].clone());
-                    }
+                // 순환 import 감지: 로딩 중인 모듈을 다시 import하면 무한 재귀 대신 에러
+                if !module_loading().lock().unwrap().insert(key.clone()) {
+                    return Err(RuntimeError::new(
+                        format!("import(): 순환 import 감지: '{path}'"), span));
                 }
-                let result = VmValue::Map(Arc::new(map));
-                module_cache().lock().unwrap().insert(key, result.clone());
-                Ok(result)
+                let result = self.import_module(&path, &key, span);
+                module_loading().lock().unwrap().remove(&key);
+                result
             }
 
             // ── stdlib 확장 (58-63) ──────────────────────────────────────────
@@ -2651,6 +2666,13 @@ fn module_cache() -> &'static Mutex<HashMap<String, VmValue>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// 현재 로딩 중인 모듈 집합 — 순환 import(a→b→a)를 무한 재귀(스택 오버플로) 대신
+/// 잡을 수 있는 런타임 에러로 감지한다.
+fn module_loading() -> &'static Mutex<std::collections::HashSet<String>> {
+    static LOADING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    LOADING.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
 /// import 모듈 해석. 바레 이름은 검색 경로에서 찾고, 경로/확장자가 있으면 직접 경로.
 fn resolve_module(spec: &str) -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
@@ -2734,7 +2756,7 @@ fn format_time_utc(ms: i64) -> String {
 /// JSON 텍스트 → VmValue. object→Map, array→List, number→Int/Float, null→Nil.
 fn json_parse(s: &str, span: Span) -> Result<VmValue, RuntimeError> {
     let chars: Vec<char> = s.chars().collect();
-    let mut p = JsonParser { chars: &chars, pos: 0, span };
+    let mut p = JsonParser { chars: &chars, pos: 0, span, depth: 0 };
     p.skip_ws();
     let v = p.parse_value()?;
     p.skip_ws();
@@ -2744,10 +2766,14 @@ fn json_parse(s: &str, span: Span) -> Result<VmValue, RuntimeError> {
     Ok(v)
 }
 
+/// JSON 중첩 깊이 상한 (재귀 파서의 스택 오버플로 방지).
+const JSON_MAX_DEPTH: usize = 512;
+
 struct JsonParser<'a> {
     chars: &'a [char],
     pos: usize,
     span: Span,
+    depth: usize,
 }
 
 impl JsonParser<'_> {
@@ -2762,9 +2788,13 @@ impl JsonParser<'_> {
     }
     fn parse_value(&mut self) -> Result<VmValue, RuntimeError> {
         self.skip_ws();
+        // 깊이 가드: 깊은 중첩([[[.../{{{...)에서 스택 오버플로 대신 잡히는 에러
+        if self.depth > JSON_MAX_DEPTH {
+            return Err(self.err("중첩이 너무 깊음"));
+        }
         match self.peek() {
-            Some('{') => self.parse_object(),
-            Some('[') => self.parse_array(),
+            Some('{') => { self.depth += 1; let r = self.parse_object(); self.depth -= 1; r }
+            Some('[') => { self.depth += 1; let r = self.parse_array(); self.depth -= 1; r }
             Some('"') => Ok(VmValue::Str(self.parse_string()?)),
             Some('t') | Some('f') => self.parse_bool(),
             Some('n') => self.parse_null(),
