@@ -1,0 +1,29 @@
+# 테스트 CI — push/PR마다 전체 테스트 + 린트를 돌린다.
+# (release.yml은 태그 푸시 시 배포만 담당 — 이 워크플로가 일상 회귀 방어선)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # 배포 대상 3 OS에서 테스트 (AOT 트랜스파일 테스트는 cc 없으면 자동 스킵)
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --verbose
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
