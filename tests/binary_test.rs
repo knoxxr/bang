@@ -17,6 +17,12 @@ fn tmp(tag: &str, ext: &str) -> PathBuf {
     std::env::temp_dir().join(format!("bang_bin_{}_{n}_{tag}.{ext}", std::process::id()))
 }
 
+/// bang 소스에 경로를 문자열 리터럴로 박을 때 Windows 백슬래시가
+/// 이스케이프 시퀀스로 해석되지 않게 '/'로 정규화한다 (Windows API는 '/'도 허용).
+fn path_str(p: &std::path::Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// file_size 가 실제 바이트 수를 반환한다 (UTF-8 무관).
 #[test]
 fn test_file_size() {
@@ -25,7 +31,7 @@ fn test_file_size() {
     let data: Vec<u8> = (0u16..=255).map(|b| b as u8).collect();
     fs::write(&path, &data).unwrap();
 
-    let script = format!("print(file_size(\"{}\"))", path.to_string_lossy());
+    let script = format!("print(file_size(\"{}\"))", path_str(&path));
     let out = Command::new(BANG).arg("-")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -82,7 +88,7 @@ while true {{
     let conn = tcp_accept(server)
     spawn handle(conn)
 }}
-"#, bin.to_string_lossy(), addr)).unwrap();
+"#, path_str(&bin), addr)).unwrap();
 
     let mut child: Child = Command::new(BANG).arg(&script)
         .stdout(std::process::Stdio::null())

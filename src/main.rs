@@ -359,7 +359,12 @@ fn cmd_repl() {
     eprintln!("Bang REPL v{}  (종료: exit(0) 또는 Ctrl+C)", env!("CARGO_PKG_VERSION"));
     eprintln!();
 
-    let interp = Interpreter::new();
+    // VM 기반 REPL: 전역(name→slot 맵 + 값 배열)을 스니펫 간 공유해 상태를 유지한다.
+    // try/catch·import·타입힌트·JSON/정규식/tcp 등 VM 전용 기능이 REPL에서도 동작.
+    let shared_globals: Arc<Mutex<Vec<bang::vm::VmValue>>> = Arc::new(Mutex::new(Vec::new()));
+    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut globals_map: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
+
     let stdin = io::stdin();
     let mut buf = String::new();
     let mut depth: i32 = 0; // 열린 괄호/중괄호 깊이
@@ -414,18 +419,32 @@ fn cmd_repl() {
             }
         };
 
-        // 출력 버퍼 현재 위치 기록
-        let out_before = interp.output.lock().unwrap().len();
+        // 증분 컴파일 (이전 스니펫의 전역 슬롯 배치를 시드로 유지)
+        let out = match bang::compiler::compile_repl(&prog, &globals_map) {
+            Ok(o) => o,
+            Err(errors) => {
+                for e in &errors {
+                    eprintln!("{}", format_with_context(&e.to_string(), e.span, trimmed));
+                }
+                continue;
+            }
+        };
+        globals_map = out.global_names.clone();
 
-        if let Err(e) = interp.run_incremental(&prog) {
-            eprintln!("오류: {}", e.message);
+        // 전역 배열을 새 global_count 크기로 확장 (기존 값 유지)
+        {
+            let mut g = shared_globals.lock().unwrap();
+            if g.len() < out.global_count as usize {
+                g.resize(out.global_count as usize, bang::vm::VmValue::Nil);
+            }
         }
 
-        // 새로 추가된 출력 줄 표시
-        let lines = interp.output.lock().unwrap();
-        for line_str in &lines[out_before..] {
-            println!("{line_str}");
+        // 스니펫마다 새 VM(공유 전역) — 이전 에러의 잔여 상태가 남지 않음
+        let mut vm = bang::vm::Vm::with_globals(shared_globals.clone(), output.clone());
+        if let Err(e) = vm.run(out.main_fn) {
+            eprintln!("{}", format_with_context(&e.to_string(), e.span, trimmed));
         }
+        // (print는 VM이 stdout에 직접 출력하므로 별도 echo 불필요)
     }
 }
 

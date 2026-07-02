@@ -478,6 +478,24 @@ impl Vm {
         }
     }
 
+    /// 기존 전역 배열(Arc)을 공유하는 VM 생성 — REPL이 스니펫 간 상태를 유지하는 데 쓴다.
+    /// 호출자가 실행 전에 전역 배열 크기를 global_count 이상으로 맞춰야 한다.
+    pub fn with_globals(
+        globals: Arc<Mutex<Vec<VmValue>>>,
+        output: Arc<Mutex<Vec<String>>>,
+    ) -> Self {
+        Self {
+            stack: Vec::with_capacity(256),
+            frames: Vec::with_capacity(64),
+            globals,
+            output,
+            spawn_scopes: Vec::new(),
+            handlers: Vec::new(),
+            pending_exception: None,
+            locals_pool: Vec::new(),
+        }
+    }
+
     /// 풀에서 locals 버퍼를 가져오거나 새로 할당한다. local_count 크기로 Nil 초기화.
     fn acquire_locals(&mut self, local_count: usize) -> Arc<Mutex<Vec<VmValue>>> {
         if let Some(arc) = self.locals_pool.pop() {

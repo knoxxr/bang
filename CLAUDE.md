@@ -355,3 +355,21 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              회귀: tests/event_server_test.rs +2(동시 100연결 멀티플렉싱 / keep-alive 3요청).
              (tests: 297 green, clippy 0)
              남은 2차: 활성 처리량을 스레드 cap 넘게 확장(핸들러 풀 오프로드 또는 진짜 VM 중단/재개).
+✅ Phase 36 — 정수 오버플로 의미 통일 (P0-1)
+             이전: debug=panic(불변규칙 위반)/release=조용히 wrap/인터프리터=wrapping — 전부 불일치.
+             통일: 모든 int 연산(+,-,*,/,%,단항-,abs,sum,gcd) 오버플로 = try/catch로 잡히는
+             RuntimeError. VM·인터프리터·상수폴딩(오버플로 시 폴딩 포기) 동일. debug==release.
+             부수: 인터프리터 `10 % 0` panic 잠재버그 수정. SPEC 3.1 명시. vm_test +3. (300 green)
+✅ Phase 37 — 테스트 CI (.github/workflows/ci.yml) (P1-3)
+             push/PR마다 ubuntu/macos/windows에서 cargo test + clippy(-D warnings).
+             Windows 첫 테스트에서 binary_test의 경로 백슬래시(이스케이프 충돌) 버그 발견·수정
+             (bang 소스에 경로를 박을 땐 '/'로 정규화 — path_str 헬퍼).
+✅ Phase 38 — REPL을 VM 기반으로 전환 (P0-2) — v0.25.0
+             이전: REPL이 트리워킹 인터프리터라 try/catch·import·타입힌트·JSON/정규식/tcp 등
+             VM 전용 기능 전부 불가(튜토리얼과 불일치, 신규 사용자 첫경험 문제).
+             전환: compile_repl(시드 전역 name→slot 유지) + Vm::with_globals(공유 전역 Arc).
+             스니펫마다 새 VM(잔여 상태 없음), 전역은 Arc로 지속. print는 VM이 직접 stdout.
+             emit_load Unknown → 컴파일 에러(REPL에서 오타가 조용히 nil이 되지 않게;
+             정상 경로는 resolver가 선차단이라 영향 없음). 에러 후에도 세션 유지.
+             검증: 상태 유지/함수 정의/try·catch/json_parse/regex_find/타입힌트/import/exit 전부 REPL 동작.
+             (tests: 300 green, clippy 0)

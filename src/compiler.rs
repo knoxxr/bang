@@ -339,7 +339,12 @@ impl Compiler {
             VarLocation::Upval(i)   => self.emit_u8(OP_LOAD_UPVAL, i, span),
             VarLocation::Global(s)  => self.emit_u16(OP_LOAD_GLOBAL, s, span),
             VarLocation::Builtin(i) => self.emit_u8(OP_LOAD_BUILTIN, i, span),
-            VarLocation::Unknown    => { self.emit(OP_NIL, span); }
+            VarLocation::Unknown    => {
+                // 정상 경로는 resolver가 먼저 걸러 도달하지 않는다.
+                // REPL(resolver 생략) 경로에서 오타가 조용히 nil이 되지 않게 에러로.
+                self.error("정의되지 않은 변수", span);
+                self.emit(OP_NIL, span);
+            }
         }
     }
 
@@ -919,6 +924,28 @@ pub struct CompileOutput {
 /// Returns Err if any compile errors occurred.
 pub fn compile(prog: &Program) -> Result<CompileOutput, Vec<CompileError>> {
     let mut compiler = Compiler::new();
+    compiler.compile_program(prog);
+
+    if !compiler.errors.is_empty() {
+        return Err(compiler.errors);
+    }
+
+    let global_names = compiler.globals.clone();
+    let main_fn = compiler.fn_stack.pop().unwrap().into_compiled();
+    let global_count = compiler.global_count;
+    Ok(CompileOutput { main_fn, global_count, global_names })
+}
+
+/// REPL용 증분 컴파일: 이전 스니펫들이 만든 전역(name→slot)을 시드로 이어받아
+/// 같은 슬롯 배치를 유지한 채 새 스니펫을 컴파일한다.
+/// 반환된 global_names에는 시드 + 새로 선언된 전역이 모두 담긴다.
+pub fn compile_repl(
+    prog: &Program,
+    seed_globals: &HashMap<String, u16>,
+) -> Result<CompileOutput, Vec<CompileError>> {
+    let mut compiler = Compiler::new();
+    compiler.globals = seed_globals.clone();
+    compiler.global_count = seed_globals.values().map(|s| s + 1).max().unwrap_or(0);
     compiler.compile_program(prog);
 
     if !compiler.errors.is_empty() {

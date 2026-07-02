@@ -68,7 +68,7 @@ Python처럼 쓸 수 있다.
 ```bash
 bang script.bang          # 파일 실행 (run 생략 가능)
 bang run script.bang      # 명시적 실행
-bang                      # 인자 없이 실행하면 REPL 진입
+bang                      # 인자 없이 실행하면 REPL 진입 (VM 기반 — try/catch·import·JSON 등 전 기능 동작)
 echo 'print(1 + 2)' | bang -   # 표준 입력에서 실행
 ```
 
