@@ -412,6 +412,9 @@ pub const BUILTINS: &[&str] = &[
     "tcp_send_file",   // 105
     // 논블로킹 이벤트 루프 서버 (106)
     "serve_event",     // 106
+    // 아웃바운드 네트워킹 (107-108)
+    "tcp_connect",     // 107
+    "http_get",        // 108
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -2416,6 +2419,20 @@ impl Vm {
                 self.run_event_server(&addr, handler, span)
             }
 
+            // ── 아웃바운드 네트워킹 (107-108) ─────────────────────────────────
+            107 => { // tcp_connect(addr) → TcpConn  (예: "example.com:80")
+                req_args("tcp_connect", &args, 1, span)?;
+                let addr = str_arg("tcp_connect", &args[0], span)?;
+                let stream = std::net::TcpStream::connect(&addr)
+                    .map_err(|e| RuntimeError::new(format!("tcp_connect('{addr}'): {e}"), span))?;
+                Ok(VmValue::TcpConn(Arc::new(Mutex::new(stream))))
+            }
+            108 => { // http_get(url) → {status, headers, body}
+                req_args("http_get", &args, 1, span)?;
+                let url = str_arg("http_get", &args[0], span)?;
+                http_get(&url, span)
+            }
+
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
         }
     }
@@ -3009,6 +3026,154 @@ fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
         }
     }
     Arc::new(VmClosure { func: c.func.clone(), upvalues, globals: new_globals })
+}
+
+// ── http_get: 최소 HTTP/1.1 클라이언트 (자급 코어 — 의존성 없음) ─────────────
+//
+// 지원: http:// 만 (https는 1차 미지원 — TLS는 자급 구현 범위 밖, 명시적 에러).
+// Connection: close 로 요청하고 EOF까지 읽는다. Transfer-Encoding: chunked 디코딩.
+// 리다이렉트는 따라가지 않는다(상태 코드와 location 헤더를 그대로 반환).
+
+/// URL 파싱: http://host[:port]/path?query → (host, port, path)
+fn parse_http_url(url: &str, span: Span) -> Result<(String, u16, String), RuntimeError> {
+    if let Some(rest) = url.strip_prefix("https://") {
+        let host = rest.split(['/', ':']).next().unwrap_or(rest);
+        return Err(RuntimeError::new(
+            format!("http_get: https 미지원 (1차 한계) — http:// 로 시도하세요: '{host}'"), span));
+    }
+    let rest = url.strip_prefix("http://").ok_or_else(|| RuntimeError::new(
+        format!("http_get: URL은 http:// 로 시작해야 함: '{url}'"), span))?;
+    let (hostport, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], rest[i..].to_string()),
+        None => (rest, "/".to_string()),
+    };
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => {
+            let port: u16 = p.parse().map_err(|_| RuntimeError::new(
+                format!("http_get: 잘못된 포트: '{p}'"), span))?;
+            (h.to_string(), port)
+        }
+        None => (hostport.to_string(), 80),
+    };
+    if host.is_empty() {
+        return Err(RuntimeError::new(format!("http_get: 호스트가 비어 있음: '{url}'"), span));
+    }
+    Ok((host, port, path))
+}
+
+/// Transfer-Encoding: chunked 본문 디코딩 (크기 줄은 16진수 [;확장] CRLF).
+fn decode_chunked(body: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    loop {
+        // 크기 줄 찾기
+        let line_end = find_subseq(&body[pos..], b"\r\n")? + pos;
+        let size_str = std::str::from_utf8(&body[pos..line_end]).ok()?;
+        let size_hex = size_str.split(';').next()?.trim();
+        let size = usize::from_str_radix(size_hex, 16).ok()?;
+        pos = line_end + 2;
+        if size == 0 {
+            return Some(out); // 마지막 청크 (트레일러 무시)
+        }
+        if pos + size > body.len() {
+            return None; // 잘린 응답
+        }
+        out.extend_from_slice(&body[pos..pos + size]);
+        pos += size + 2; // 청크 뒤 CRLF
+    }
+}
+
+/// http_get(url) → {status: Int, headers: Map(소문자 키), body: Str}
+fn http_get(url: &str, span: Span) -> Result<VmValue, RuntimeError> {
+    use std::io::{Read, Write};
+    let (host, port, path) = parse_http_url(url, span)?;
+    let err = |m: String| RuntimeError::new(format!("http_get('{url}'): {m}"), span);
+
+    let stream = std::net::TcpStream::connect((host.as_str(), port))
+        .map_err(|e| err(format!("연결 실패: {e}")))?;
+    let timeout = Some(std::time::Duration::from_secs(10));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
+    let mut stream = stream;
+
+    let req = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: bang/{}\r\nAccept: */*\r\n\r\n",
+        env!("CARGO_PKG_VERSION"));
+    stream.write_all(req.as_bytes()).map_err(|e| err(format!("요청 전송 실패: {e}")))?;
+
+    // 헤더 끝(\r\n\r\n)까지 먼저 읽는다. read_to_end는 서버가 keep-alive면
+    // 타임아웃까지 대기하므로 쓰지 않는다.
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 4096];
+    let sep = loop {
+        if let Some(p) = find_subseq(&raw, b"\r\n\r\n") { break p; }
+        let n = stream.read(&mut buf).map_err(|e| err(format!("응답 수신 실패: {e}")))?;
+        if n == 0 { return Err(err("헤더 완성 전 연결 종료".into())); }
+        raw.extend_from_slice(&buf[..n]);
+    };
+    let head = String::from_utf8_lossy(&raw[..sep]).into_owned();
+
+    // 상태줄: HTTP/1.1 200 OK
+    let mut lines = head.split("\r\n");
+    let status_line = lines.next().unwrap_or("");
+    let status: i64 = status_line.split_whitespace().nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| err(format!("상태줄 파싱 실패: '{status_line}'")))?;
+
+    // 헤더 (소문자 키 — bang-web 관례와 일치)
+    let mut headers = HashMap::new();
+    let mut chunked = false;
+    let mut content_length: Option<usize> = None;
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            let key = k.trim().to_lowercase();
+            let val = v.trim().to_string();
+            if key == "transfer-encoding" && val.to_lowercase().contains("chunked") {
+                chunked = true;
+            }
+            if key == "content-length" {
+                content_length = val.parse().ok();
+            }
+            headers.insert(key, VmValue::Str(val));
+        }
+    }
+
+    // 헤더 이후 이미 읽은 본문 바이트 + 남은 본문 수신.
+    let mut body_buf = raw[sep + 4..].to_vec();
+    // 종료 조건: chunked면 "0\r\n\r\n", Content-Length면 그 길이, 둘 다 없으면 EOF(close).
+    loop {
+        let done = if chunked {
+            find_subseq(&body_buf, b"0\r\n\r\n").is_some()
+        } else if let Some(len) = content_length {
+            body_buf.len() >= len
+        } else {
+            false // EOF까지
+        };
+        if done { break; }
+        let n = match stream.read(&mut buf) {
+            Ok(0) => break, // EOF
+            Ok(n) => n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut => break,
+            Err(e) => return Err(err(format!("본문 수신 실패: {e}"))),
+        };
+        body_buf.extend_from_slice(&buf[..n]);
+    }
+
+    let body = if chunked {
+        decode_chunked(&body_buf).ok_or_else(|| err("chunked 본문 디코딩 실패".into()))?
+    } else if let Some(len) = content_length {
+        body_buf.truncate(len);
+        body_buf
+    } else {
+        body_buf
+    };
+
+    let mut map = HashMap::new();
+    map.insert("status".to_string(), VmValue::Int(status));
+    map.insert("headers".to_string(), VmValue::Map(Arc::new(headers)));
+    map.insert("body".to_string(), VmValue::Str(String::from_utf8_lossy(&body).into_owned()));
+    Ok(VmValue::Map(Arc::new(map)))
 }
 
 /// 바이트 슬라이스에서 부분열의 시작 위치를 찾는다 (HTTP 헤더 끝 감지용).

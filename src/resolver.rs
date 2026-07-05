@@ -385,6 +385,9 @@ impl Resolver {
             ("file_size",     Some(1)),
             ("tcp_send_file", Some(2)),
             ("serve_event",   Some(2)),
+            // 아웃바운드 네트워킹 (107-108)
+            ("tcp_connect",   Some(1)),
+            ("http_get",      Some(1)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {
