@@ -143,6 +143,9 @@ struct Resolver {
     errors: Vec<ResolveError>,
     warnings: Vec<ResolveWarning>,
     table: ResolveTable,
+    /// 전역에서 본문 해석 전에 미리 선언된 함수 이름들(전방 참조·상호 재귀 허용).
+    /// 이 이름의 Let은 본문 해석 시 재선언을 건너뛴다.
+    global_prescan: std::collections::HashSet<String>,
 }
 
 impl Resolver {
@@ -155,6 +158,7 @@ impl Resolver {
             errors: Vec::new(),
             warnings: Vec::new(),
             table: ResolveTable::default(),
+            global_prescan: std::collections::HashSet::new(),
         }
     }
 
@@ -255,6 +259,22 @@ impl Resolver {
         self.push_scope(FrameKind::Builtin);
         self.register_builtins();
         self.push_scope(FrameKind::Global);
+        // 전방 참조·상호 재귀 허용: 최상위 "함수" 바인딩을 본문 해석 전에 미리 선언한다.
+        // (값 바인딩은 제외 — 초기화 순서상 런타임에 Nil을 읽는 함정을 피하려고 함수만.)
+        for stmt in &prog.stmts {
+            if let StmtKind::Let { name, value, .. } = &stmt.kind {
+                // arity는 파라미터 수로 직접 계산한다 — 본문을 여기서 해석하면
+                // 아직 prescan 안 된 이름을 못 찾으므로, 본문 해석은 아래 resolve_stmts로 미룬다.
+                if let ExprKind::Function { params, .. } = &value.kind {
+                    if let Some(slot) = self.declare(name, stmt.span) {
+                        self.define(name);
+                        self.table.let_slots.insert(stmt.span, slot);
+                        self.set_arity(name, params.len());
+                        self.global_prescan.insert(name.clone());
+                    }
+                }
+            }
+        }
         self.resolve_stmts(&prog.stmts);
         self.pop_scope(false); // Global: 미사용 경고 없음
         self.pop_scope(false); // Builtin: 미사용 경고 없음
@@ -432,6 +452,12 @@ impl Resolver {
     fn resolve_stmt(&mut self, stmt: &Stmt) -> bool {
         match &stmt.kind {
             StmtKind::Let { name, value, .. } => {
+                // 전역에서 이미 prescan으로 선언·정의된 함수 이름은 재선언을 건너뛰고
+                // 본문만 해석한다(전방 참조·상호 재귀 허용).
+                if self.fn_depth == 0 && self.global_prescan.contains(name) {
+                    self.resolve_expr(value);
+                    return false;
+                }
                 // two-phase: declare → 초기화식 해석 → define
                 let slot = self.declare(name, stmt.span);
                 let arity = self.resolve_expr_arity(value);

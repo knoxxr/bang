@@ -302,3 +302,38 @@ fn test_example_parallel_block() {
 fn test_example_channels() {
     expect_file_ok("channels.bang");
 }
+
+// ── 전방 참조 / 상호 재귀 (Phase: P0-1 후속 버그 수정) ──────────────────────
+
+#[test]
+fn test_forward_function_reference() {
+    // 앞선 함수가 뒤에 정의된 함수를 참조 (이전엔 "정의되지 않은 변수" 오류)
+    expect_ok("fn a() { return b() + 1 }\nfn b() { return 10 }\nprint(a())\n");
+}
+
+#[test]
+fn test_mutual_recursion_top_level() {
+    expect_ok("\
+fn is_even(n) {
+    if n == 0 { return true }
+    return is_odd(n - 1)
+}
+fn is_odd(n) {
+    if n == 0 { return false }
+    return is_even(n - 1)
+}
+print(is_even(10))
+");
+}
+
+#[test]
+fn test_value_forward_reference_still_errors() {
+    // 값(비함수) 전방 참조는 런타임 Nil 함정이므로 여전히 오류여야 한다
+    expect_error("let x = y + 1\nlet y = 5\n", "정의되지 않은 변수");
+}
+
+#[test]
+fn test_duplicate_top_level_function_still_errors() {
+    // prescan이 정상 중복 선언 검출을 무력화하지 않아야 한다
+    expect_error("fn f() { return 1 }\nfn f() { return 2 }\n", "이미 선언");
+}
