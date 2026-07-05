@@ -32,7 +32,8 @@ bang에는 그게 없다. `spawn`/`parallel_map`만 있으면 된다.
 - **구조적 동시성** — 모든 작업은 스코프에 뿌리내리고 자동 조인된다. 작업 누수가 없다.
 - **사람이 읽기 좋은 에러** — 모든 오류에 `(line, col)`과 소스 컨텍스트가 붙는다.
 
-철학과 설계 원칙(영구 거부 목록 포함)은 [docs/VISION.md](docs/VISION.md) 참고.
+철학과 설계 원칙(헌법·영구 거부 목록)은 [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md),
+활성화 계획은 [docs/VISION.md](docs/VISION.md) 참고.
 
 ## 설치
 
@@ -367,7 +368,8 @@ cargo run -- run examples/fibonacci.bang     # 개발 중 실행
 
 - **[튜토리얼](docs/TUTORIAL.md)** — 따라 하며 배우는 입문 가이드 (먼저 읽으세요)
 - [언어 명세](docs/SPEC.md) — 문법·의미 레퍼런스
-- [비전과 철학](docs/VISION.md) — 정체성·헌법(영구 거부 목록)·활성화 실행 계획
+- [헌법](docs/PHILOSOPHY.md) — 정체성·9조·영구 거부 목록·격언
+- [비전](docs/VISION.md) — 활성화 실행 계획(철학+GTM 종합)
 - [사용 가이드](docs/GUIDE.md) — 상세 가이드
 
 ## 구현

@@ -72,6 +72,8 @@ src/
   pkg/          bang.toml 매니페스트 파서 (Phase 23, bang add/install)
   reactor/      논블로킹 I/O 리액터 (Phase 34, polling 기반; serve_event가 사용)
 docs/SPEC.md    언어 명세 (동시성·serve_event 한계 포함). 의미 변경 시 함께 갱신.
+docs/PHILOSOPHY.md 헌법(9조 + 영구 거부 목록 + 거절의 기록). 기능 제안은 이것과 대조.
+docs/VISION.md  활성화 계획(철학+GTM 종합). P0~P2 실행 로드맵.
 docs/TUTORIAL.md 진행형 입문 튜토리얼 (먼저 읽는 문서).
 docs/GUIDE.md   사용자 가이드 (초기 버전 기준 — 최신은 TUTORIAL/SPEC).
 빌트인 인덱스: resolver.rs 등록 순서 == vm.rs BUILTINS 배열 == call_builtin match. 끝에만 추가(번호 불변).
@@ -382,3 +384,16 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              (4) 정규식 깊은 그룹 중첩 + 거대 {n,m} 반복(디슈가 폭주) → 깊이 200/반복 1000 상한.
              참고: bang 자체 깊은 재귀(10만 프레임)는 정상 — VM 프레임이 힙에 있음(설계 검증).
              회귀: parser +1, import 통합 +1, vm_test +4. (tests: 306 green, clippy 0)
+✅ Phase 40 — 활성화 계획 실행 P0 (VISION.md) — v0.26.0
+             (0) docs/VISION.md 제정: 철학·언어채택사·GTM 3렌즈 병렬분석 종합(활성화 계획).
+             (P0-1) 아웃바운드 네트워킹 빌트인 tcp_connect(107)/http_get(108, 자급 HTTP/1.1
+                 클라이언트; Content-Length·chunked, https는 명시적 에러). 킬러 데모
+                 examples/fanout.bang(parallel_map+http_get 4줄) + bench/fanout.py(aiohttp 대비).
+                 http_client_test +5.
+             (버그) 리졸버가 top-level 함수 전방 참조·상호 재귀를 막던 것 수정: 본문 해석 전
+                 함수 바인딩 prescan(값 바인딩은 제외 — Nil 함정 회피). resolver_test +4.
+             (P0-2) README 첫 화면: 구현이력→정체성 문장+팬아웃 데모+순차성능 정직 선공개.
+             (P0-3) bench/README.md "지는 것부터": 순차 fib bang 9.9s vs CPython 2.5s(3.9x 느림),
+                 병렬 2.1s(4.7x). 재현 bench/run.sh + 하드웨어 명세.
+             (P0-4) docs/PHILOSOPHY.md 헌법 승격: 9조 + 영구 거부 목록 + 격언 6 + 거절의 기록.
+             (tests: 315 green, clippy 0)
