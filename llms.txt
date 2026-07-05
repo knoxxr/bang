@@ -1,0 +1,172 @@
+# bang — LLM 컨텍스트 파일
+
+이 파일 하나면 LLM이 bang 코드를 정확히 쓸 수 있다. bang은 작은 언어라 전체가
+여기 들어간다. (사람용 문서: README.md, docs/TUTORIAL.md, docs/SPEC.md)
+
+## 정체성 (한 줄)
+
+순차적으로 생각하고 쓰면 병렬로 실행되는 동적 타입 스크립트 언어.
+async/await 색칠 없음, GIL 없음, 락 없음. `spawn` 한 단어가 동시성의 전부.
+
+## 문법 핵심
+
+- 문장 종결 = 줄바꿈 (세미콜론 없음). 줄을 이으려면 이항 연산자/콤마를 줄 끝에 둔다.
+- 변수: `let x = 10`  (재대입: `x = 20`)
+- 함수: `let f = fn(a, b) { return a + b }`  또는  `fn f(a, b) { return a + b }`
+  (둘은 동일 — 이름 있는 fn은 `let name = fn` 로 디슈가됨. 재귀·상호재귀·전방참조 가능)
+- 주석: `// 한 줄`
+- 타입: int(64비트), float, bool(true/false), str, nil, list, map, fn, channel, future
+- 리터럴: `[1, 2, 3]` (list), `{"a": 1, "b": 2}` (map — 표현식 자리에서 `{}`는 맵)
+- 문자열 이스케이프: `\n \t \r \0 \\ \"`
+- 인덱싱: `xs[0]`, `m["key"]`, 필드: `m.key` (맵 키 접근)
+- 대입 가능한 인덱스: `xs[0] = v`, `m.k = v`, `m["k"] = v` (단, 중첩 `a[0][0]=v`는 미지원)
+
+### 제어 흐름
+```
+if x > 0 { print("+") } else { print("-") }
+while i < 10 { i = i + 1 }
+for item in [1, 2, 3] { print(item) }      // list/str/map/range/channel 순회
+return v
+break / continue
+```
+
+### 에러 처리
+```
+try {
+    throw "문제 발생"          // 임의의 값을 던질 수 있음
+} catch e {
+    print("잡음: " + e)        // 내장 런타임 에러도 문자열로 잡힘
+}
+```
+
+### 선택적 타입 힌트 (gradual — 생략 가능, 표기 시 런타임 검증)
+```
+let x: int = 42
+fn add(a: int, b: int) -> int { return a + b }
+// 타입: int float bool str nil list map fn any
+```
+
+## 동시성 (핵심 차별점)
+
+```
+let f = spawn slow(x)      // 새 작업으로 실행, Future 즉시 반환
+let result = f + 1         // 값이 필요한 시점에 자동 조인 (await 없음)
+
+// parallel_map: 리스트 각 원소를 병렬 처리 후 결과 리스트로 자동 조인
+let results = parallel_map(items, fn(x) { return process(x) })
+
+// parallel 블록: 안의 모든 spawn이 블록 끝에서 조인됨
+parallel {
+    let a = spawn task1()
+    let b = spawn task2()
+}
+
+// 채널 (유일한 명시적 공유 통로)
+let ch = channel()
+spawn producer(ch)
+send(ch, value)
+let v = recv(ch)           // 블로킹 수신, 닫히면 nil
+close(ch)
+for msg in ch { ... }      // 닫힐 때까지 순회
+let r = select([ch1, ch2]) // 먼저 준비된 채널 → [index, value], 모두 닫히면 nil
+```
+
+규칙:
+- 컨테이너(list/map/str)는 **값** — 인자 전달·spawn 캡처·채널 송신 시 복제된다.
+  따라서 데이터 레이스가 불가능하다. (함수/채널/future는 참조로 공유)
+- 모든 spawn은 함수 본문이나 parallel 블록에 뿌리내리고 스코프 끝에서 자동 조인.
+- `print`만 Future를 깊게 해소해 표시한다.
+
+## 내장 함수 (108개)
+
+기본: `print(...)` `str(x)` `int(x)` `float(x)` `bool(x)` `len(x)` `type(x)`
+`assert(cond[,msg])` `exit([code])` `input()` `print_err(...)` `args()` `range([s,]e[,step])`
+
+리스트/이터러블: `push(l,x)`→새 list `pop(l)` `sort(l)` `sort_by(l,keyfn)` `reverse(l)`
+`map(l,f)` `filter(l,f)` `reduce(l,f,init)` `any(l,f)` `all(l,f)` `flat(l)` `enumerate(l)`
+`zip(a,b)` `sum(l)` `unique(l)` `slice(seq,s,e)` `index_of(l,x)` `contains(seq,x)`
+`union(a,b)` `intersect(a,b)` `difference(a,b)`
+
+맵: `keys(m)` `values(m)` `has(m,k)` `get(m,k,default)` `merge(m1,m2)`
+
+문자열: `split(s,sep)` `join(l,sep)` `trim(s)` `trim_start(s)` `trim_end(s)`
+`replace(s,from,to)` `starts_with(s,p)` `ends_with(s,p)` `upper(s)` `lower(s)`
+`find(s,sub)`→인덱스(-1 없음) `chars(s)` `repeat(s,n)` `ord(s)` `chr(n)`
+
+수학: `abs(x)` `sqrt(x)` `floor(x)` `ceil(x)` `round(x)` `pow(b,e)` `min(...)` `max(...)`
+`gcd(a,b)` `clamp(x,lo,hi)` `sign(x)` `sin/cos/tan(x)` `log(x)` `exp(x)` `pi()` `e()`
+(정수 오버플로는 조용히 wrap하지 않고 try/catch로 잡히는 에러)
+
+동시성: `channel()` `send(c,v)` `recv(c)` `close(c)` `wait(f)` `parallel_map(l,f)` `select(chans)`
+
+JSON/시간/난수: `json_parse(s)`→value `json_stringify(v)`→str `now_ms()` `random()`→[0,1)
+`random_int(lo,hi)` `format_time(ms)`→"YYYY-MM-DD HH:MM:SS"
+
+정규식(자체 엔진): `regex_match(s,pat)`→bool `regex_find(s,pat)`→str|nil
+`regex_find_all(s,pat)`→list `regex_replace(s,pat,rep)` `regex_groups(s,pat)`→[전체,g1,...]|nil
+(지원: . * + ? {n}{n,}{n,m} [..][^..] \d\w\s\D\W\S ^ $ ( ) | 캡처그룹. 역참조 미지원)
+
+파일: `read_file(p)`→str(UTF-8) `write_file(p,s)` `file_size(p)`→int `file_exists(p)`
+`is_dir(p)` `list_dir(p)`→names
+
+모듈: `import(spec)`→맵(모듈 export). 바레 이름은 ./name.bang, bang_modules/, BANG_PATH 검색.
+
+네트워킹(서버): `tcp_listen(addr)` `tcp_accept(s)` `tcp_read(c)` `tcp_read_until(c,marker)`
+`tcp_write(c,s)` `tcp_send_file(c,path)`→바이너리 무손실 `tcp_set_timeout(c,ms)` `tcp_close(c)`
+`serve_event(addr, handler)` — 단일 스레드 논블로킹 이벤트 루프, handler: fn(req_str)->resp_str
+
+네트워킹(클라이언트): `tcp_connect(addr)`→conn `http_get(url)`→{status,headers,body}
+(http만, https 미지원. headers 키는 소문자)
+
+## 관용구
+
+```
+// 카운터 (클래스 없음 — 클로저로 상태 캡슐화)
+fn make_counter() {
+    let n = 0
+    return fn() { n = n + 1; return n }
+}
+
+// "객체" = 맵 + 클로저
+fn new_stack() {
+    let items = []
+    return {
+        "push": fn(x) { items = push(items, x) },
+        "pop":  fn() { return pop(items) }
+    }
+}
+
+// 병렬 API 팬아웃 (킬러 패턴)
+let pages = parallel_map(urls, fn(u) { return http_get(u) })
+
+// 동시성 HTTP 서버 (연결마다 spawn)
+let server = tcp_listen("127.0.0.1:8080")
+while true {
+    let conn = tcp_accept(server)
+    spawn handle(conn)
+}
+
+// 이벤트 루프 서버 (유휴 keep-alive 다수를 한 스레드로)
+serve_event("127.0.0.1:8080", fn(req) {
+    return "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+})
+```
+
+## 실행
+
+```
+bang script.bang       # 실행 (run 생략 가능)
+bang                   # REPL (VM 기반 — 전 기능 동작)
+bang check script.bang # 정적 검사 (타입·해석)
+bang new myproj        # 새 프로젝트 스캐폴딩
+```
+
+## 하지 말 것 (bang에 없는 것)
+
+- `async`/`await` 키워드 없음 — 그냥 `spawn` 쓰고 값처럼 사용
+- 클래스/상속 없음 — 맵 + 클로저 사용
+- 락/뮤텍스 없음 — 값 의미론이 공유를 제거, 조율은 채널로
+- 세미콜론 없음 — 줄바꿈이 종결
+- `null` 아님 — `nil`
+- `elif` 아님 — `else if`
+- `+`로 숫자와 문자열 혼합 불가 — `str(n)`으로 변환 후 연결

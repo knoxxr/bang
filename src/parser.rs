@@ -341,6 +341,15 @@ impl Parser {
     }
 
     fn parse_if(&mut self, span: Span) -> Option<Stmt> {
+        let stmt = self.parse_if_no_end(span)?;
+        // 종결 소비는 최외곽 if에서 한 번만. else-if 체인은 parse_if_no_end로
+        // 재귀하므로, 내부 if가 종결 줄바꿈을 먹어 외부가 다시 못 찾던 버그를 피한다.
+        self.consume_stmt_end();
+        Some(stmt)
+    }
+
+    /// if 문 파싱(종결 소비 없음). else-if 체인 재귀에 재사용.
+    fn parse_if_no_end(&mut self, span: Span) -> Option<Stmt> {
         self.advance(); // if
         let cond = self.parse_expr()?;
         let then = self.parse_block()?;
@@ -359,7 +368,6 @@ impl Parser {
             None
         };
 
-        self.consume_stmt_end();
         Some(Stmt { kind: StmtKind::If { cond, then, else_ }, span })
     }
 
@@ -367,7 +375,7 @@ impl Parser {
     fn parse_else_body(&mut self) -> Option<Block> {
         if matches!(self.peek(), TokenKind::If) {
             let span = self.peek_span();
-            let inner = self.parse_if(span)?;
+            let inner = self.parse_if_no_end(span)?; // 종결 소비 없이 재귀
             Some(Block { stmts: vec![inner], span })
         } else {
             self.parse_block()
@@ -817,6 +825,27 @@ mod tests {
         assert!(try_parse("}\n").is_err(), "떠도는 '}}' 는 파스 에러여야 함");
         assert!(try_parse("let x = 1\n}\nlet y = 2\n").is_err());
         assert!(try_parse("}\nlet x = 1\n").is_err());
+    }
+
+    // 회귀: else-if 체인 뒤에 다음 문장이 와도 파스된다.
+    // (이전엔 내부 if가 종결 줄바꿈을 소비해 외부가 "줄바꿈 기대" 오류를 냈다.)
+    #[test]
+    fn test_else_if_chain_then_next_statement() {
+        let src = "\
+let n = 5
+if n < 0 {
+    print(\"neg\")
+} else if n == 0 {
+    print(\"zero\")
+} else {
+    print(\"pos\")
+}
+print(\"next\")
+";
+        let prog = parse(src);
+        assert_eq!(prog.stmts.len(), 3, "let, if, print 3개 문");
+        // 단일 라인 else-if 도
+        assert!(try_parse("if 1<0 {print(1)} else if 1>0 {print(2)} else {print(3)}\nprint(4)\n").is_ok());
     }
 
     // 회귀: 아주 깊은 괄호/블록 중첩이 스택 오버플로(abort) 대신 파스 에러로 종료.
