@@ -366,6 +366,7 @@ cargo run -- run examples/fibonacci.bang     # 개발 중 실행
 
 ## 문서
 
+- **[왜 bang인가](docs/WHY.md)** — Python 동시성(GIL·asyncio·multiprocessing)에 지친 사람에게
 - **[튜토리얼](docs/TUTORIAL.md)** — 따라 하며 배우는 입문 가이드 (먼저 읽으세요)
 - [언어 명세](docs/SPEC.md) — 문법·의미 레퍼런스
 - [헌법](docs/PHILOSOPHY.md) — 정체성·9조·영구 거부 목록·격언

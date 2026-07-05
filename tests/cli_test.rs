@@ -103,3 +103,30 @@ fn test_unknown_arg_fails() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("알 수 없는 명령") || stderr.contains("존재하지 않는"));
 }
+
+/// bang new <dir> 가 프로젝트를 스캐폴딩하고, 생성된 main.bang 이 실행된다.
+#[test]
+fn test_bang_new_scaffold() {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("bang_new_{}_{n}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+
+    // 생성
+    let out = Command::new(BANG).arg("new").arg(&dir).output().expect("실행 실패");
+    assert!(out.status.success(), "bang new 실패: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.join("main.bang").exists(), "main.bang 없음");
+    assert!(dir.join("bang.toml").exists(), "bang.toml 없음");
+
+    // 생성된 main.bang 실행 → 정상 종료 + 인사말 출력
+    let run = Command::new(BANG).arg(dir.join("main.bang")).output().expect("실행 실패");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(run.status.success(), "생성된 main.bang 실행 실패: {}", String::from_utf8_lossy(&run.stderr));
+    assert!(stdout.contains("bang"), "인사말 출력 기대: {stdout}");
+    assert!(stdout.contains("[2, 4, 6, 8]"), "parallel_map 출력 기대: {stdout}");
+
+    // 이미 존재하면 에러
+    let dup = Command::new(BANG).arg("new").arg(&dir).output().expect("실행 실패");
+    assert!(!dup.status.success(), "이미 존재하는 디렉토리는 에러여야 함");
+
+    let _ = fs::remove_dir_all(&dir);
+}

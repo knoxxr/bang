@@ -31,6 +31,7 @@ fn main() {
         "parse"    => cmd_parse(&args[2..]),
         "add"      => cmd_add(&args[2..]),
         "install"  => cmd_install(&args[2..]),
+        "new"      => cmd_new(&args[2..]),
         "help" | "--help" | "-h" => print_usage(),
         "version" | "--version" | "-V" => print_version(),
         other => {
@@ -69,6 +70,7 @@ fn print_usage() {
     eprintln!("  parse   <파일>   AST 출력");
     eprintln!("  tokenize <파일>  토큰화 출력 (디버그)");
     eprintln!("  repl             대화형 셸(REPL) 시작");
+    eprintln!("  new <디렉토리>   새 프로젝트 스캐폴딩 (main.bang + bang.toml)");
     eprintln!("  add <이름> <git-url[@rev]>  의존성 추가 (bang.toml + bang_modules/ 설치)");
     eprintln!("  install          bang.toml의 모든 의존성 설치");
     eprintln!("  version          버전 출력");
@@ -588,6 +590,55 @@ fn install_dep(dep: &bang::pkg::Dependency) -> bool {
         Ok(s) => { eprintln!("git clone 실패 ({}): 종료 코드 {:?}", dep.name, s.code()); false }
         Err(e) => { eprintln!("git 실행 오류: {e} (git이 설치돼 있는지 확인)"); false }
     }
+}
+
+/// bang new <dir> — 새 프로젝트 스캐폴딩 (main.bang + bang.toml + .gitignore).
+fn cmd_new(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("사용법: bang new <디렉토리>");
+        process::exit(1);
+    }
+    let dir = std::path::Path::new(&args[0]);
+    let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("app");
+
+    if dir.exists() {
+        eprintln!("이미 존재합니다: {}", dir.display());
+        process::exit(1);
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("디렉토리 생성 실패: {e}");
+        process::exit(1);
+    }
+
+    let main_bang = "\
+// 순차적으로 생각하고, 병렬로 실행한다.\n\
+fn greet(who) {\n    return \"안녕, \" + who + \"!\"\n}\n\n\
+print(greet(\"bang\"))\n\n\
+// spawn 으로 병렬 — async/await 색칠도, 락도 없이.\n\
+let doubled = parallel_map([1, 2, 3, 4], fn(n) { return n * 2 })\n\
+print(doubled)\n";
+
+    let manifest = format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n");
+    let gitignore = "bang_modules/\n";
+
+    let files = [
+        ("main.bang", main_bang.to_string()),
+        ("bang.toml", manifest),
+        (".gitignore", gitignore.to_string()),
+    ];
+    for (fname, content) in &files {
+        if let Err(e) = std::fs::write(dir.join(fname), content) {
+            eprintln!("{fname} 쓰기 실패: {e}");
+            process::exit(1);
+        }
+    }
+
+    println!("새 프로젝트 생성: {}", dir.display());
+    println!("  {name}/main.bang, bang.toml, .gitignore");
+    println!();
+    println!("시작하기:");
+    println!("  cd {}", dir.display());
+    println!("  bang main.bang");
 }
 
 fn cmd_add(args: &[String]) {

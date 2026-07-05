@@ -397,3 +397,15 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                  병렬 2.1s(4.7x). 재현 bench/run.sh + 하드웨어 명세.
              (P0-4) docs/PHILOSOPHY.md 헌법 승격: 9조 + 영구 거부 목록 + 격언 6 + 거절의 기록.
              (tests: 315 green, clippy 0)
+✅ Phase 41 — 활성화 계획 실행 P1 (VISION.md) — v0.27.0
+             (P1) llms.txt: LLM이 파일 하나로 bang을 쓰게 하는 컨텍스트(문법·동시성·빌트인
+                 108개 시그니처·관용구·"없는 것"). 훈련데이터 0 신생언어의 저비용 채택 레버.
+             (버그) else-if 체인 뒤 문장 파스 에러 수정: parse_if가 항상 consume_stmt_end
+                 하는데 else-if가 parse_if로 재귀→내부가 종결 먹음. parse_if_no_end 분리(최외곽만 소비).
+                 else-if는 예제·테스트에 없어 드러나지 않은 오래된 버그. parser +1.
+             (P1) docs/WHY.md: 'GIL 난민' 대상 — threading(GIL)/multiprocessing(pickle)/
+                 asyncio(색칠) vs bang 코드 대 코드 비교. 스니펫 실측 검증.
+             (P1) bang new <dir>: 프로젝트 스캐폴딩(main.bang+bang.toml+.gitignore). cli_test +1.
+             (P1) VS Code 확장(editors/vscode-bang) 문법 갱신: try/catch/throw 키워드 +
+                 빌트인 108개 전체 하이라이팅 + 확장 README. (확장 자체는 6월 기존 존재)
+             (tests: 317 green, clippy 0)
