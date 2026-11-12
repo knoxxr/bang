@@ -409,3 +409,16 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              (P1) VS Code 확장(editors/vscode-bang) 문법 갱신: try/catch/throw 키워드 +
                  빌트인 108개 전체 하이라이팅 + 확장 README. (확장 자체는 6월 기존 존재)
              (tests: 317 green, clippy 0)
+✅ Phase 42 — 시스템 빌트인 (109-116) + 채널 참조 타입 송신 에러화 — v0.28.0
+             proc_run(argv)→{code,stdout,stderr}: 셸 미경유(argv[0] 직접 실행), stdin=null,
+               0 아닌 종료코드는 에러 아님, 시그널 종료 code=nil, 비-UTF8은 U+FFFD(바이트 타입 전 한계).
+             env_get(name)→str|nil, env_cwd()→str, sleep(ms)(음수 에러), file_remove(파일만),
+             file_move(같은 볼륨 rename), dir_create(create_dir_all, 멱등), file_append(없으면 생성).
+             의존성 없음(std만). 신규 빌트인 명명: proc_/env_/file_/dir_ 접두사(기존 이름은 불변).
+             (버그) 채널로 함수/채널/Future/Tcp 송신 시 조용히 Nil → catch 가능한 에러.
+               to_runtime이 Result 반환, List/Map 안쪽까지 재귀 검사. SPEC 6.4 + 10장 갱신.
+             검증: spawn 32개 × sleep(300) = 0.65s(순차 9.6s) → 탄력 풀이 블로킹 sleep 감당.
+             발견(미수정, 별도 Phase 필요): VM parallel_map이 순차 실행(vm.rs 빌트인 11,
+               "sequential in Part A" 잔재). 팬아웃 데모가 실제로는 병렬이 아님.
+             참고: cargo fmt --check는 이 Phase 이전부터 약 1만 줄 불일치(정렬 공백) — 별도 정리 필요.
+             회귀: tests/system_test.rs +10. (tests: 327 green, clippy 0)

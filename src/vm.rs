@@ -415,6 +415,15 @@ pub const BUILTINS: &[&str] = &[
     // 아웃바운드 네트워킹 (107-108)
     "tcp_connect",     // 107
     "http_get",        // 108
+    // 시스템: 프로세스·환경·대기·파일 조작 (109-116)
+    "proc_run",        // 109
+    "env_get",         // 110
+    "env_cwd",         // 111
+    "sleep",           // 112
+    "file_remove",     // 113
+    "file_move",       // 114
+    "dir_create",      // 115
+    "file_append",     // 116
 ];
 
 pub fn builtin_index(name: &str) -> Option<usize> {
@@ -1387,7 +1396,7 @@ impl Vm {
                 req_args("send", &args, 2, span)?;
                 match &args[0] {
                     VmValue::Channel(ch) => {
-                        ch.send(to_runtime(&args[1]))
+                        ch.send(to_runtime(&args[1], span)?)
                             .map_err(|e| RuntimeError::new(e.message, span))?;
                         Ok(VmValue::Nil)
                     }
@@ -2432,6 +2441,72 @@ impl Vm {
                 let url = str_arg("http_get", &args[0], span)?;
                 http_get(&url, span)
             }
+            109 => { // proc_run(argv) → {code, stdout, stderr}  (셸 미경유)
+                req_args("proc_run", &args, 1, span)?;
+                proc_run(&args[0], span)
+            }
+            110 => { // env_get(name) → Str 또는 nil
+                req_args("env_get", &args, 1, span)?;
+                let name = str_arg("env_get", &args[0], span)?;
+                match std::env::var(&name) {
+                    Ok(v) => Ok(VmValue::Str(v)),
+                    Err(std::env::VarError::NotPresent) => Ok(VmValue::Nil),
+                    Err(std::env::VarError::NotUnicode(_)) => Err(RuntimeError::new(
+                        format!("env_get('{name}'): 값이 유효한 유니코드가 아님"), span)),
+                }
+            }
+            111 => { // env_cwd() → Str
+                req_args("env_cwd", &args, 0, span)?;
+                let dir = std::env::current_dir()
+                    .map_err(|e| RuntimeError::new(format!("env_cwd(): {e}"), span))?;
+                Ok(VmValue::Str(dir.to_string_lossy().into_owned()))
+            }
+            112 => { // sleep(ms) → nil  (현재 작업만 대기 — 탄력 풀이 다른 작업 처리)
+                req_args("sleep", &args, 1, span)?;
+                let ms = int_of("sleep", &args[0], span)?;
+                if ms < 0 {
+                    return Err(RuntimeError::new(
+                        format!("sleep(): 음수 시간은 허용되지 않음: {ms}"), span));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+                Ok(VmValue::Nil)
+            }
+            113 => { // file_remove(path) → nil  (파일만; 디렉터리는 에러)
+                req_args("file_remove", &args, 1, span)?;
+                let path = str_arg("file_remove", &args[0], span)?;
+                if std::path::Path::new(&path).is_dir() {
+                    return Err(RuntimeError::new(
+                        format!("file_remove('{path}'): 디렉터리는 삭제할 수 없음 (파일만 지원)"), span));
+                }
+                std::fs::remove_file(&path)
+                    .map_err(|e| RuntimeError::new(format!("file_remove('{path}'): {e}"), span))?;
+                Ok(VmValue::Nil)
+            }
+            114 => { // file_move(src, dst) → nil  (같은 볼륨 내 이동/이름 변경)
+                req_args("file_move", &args, 2, span)?;
+                let src = str_arg("file_move", &args[0], span)?;
+                let dst = str_arg("file_move", &args[1], span)?;
+                std::fs::rename(&src, &dst)
+                    .map_err(|e| RuntimeError::new(format!("file_move('{src}', '{dst}'): {e}"), span))?;
+                Ok(VmValue::Nil)
+            }
+            115 => { // dir_create(path) → nil  (중간 경로 포함, 이미 있으면 통과)
+                req_args("dir_create", &args, 1, span)?;
+                let path = str_arg("dir_create", &args[0], span)?;
+                std::fs::create_dir_all(&path)
+                    .map_err(|e| RuntimeError::new(format!("dir_create('{path}'): {e}"), span))?;
+                Ok(VmValue::Nil)
+            }
+            116 => { // file_append(path, content) → nil  (없으면 생성)
+                req_args("file_append", &args, 2, span)?;
+                let path    = str_arg("file_append", &args[0], span)?;
+                let content = str_arg("file_append", &args[1], span)?;
+                use std::io::Write as _;
+                std::fs::OpenOptions::new().create(true).append(true).open(&path)
+                    .and_then(|mut f| f.write_all(content.as_bytes()))
+                    .map_err(|e| RuntimeError::new(format!("file_append('{path}'): {e}"), span))?;
+                Ok(VmValue::Nil)
+            }
 
             _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
         }
@@ -3203,20 +3278,58 @@ fn warn_if_spawn_err(result: Result<VmValue, RuntimeError>) {
     }
 }
 
-fn to_runtime(v: &VmValue) -> crate::runtime::Value {
+/// 채널 송신용 변환. 데이터 값(스칼라·List·Map)만 허용한다.
+/// 함수/채널/Future/Tcp 등 참조 타입은 컨테이너 안에 있어도 에러 (조용히 Nil로 떨구지 않음).
+fn to_runtime(v: &VmValue, span: Span) -> Result<crate::runtime::Value, RuntimeError> {
     use crate::runtime::Value as RV;
-    match v {
+    Ok(match v {
         VmValue::Int(n)   => RV::Int(*n),
         VmValue::Float(n) => RV::Float(*n),
         VmValue::Bool(b)  => RV::Bool(*b),
         VmValue::Str(s)   => RV::Str(s.clone()),
         VmValue::Nil      => RV::Nil,
-        // 컨테이너는 재귀 변환 (채널로 List/Map 전송 지원)
-        VmValue::List(items) => RV::List(items.iter().map(to_runtime).collect()),
-        VmValue::Map(m) => RV::Map(m.iter().map(|(k, v)| (k.clone(), to_runtime(v))).collect()),
-        // 함수/채널/Future/Tcp 등 참조 타입은 채널로 전송 불가 → Nil
-        _ => RV::Nil,
+        VmValue::List(items) => RV::List(
+            items.iter().map(|x| to_runtime(x, span)).collect::<Result<_, _>>()?),
+        VmValue::Map(m) => RV::Map(
+            m.iter().map(|(k, x)| Ok((k.clone(), to_runtime(x, span)?)))
+                .collect::<Result<_, RuntimeError>>()?),
+        other => return Err(RuntimeError::new(
+            format!("send(): {}은(는) 채널로 보낼 수 없음 \
+                     (데이터 값만 전송 가능: int/float/bool/str/nil/list/map)", other.type_name()),
+            span)),
+    })
+}
+
+/// proc_run(argv) — 셸을 거치지 않고 argv[0]을 직접 실행. stdin은 연결하지 않는다.
+/// 0이 아닌 종료 코드는 에러가 아니라 code로 반환. 시그널 종료 시 code = nil.
+/// stdout/stderr의 비-UTF-8 바이트는 U+FFFD로 대체 (바이트 타입 도입 전 한계, SPEC 명시).
+fn proc_run(argv: &VmValue, span: Span) -> Result<VmValue, RuntimeError> {
+    let items = list_arg("proc_run", argv, span)?;
+    let mut parts = Vec::with_capacity(items.len());
+    for (i, it) in items.iter().enumerate() {
+        match it {
+            VmValue::Str(s) => parts.push(s.clone()),
+            other => return Err(RuntimeError::new(
+                format!("proc_run(): argv[{i}]는 문자열이어야 함, {} 발견", other.type_name()), span)),
+        }
     }
+    let Some((prog, rest)) = parts.split_first() else {
+        return Err(RuntimeError::new("proc_run(): argv가 비어 있음 (실행할 명령 필요)", span));
+    };
+    let out = std::process::Command::new(prog)
+        .args(rest)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| RuntimeError::new(format!("proc_run('{prog}'): {e}"), span))?;
+    let code = match out.status.code() {
+        Some(c) => VmValue::Int(c as i64),
+        None => VmValue::Nil,
+    };
+    let mut m = HashMap::new();
+    m.insert("code".to_string(), code);
+    m.insert("stdout".to_string(), VmValue::Str(String::from_utf8_lossy(&out.stdout).into_owned()));
+    m.insert("stderr".to_string(), VmValue::Str(String::from_utf8_lossy(&out.stderr).into_owned()));
+    Ok(VmValue::Map(Arc::new(m)))
 }
 
 fn from_runtime(v: crate::runtime::Value) -> VmValue {

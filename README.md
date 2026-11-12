@@ -195,7 +195,8 @@ let sorted = sort(xs)  // sorted = [1, 2, 3], xs 는 그대로
 | 정규식 | `regex_match(s,pat)` `regex_find(s,pat)` `regex_find_all(s,pat)` `regex_replace(s,pat,repl)` `regex_groups(s,pat)` |
 | 시간/난수 | `now_ms()` `format_time(ms)` `random()` `random_int(lo,hi)` |
 | 문자열/문자 | `ord(s)` `chr(n)` (그 외 위 문자열 행 참고) |
-| 파일시스템 | `read_file(p)` `write_file(p,s)` `file_size(p)` `list_dir(p)` `file_exists(p)` `is_dir(p)` |
+| 파일시스템 | `read_file(p)` `write_file(p,s)` `file_append(p,s)` `file_size(p)` `list_dir(p)` `file_exists(p)` `is_dir(p)` `file_remove(p)` `file_move(src,dst)` `dir_create(p)` |
+| 프로세스/환경 | `proc_run([prog, args...])` → `{code, stdout, stderr}` (셸 미경유) `env_get(name)` `env_cwd()` `sleep(ms)` |
 | I/O | `print(...)` `print_err(...)` `input(...)` `args()` |
 
 ```

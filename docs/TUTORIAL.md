@@ -386,6 +386,22 @@ write_file("out.txt", "내용")
 print(read_file("out.txt"))
 print(file_exists("out.txt"))
 print(list_dir("."))
+
+dir_create("logs/2026")           // 중간 경로까지 생성
+file_append("logs/2026/run.log", "시작\n")
+file_move("out.txt", "logs/2026/out.txt")
+file_remove("logs/2026/out.txt")
+```
+
+**외부 명령·환경** — 셸을 거치지 않고 인자 리스트로 실행합니다:
+
+```
+let r = proc_run(["git", "--version"])
+print(r.code)                     // 0
+print(r.stdout)                   // git version ...
+print(env_get("HOME"))            // 없으면 nil
+print(env_cwd())                  // 현재 작업 디렉터리
+sleep(500)                        // 0.5초 대기 (spawn된 작업 안에서도 다른 작업을 막지 않음)
 ```
 
 **수학**: `abs sqrt pow floor ceil round min max gcd clamp sign sin cos tan log exp pi() e()`.

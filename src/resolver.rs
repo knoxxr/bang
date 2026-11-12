@@ -408,6 +408,15 @@ impl Resolver {
             // 아웃바운드 네트워킹 (107-108)
             ("tcp_connect",   Some(1)),
             ("http_get",      Some(1)),
+            // 시스템: 프로세스·환경·대기·파일 조작 (109-116)
+            ("proc_run",      Some(1)),
+            ("env_get",       Some(1)),
+            ("env_cwd",       Some(0)),
+            ("sleep",         Some(1)),
+            ("file_remove",   Some(1)),
+            ("file_move",     Some(2)),
+            ("dir_create",    Some(1)),
+            ("file_append",   Some(2)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {
