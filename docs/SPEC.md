@@ -97,6 +97,7 @@ Bang은 동적 타입 언어이다. 변수에 타입 선언이 없고,
 |------|------|-------------|
 | `list` | 순서 있는 가변 배열 | `[1, 2, 3]`, `[]` |
 | `map` | 키-값 매핑 | `{"name": "Alice", "age": 30}` |
+| `bytes` | 불변 바이트 열 (11장) | 리터럴 없음 — `bytes_from_str("hi")`, `bytes_from_hex("00ff")` |
 
 ### 3.3 함수 타입
 
@@ -410,7 +411,7 @@ let <이름>: <타입> = <식>
 fn <이름>(<p1>: <타입>, <p2>: <타입>) -> <타입> { ... }
 ```
 
-타입 이름: `int` `float` `bool` `str` `nil` `list` `map` `fn` `any`
+타입 이름: `int` `float` `bool` `str` `bytes` `nil` `list` `map` `fn` `any`
 (타입 이름은 키워드가 아니라 타입 위치에서만 의미를 갖는 식별자다.)
 
 규칙:
@@ -480,3 +481,80 @@ if r.code != 0 {
 - `serve_event` 핸들러 안의 `sleep`/`proc_run`은 단일 스레드 이벤트 루프 전체를 멈춘다.
 - `file_move`는 다른 드라이브·볼륨으로 이동하지 못한다(복사 후 삭제로 대체).
 - 디렉터리 삭제 빌트인은 없다.
+
+---
+
+## 11. 바이트 값 타입 (bytes)
+
+`bytes`는 **불변** 바이트 열이다. 문자열(`str`)은 항상 유효한 UTF-8이어야 하므로,
+이미지·압축 파일·바이너리 프로토콜처럼 UTF-8이 아닌 데이터는 `bytes`로 다룬다.
+
+- **값 의미론**: list/str과 같다. 바인딩·인자·채널·spawn에서 복제된 것처럼 동작한다
+  (불변이므로 내부적으로는 공유해도 관찰상 차이가 없다). 채널로 보낼 수 있다.
+- **리터럴 문법 없음** (헌법 6조 "작은 표면"). 변환 빌트인으로 만든다.
+- 타입 힌트 이름은 `bytes`, `type(b)`는 `"Bytes"`.
+
+| 연산 | 결과 |
+|---|---|
+| `len(b)` | 바이트 수 |
+| `b[i]` | `0..255` 정수. 음수 인덱스는 뒤에서부터. 범위 밖이면 에러 |
+| `slice(b, s, e)` | 새 `bytes` (범위는 list/str의 slice와 같이 잘라 맞춤) |
+| `a + b` | 연결한 새 `bytes` |
+| `a == b` | 내용 비교 |
+| `b[i] = v` | **에러** — 불변. `slice`와 `+`로 새 값을 만든다 |
+| `for x in b` | 지원하지 않음 — `for i in range(len(b))` 사용 |
+
+| 빌트인 | 설명 |
+|---|---|
+| `bytes_from_str(s)` | 문자열을 UTF-8로 인코딩 |
+| `bytes_to_str(b)` | UTF-8로 디코딩. 유효하지 않으면 **에러** (조용히 `�`로 바꾸지 않음) |
+| `bytes_from_hex(s)` | `"48656c6c6f"` → bytes. 대소문자 무관. 홀수 자릿수·비16진 문자는 에러 |
+| `bytes_to_hex(b)` | 소문자 16진수 문자열 |
+| `file_read_bytes(path)` | 파일 전체를 무손실로 읽기 |
+| `tcp_read_bytes(conn)` | 최대 4096바이트 1회 읽기. EOF면 빈 `bytes` |
+
+쓰기 빌트인은 `str`과 `bytes`를 모두 받는다: `write_file(p, data)`,
+`file_append(p, data)`, `tcp_write(conn, data)`.
+
+표시(`print`)는 `<bytes 길이: 16진수>` 형식이며 앞 32바이트까지만 보인다.
+`json_stringify`는 `bytes`를 직렬화하지 않는다(에러) — 필요하면 `bytes_to_hex`로 변환한다.
+
+```bang
+let png = file_read_bytes("logo.png")
+print(bytes_to_hex(slice(png, 0, 8)))   // 89504e470d0a1a0a (PNG 시그니처)
+write_file("copy.png", png)             // 무손실 복사
+```
+
+**한계**: `proc_run`의 stdout/stderr와 `http_get`의 body는 아직 `str`이다(비-UTF-8은 `�`로 대체).
+
+---
+
+## 12. HTTP 클라이언트 (http_get)
+
+```bang
+let r = http_get("https://example.com/")
+print(r.status)                 // 200
+print(r.headers["content-type"]) // 헤더 키는 소문자
+print(len(r.body))
+```
+
+- `http_get(url)` → `{"status": int, "headers": map, "body": str}`. `http://`와 `https://`를 지원한다.
+- 리다이렉트는 따라가지 않는다 — `status`(301/302 등)와 `headers.location`을 그대로 돌려준다.
+- 4xx/5xx는 에러가 아니라 `status`로 돌려준다. 연결 실패·TLS 실패·타임아웃(10초)은 catch 가능한 에러다.
+- `Transfer-Encoding: chunked`와 `Content-Length`를 처리한다.
+
+**https 구현**: TLS는 rustls(+ring)로 처리한다. 헌법 5조 "자급 코어"의 유일한 의존성 예외이며,
+`https` cargo feature(기본 켜짐)로 격리되어 있다. `cargo build --no-default-features`로 빌드하면
+TLS 의존성이 빠지고 `https://` 요청은 "https를 지원하지 않음" 에러가 된다. 모든 OS에서 TLS 동작이
+같다(OS 네이티브 TLS를 쓰지 않음).
+
+인증서는 항상 검증한다(만료·자체 서명·호스트 불일치는 "TLS 핸드셰이크 실패" 에러). 검증을 끄는
+옵션은 없다.
+
+**한계 (반드시 인지)**:
+- 루트 인증서는 바이너리에 내장된 Mozilla 목록(webpki-roots)만 쓴다. OS 인증서 저장소를 읽지 않으므로,
+  **사내 프록시처럼 자체 인증 기관(CA)을 쓰는 환경에서는 https 접속이 실패한다.**
+  내장 목록은 bang을 새로 빌드해야 갱신된다.
+- GET만 지원한다(POST 등 없음). 요청 헤더를 지정할 수 없다.
+- `body`는 `str`이다 — UTF-8이 아닌 응답은 `�`로 대체된다(11장 한계 참고).
+- 클라이언트 인증서(mTLS), 프록시, HTTP/2는 지원하지 않는다.

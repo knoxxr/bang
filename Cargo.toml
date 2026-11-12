@@ -1,6 +1,6 @@
 [package]
 name = "bang"
-version = "0.28.0"
+version = "0.29.0"
 edition = "2021"
 description = "Bang 프로그래밍 언어 컴파일러/런타임"
 license = "MIT"
@@ -22,6 +22,13 @@ path = "src/lib.rs"
 # 논블로킹 I/O 리액터(epoll/kqueue/IOCP 크로스플랫폼 래퍼). C10K급 동시연결의 토대.
 # 이유: epoll/kqueue/IOCP를 직접 unsafe로 다루는 대신 검증된 얇은 래퍼 사용(의존성 1개).
 polling = "3"
+# Phase 43: http_get의 https 지원 (기본 켜짐, `--no-default-features`로 끄면 자급 코어만 남음).
+# 이유: TLS 직접 구현은 범위 밖. native-tls는 Linux에서 시스템 OpenSSL에 동적 링크되어
+# 단일 바이너리 배포가 깨지고 OS마다 TLS 동작이 달라진다. rustls+ring은 순수 정적 링크·
+# 전 OS 동일 동작. aws-lc 대신 ring: 바이너리 +1.5MB vs +2.5MB, 빌드 35s vs 68s (Windows 실측).
+# 루트 인증서는 webpki-roots(Mozilla 목록 내장) — 사내 자체 CA 환경은 미지원(SPEC 한계 명시).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+webpki-roots = { version = "1", optional = true }
 # Phase 9 Part B: Cranelift JIT (선택적 기능 — `--features jit` 빌드 시 활성화)
 cranelift-codegen  = { version = "0.109", optional = true }
 cranelift-jit      = { version = "0.109", optional = true }
@@ -30,7 +37,8 @@ cranelift-frontend = { version = "0.109", optional = true }
 cranelift-native   = { version = "0.109", optional = true }
 
 [features]
-default = []
+default = ["https"]
+https = ["dep:rustls", "dep:webpki-roots"]
 jit = [
     "dep:cranelift-codegen",
     "dep:cranelift-jit",

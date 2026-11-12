@@ -305,7 +305,7 @@ fn area(w: int, h: int) -> int {
 print(area(3, 4))         // 12
 ```
 
-타입: `int float bool str nil list map fn any`. 표기를 생략하면 완전 동적입니다(점진적 타이핑).
+타입: `int float bool str bytes nil list map fn any`. 표기를 생략하면 완전 동적입니다(점진적 타이핑).
 
 ```bash
 $ bang check app.bang
@@ -391,6 +391,18 @@ dir_create("logs/2026")           // 중간 경로까지 생성
 file_append("logs/2026/run.log", "시작\n")
 file_move("out.txt", "logs/2026/out.txt")
 file_remove("logs/2026/out.txt")
+```
+
+**바이너리 데이터** — `str`은 항상 UTF-8이므로, 이미지 같은 바이너리는 불변 `bytes`로 다룹니다:
+
+```
+let b = bytes_from_str("hi")
+print(b)                          // <bytes 2: 6869>
+print(len(b), b[0])               // 2 104
+let png = bytes_from_hex("89504e47")
+write_file("sig.bin", png)        // write_file은 str과 bytes 모두 받음
+print(file_read_bytes("sig.bin") == png)   // true
+print(bytes_to_hex(slice(png, 1, 4)))      // 504e47
 ```
 
 **외부 명령·환경** — 셸을 거치지 않고 인자 리스트로 실행합니다:

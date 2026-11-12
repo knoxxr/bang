@@ -417,6 +417,13 @@ impl Resolver {
             ("file_move",     Some(2)),
             ("dir_create",    Some(1)),
             ("file_append",   Some(2)),
+            // 바이트 값 타입 (117-122)
+            ("bytes_from_str",  Some(1)),
+            ("bytes_to_str",    Some(1)),
+            ("bytes_from_hex",  Some(1)),
+            ("bytes_to_hex",    Some(1)),
+            ("file_read_bytes", Some(1)),
+            ("tcp_read_bytes",  Some(1)),
         ];
         let frame = self.scopes.last_mut().unwrap();
         for (name, arity) in builtins {

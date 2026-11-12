@@ -27,6 +27,7 @@ pub enum TypeAnn {
     Map,
     Fn,
     Any,
+    Bytes,
 }
 
 impl TypeAnn {
@@ -42,6 +43,7 @@ impl TypeAnn {
             "map" => Some(TypeAnn::Map),
             "fn" => Some(TypeAnn::Fn),
             "any" => Some(TypeAnn::Any),
+            "bytes" => Some(TypeAnn::Bytes),
             _ => None,
         }
     }
@@ -57,6 +59,7 @@ impl TypeAnn {
             TypeAnn::Map => "map",
             TypeAnn::Fn => "fn",
             TypeAnn::Any => "any",
+            TypeAnn::Bytes => "bytes",
         }
     }
 
@@ -72,6 +75,7 @@ impl TypeAnn {
             TypeAnn::Map => 6,
             TypeAnn::Fn => 7,
             TypeAnn::Any => 8,
+            TypeAnn::Bytes => 9,
         }
     }
 
@@ -86,6 +90,7 @@ impl TypeAnn {
             6 => TypeAnn::Map,
             7 => TypeAnn::Fn,
             8 => TypeAnn::Any,
+            9 => TypeAnn::Bytes,
             _ => return None,
         })
     }

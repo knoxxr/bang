@@ -77,7 +77,8 @@ docs/VISION.md  활성화 계획(철학+GTM 종합). P0~P2 실행 로드맵.
 docs/TUTORIAL.md 진행형 입문 튜토리얼 (먼저 읽는 문서).
 docs/GUIDE.md   사용자 가이드 (초기 버전 기준 — 최신은 TUTORIAL/SPEC).
 빌트인 인덱스: resolver.rs 등록 순서 == vm.rs BUILTINS 배열 == call_builtin match. 끝에만 추가(번호 불변).
-의존성: polling(리액터). cranelift는 jit feature(현재 비호환).
+의존성: polling(리액터), rustls+webpki-roots(https feature, 기본 켜짐 — 자급 코어의 유일한 예외).
+        cranelift는 jit feature(현재 비호환). CI는 --no-default-features 빌드도 검증.
 examples/       기본 샘플 + 동시성 샘플(channels/parallel_block/spawn_basic 등)이 한 디렉토리에 평면 배치.
                 상단 주석의 기대 출력이 통합 테스트 정답지.
 
@@ -422,3 +423,29 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                "sequential in Part A" 잔재). 팬아웃 데모가 실제로는 병렬이 아님.
              참고: cargo fmt --check는 이 Phase 이전부터 약 1만 줄 불일치(정렬 공백) — 별도 정리 필요.
              회귀: tests/system_test.rs +10. (tests: 327 green, clippy 0)
+✅ Phase 43 — 바이트 값 타입 + HTTPS — v0.29.0
+             1부: VmValue::Bytes(Arc<Vec<u8>>) / runtime::Value::Bytes — 불변이라 Arc 공유가
+               관찰상 깊은 복사와 동일(값 의미론 유지, COW도 불필요). 리터럴 문법 없음.
+               연산: len, b[i]→Int, 음수 인덱스, slice, +, ==. b[i]=v는 에러(불변). for-in 미지원.
+               타입 힌트 bytes(TypeAnn 태그 9, typeck Ty::Bytes). 표시 <bytes N: hex>(32바이트까지).
+               빌트인(117-122): bytes_from_str, bytes_to_str(비-UTF8 에러), bytes_from_hex,
+               bytes_to_hex, file_read_bytes, tcp_read_bytes. write_file/file_append/tcp_write는
+               Str|Bytes 둘 다 받음(data_arg). 채널·spawn 전달 지원. json_stringify는 에러.
+               PHILOSOPHY.md에 "수용 기록"(Set 거절과의 차이) 추가.
+               회귀: tests/bytes_test.rs +9 (256값 파일 왕복, 비-UTF8 소켓 에코 포함).
+               (tests: 336 green, clippy 0)
+             2부(HTTPS): 사용자 결정 = rustls+ring + webpki-roots, `https` feature(기본 켜짐)로 격리.
+               비교 실측(Windows, lto thin): native-tls +39KB(단 Linux는 시스템 OpenSSL 동적 링크 →
+               단일 바이너리 깨짐, OS별 TLS 동작 상이) / rustls+ring +1.54MB / rustls+aws-lc +2.46MB.
+               결과: bang dist 바이너리 1.47MB → 2.95MB. 헌법 5조의 유일한 의존성 예외(PR 이유는 Cargo.toml 주석).
+               http_get: https:// 허용(기본 443), 스트림을 Box<dyn HttpStream>으로 추상화(HTTP 코드 공유),
+               핸드셰이크를 tls_wrap에서 명시 완료(인증서 오류 = "TLS 핸드셰이크 실패"),
+               close_notify 없는 종료(UnexpectedEof)는 EOF로 취급. ClientConfig는 OnceLock 1회 생성.
+               --no-default-features면 https:// = "지원하지 않음" catch 가능 에러.
+               CI: --no-default-features test+clippy 단계 추가(자급 코어 빌드 유지 보장).
+               회귀: http_client_test 갱신(https 실패 catch / 미지원 스킴 / #[ignore] 실인터넷 https).
+               실측: example.com·example.org https 200, badssl 만료·자체서명·호스트불일치 모두 거부.
+               SPEC 12장 신설(한계: 사내 자체 CA 미지원, GET만, body는 str).
+               (tests: 337 green 양쪽 feature, clippy 0)
+             발견(미수정): 렉서가 UTF-8 BOM을 오류로 처리 — Windows 편집기/PowerShell 5.1이 저장한
+               파일이 첫 글자에서 실패.

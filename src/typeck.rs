@@ -30,6 +30,7 @@ enum Ty {
     List,
     Map,
     Fn,
+    Bytes,
     Unknown, // any 또는 정적으로 알 수 없음 → 충돌 판정 제외
 }
 
@@ -45,6 +46,7 @@ impl Ty {
             TypeAnn::Map => Ty::Map,
             TypeAnn::Fn => Ty::Fn,
             TypeAnn::Any => Ty::Unknown,
+            TypeAnn::Bytes => Ty::Bytes,
         }
     }
     fn name(self) -> &'static str {
@@ -57,6 +59,7 @@ impl Ty {
             Ty::List => "list",
             Ty::Map => "map",
             Ty::Fn => "fn",
+            Ty::Bytes => "bytes",
             Ty::Unknown => "any",
         }
     }

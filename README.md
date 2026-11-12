@@ -189,13 +189,14 @@ let sorted = sort(xs)  // sorted = [1, 2, 3], xs 는 그대로
 | 집합(리스트) | `union(a,b)` `intersect(a,b)` `difference(a,b)` (중복 제거) |
 | 동시성 | `channel(...)` `send(c,v)` `recv(c)` `select(chans)` `close(c)` `wait(f)` `parallel_map(l,f)` |
 | 네트워킹(서버) | `tcp_listen(addr)` `tcp_accept(s)` `tcp_read(c)` `tcp_read_until(c,marker)` `tcp_write(c,s)` `tcp_send_file(c,path)` `tcp_set_timeout(c,ms)` `tcp_close(c)` |
-| 네트워킹(클라이언트) | `tcp_connect(addr)` `http_get(url)` → `{status, headers, body}` (http만, https 미지원) |
+| 네트워킹(클라이언트) | `tcp_connect(addr)` `http_get(url)` → `{status, headers, body}` (http/https, 리다이렉트는 따라가지 않음) |
 | 이벤트 서버 | `serve_event(addr, handler)` — 논블로킹 이벤트 루프(단일 스레드 멀티플렉싱). `handler: fn(req)->resp_str` ⚠️ 단일 스레드라 CPU 무거운/블로킹 핸들러는 루프를 막음(상세·한계는 docs/SPEC.md 6.4-3) |
 | JSON | `json_parse(s)` `json_stringify(v)` |
 | 정규식 | `regex_match(s,pat)` `regex_find(s,pat)` `regex_find_all(s,pat)` `regex_replace(s,pat,repl)` `regex_groups(s,pat)` |
 | 시간/난수 | `now_ms()` `format_time(ms)` `random()` `random_int(lo,hi)` |
 | 문자열/문자 | `ord(s)` `chr(n)` (그 외 위 문자열 행 참고) |
 | 파일시스템 | `read_file(p)` `write_file(p,s)` `file_append(p,s)` `file_size(p)` `list_dir(p)` `file_exists(p)` `is_dir(p)` `file_remove(p)` `file_move(src,dst)` `dir_create(p)` |
+| 바이트(불변) | `bytes_from_str(s)` `bytes_to_str(b)` `bytes_from_hex(s)` `bytes_to_hex(b)` `file_read_bytes(p)` `tcp_read_bytes(c)` + `len` `b[i]` `slice` `+` `==` (쓰기 빌트인은 str/bytes 모두 받음) |
 | 프로세스/환경 | `proc_run([prog, args...])` → `{code, stdout, stderr}` (셸 미경유) `env_get(name)` `env_cwd()` `sleep(ms)` |
 | I/O | `print(...)` `print_err(...)` `input(...)` `args()` |
 

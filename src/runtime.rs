@@ -52,6 +52,8 @@ pub enum Value {
     Nil,
     List(Vec<Value>),
     Map(HashMap<String, Value>),
+    /// 불변 바이트 열 (값 의미론 — 불변이라 Arc 공유가 관찰상 깊은 복사와 동일)
+    Bytes(Arc<Vec<u8>>),
     Function(Arc<BangFunction>),
     Channel(Arc<BangChannel>),
     Future(Arc<BangFuture>),
@@ -75,6 +77,7 @@ impl Value {
             Value::Nil => "Nil",
             Value::List(_) => "List",
             Value::Map(_) => "Map",
+            Value::Bytes(_) => "Bytes",
             Value::Function(_) => "Function",
             Value::Channel(_) => "Channel",
             Value::Future(_) => "Future",
@@ -117,6 +120,7 @@ impl fmt::Display for Value {
                 if let Some(n) = &func.name { write!(f, "<fn {n}>") }
                 else { write!(f, "<fn>") }
             }
+            Value::Bytes(b) => fmt_bytes(f, b),
             Value::Channel(_) => write!(f, "<channel>"),
             Value::Future(_) => write!(f, "<future>"),
             Value::Builtin(n) => write!(f, "<builtin {n}>"),
@@ -344,4 +348,18 @@ pub fn deep_resolve(v: Value) -> Result<Value, RuntimeError> {
         }
         other => Ok(other),
     }
+}
+
+/// 바이트 열 표시 형식: `<bytes N: 16진수>` — 앞 32바이트까지만 보이고 나머지는 `…`.
+/// (리터럴 문법이 없으므로 표시는 디버깅용이며, 다시 파싱되는 형식이 아니다.)
+pub fn fmt_bytes(f: &mut fmt::Formatter<'_>, b: &[u8]) -> fmt::Result {
+    const SHOW: usize = 32;
+    write!(f, "<bytes {}: ", b.len())?;
+    for x in b.iter().take(SHOW) {
+        write!(f, "{x:02x}")?;
+    }
+    if b.len() > SHOW {
+        write!(f, "…")?;
+    }
+    write!(f, ">")
 }
