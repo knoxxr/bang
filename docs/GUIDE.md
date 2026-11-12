@@ -60,7 +60,6 @@ $env:PATH += ";C:\Users\사용자\bang\target\release"
 
 ```
 bang run     <파일.bang>          파일 실행 (기본: 바이트코드 VM)
-bang run     --interp <파일>      트리워킹 인터프리터로 실행
 bang run     --dump-ast <파일>    AST 구조 출력 (디버그)
 bang compile -o <출력> <파일>     네이티브 바이너리 AOT 컴파일
 bang check   <파일>               문법·의미 오류 검사 (실행 없음)

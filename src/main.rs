@@ -2,7 +2,6 @@
 
 use bang::ast::dump_program;
 use bang::compiler::compile;
-use bang::interpreter::Interpreter;
 use bang::lexer::Lexer;
 use bang::lexer::token::Span;
 use bang::parser::Parser;
@@ -61,10 +60,9 @@ fn print_usage() {
     eprintln!("  bang <명령> [옵션] [인자...]");
     eprintln!();
     eprintln!("명령:");
-    eprintln!("  run     [--interp] [--jit] [--dump-ast] <파일|->  .bang 파일/표준입력 실행");
-    eprintln!("                    기본: VM, --interp: 트리-워킹 인터프리터");
-    eprintln!("                    --jit: Cranelift JIT 백엔드 (--features jit 빌드 필요)");
-    eprintln!("  compile -o <출력> <파일>  AOT 컴파일 (C 트랜스파일 + cc -O2)");
+    eprintln!("  run     [--dump-ast] <파일|->  .bang 파일/표준입력 실행 (바이트코드 VM)");
+    eprintln!("  compile -o <출력> <파일>  [실험적] AOT 컴파일 (C 트랜스파일 + cc -O2,");
+    eprintln!("                    정수·문자열·함수만 지원 — 리스트/맵/동시성 미지원)");
     eprintln!("  check   <파일>   오류 검사 (실행 없음)");
     eprintln!("  build   <파일>   컴파일 검증 + 통계 출력");
     eprintln!("  parse   <파일>   AST 출력");
@@ -144,17 +142,19 @@ fn format_with_context(message: &str, span: Span, source: &str) -> String {
 // ============================================================================
 
 fn cmd_run(args: &[String]) {
-    let mut use_interp = false;
-    let mut use_jit    = false;
-    let mut dump_ast   = false;
+    let mut dump_ast = false;
     let mut path: Option<&str> = None;
 
     for arg in args {
         match arg.as_str() {
-            "--interp"   => use_interp = true,
-            "--jit"      => use_jit    = true,
-            "--dump-ast" => dump_ast   = true,
-            _            => { path = Some(arg); }
+            "--dump-ast" => dump_ast = true,
+            // v0.30.0에서 제거된 백엔드 — 파일 경로로 오인하지 않게 명확히 알린다.
+            "--interp" | "--jit" => {
+                eprintln!("오류: '{arg}'는 v0.30.0에서 제거되었습니다 — 바이트코드 VM이 유일한 실행 엔진입니다");
+                eprintln!("      ('{arg}' 없이 'bang run <파일>'로 실행하세요)");
+                process::exit(1);
+            }
+            _ => { path = Some(arg); }
         }
     }
 
@@ -162,7 +162,7 @@ fn cmd_run(args: &[String]) {
         Some(p) => p,
         None => {
             eprintln!("오류: 파일 경로가 필요합니다");
-            eprintln!("사용법: bang run [--interp] [--jit] [--dump-ast] <파일.bang>");
+            eprintln!("사용법: bang run [--dump-ast] <파일.bang>");
             process::exit(1);
         }
     };
@@ -186,29 +186,7 @@ fn cmd_run(args: &[String]) {
         process::exit(1);
     }
 
-    if use_jit {
-        #[cfg(not(feature = "jit"))]
-        {
-            eprintln!("{}", bang::codegen::JIT_DISABLED_MSG);
-            process::exit(1);
-        }
-        #[cfg(feature = "jit")]
-        {
-            // JIT 모드: VM 실행 (내부 함수 호출 시 JIT 시도, 폴백 내장)
-            run_vm_program(&prog, &source);
-            return;
-        }
-    }
-
-    if use_interp {
-        let interp = Interpreter::new();
-        if let Err(e) = interp.run(&prog) {
-            eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
-            process::exit(1);
-        }
-    } else {
-        run_vm_program(&prog, &source);
-    }
+    run_vm_program(&prog, &source);
 }
 
 fn run_vm_program(prog: &bang::ast::Program, source: &str) {

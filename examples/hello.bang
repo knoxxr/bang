@@ -1,2 +1,6 @@
+// 기본 출력 — 함수 정의와 호출
+// 기대 출력:
+// hello world
+
 fn greet(name) { print("hello " + name) }
 greet("world")

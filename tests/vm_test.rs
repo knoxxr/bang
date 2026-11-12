@@ -1,8 +1,7 @@
 // Bang 통합 테스트 — 바이트코드 VM (Phase 5)
-// 인터프리터(Phase 3) 출력과 비교하여 일치 여부 검증
+// 예제는 상단 "// 기대 출력:" 주석과 비교 (Phase 44: 인터프리터 제거 후 주석이 정답지)
 
 use bang::compiler::compile;
-use bang::interpreter::Interpreter;
 use bang::lexer::Lexer;
 use bang::parser::Parser;
 use bang::vm::Vm;
@@ -30,30 +29,37 @@ fn run_vm(source: &str) -> Vec<String> {
     lines
 }
 
-/// 인터프리터로 소스 실행 → 출력 줄 목록
-fn run_interp(source: &str) -> Vec<String> {
-    let prog = lex_parse(source);
-    let interp = Interpreter::new();
-    interp.run(&prog).expect("인터프리터 실행 실패");
-    let lines = interp.output.lock().unwrap().clone();
-    lines
+/// 예제 상단의 "// 기대 출력:" 주석 블록 → 기대 출력 줄 목록.
+/// (CLAUDE.md 규약: examples/의 기대 출력 주석이 통합 테스트 정답지)
+fn expected_from_header(source: &str) -> Option<Vec<String>> {
+    let mut lines = source.lines();
+    lines.by_ref().find(|l| l.trim() == "// 기대 출력:")?;
+    Some(
+        lines
+            .take_while(|l| l.starts_with("//"))
+            .map(|l| l.strip_prefix("// ").unwrap_or(l.trim_start_matches('/')).to_string())
+            .collect(),
+    )
 }
 
-/// examples/ 파일을 VM과 인터프리터 양쪽으로 실행하여 출력 비교
+/// examples/ 파일을 VM으로 실행하여 상단 기대 출력 주석과 비교.
+/// (Phase 44 전에는 트리 워킹 인터프리터 출력과 비교했다 — 인터프리터 제거 후 주석이 정답지)
 fn diff_file(name: &str) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples").join(name);
     let source = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{name}: 파일 읽기 실패: {e}"));
-    let vm_out    = run_vm(&source);
-    let interp_out = run_interp(&source);
+        .unwrap_or_else(|e| panic!("{name}: 파일 읽기 실패: {e}"))
+        .replace("\r\n", "\n");
+    let expected = expected_from_header(&source)
+        .unwrap_or_else(|| panic!("{name}: '// 기대 출력:' 주석이 없음"));
+    let vm_out = run_vm(&source);
     assert_eq!(
-        vm_out, interp_out,
-        "{name}: VM 출력이 인터프리터 출력과 다름\nVM: {vm_out:?}\nInterp: {interp_out:?}"
+        vm_out, expected,
+        "{name}: VM 출력이 기대 출력 주석과 다름\nVM: {vm_out:?}\n기대: {expected:?}"
     );
 }
 
 // ============================================================================
-// 12개 예제 — differential tests
+// 12개 예제 — 기대 출력 주석 검증
 // ============================================================================
 
 #[test] fn test_vm_hello()          { diff_file("hello.bang"); }
@@ -810,12 +816,4 @@ fn test_vm_reasonable_nesting_still_works() {
     // 정상적인 깊이(100겹)는 여전히 통과
     let src = format!("print({}1{})", "(".repeat(100), ")".repeat(100));
     assert_eq!(run_vm(&src), vec!["1"]);
-}
-
-#[test]
-fn test_vm_interp_flag_still_works() {
-    // Ensure Phase 3 interpreter is accessible (not removed)
-    // We test this by directly running the interpreter
-    let src = "print(\"interp ok\")";
-    assert_eq!(run_interp(src), vec!["interp ok"]);
 }

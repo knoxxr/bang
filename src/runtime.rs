@@ -1,11 +1,10 @@
-// Bang — 런타임 타입: Value, Env, BangChannel, BangFuture
+// Bang — 런타임 공용 타입: RuntimeError, 채널 전송용 Value(데이터 전용), BangChannel
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use crate::ast::Block;
 use crate::lexer::token::Span;
 
 // ============================================================================
@@ -43,6 +42,9 @@ impl std::error::Error for RuntimeError {}
 // Value
 // ============================================================================
 
+/// 채널로 전달되는 값 — **데이터 전용**. 함수·채널·Future·TCP 핸들은 표현할 수 없으므로
+/// "채널로는 데이터만 보낸다"(SPEC 6.4)가 타입으로 보장된다. 모든 변형이 소유 데이터라
+/// 자동으로 Send + Sync다 (unsafe impl 불필요).
 #[derive(Clone)]
 pub enum Value {
     Int(i64),
@@ -54,18 +56,7 @@ pub enum Value {
     Map(HashMap<String, Value>),
     /// 불변 바이트 열 (값 의미론 — 불변이라 Arc 공유가 관찰상 깊은 복사와 동일)
     Bytes(Arc<Vec<u8>>),
-    Function(Arc<BangFunction>),
-    Channel(Arc<BangChannel>),
-    Future(Arc<BangFuture>),
-    // 내장 함수: 이름 태그만 저장, 실제 디스패치는 Interpreter::call_builtin
-    Builtin(&'static str),
 }
-
-// Safety: 모든 공유 가변 상태는 Arc<Mutex<_>>로 보호.
-// List/Map/Str 은 스레드 경계를 넘기 전 복제(Value::clone = 깊은 복사).
-// Function/Channel/Future 는 Arc 클론(참조 의미론).
-unsafe impl Send for Value {}
-unsafe impl Sync for Value {}
 
 impl Value {
     pub fn type_name(&self) -> &'static str {
@@ -78,10 +69,6 @@ impl Value {
             Value::List(_) => "List",
             Value::Map(_) => "Map",
             Value::Bytes(_) => "Bytes",
-            Value::Function(_) => "Function",
-            Value::Channel(_) => "Channel",
-            Value::Future(_) => "Future",
-            Value::Builtin(n) => n,
         }
     }
 
@@ -116,14 +103,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
-            Value::Function(func) => {
-                if let Some(n) = &func.name { write!(f, "<fn {n}>") }
-                else { write!(f, "<fn>") }
-            }
             Value::Bytes(b) => fmt_bytes(f, b),
-            Value::Channel(_) => write!(f, "<channel>"),
-            Value::Future(_) => write!(f, "<future>"),
-            Value::Builtin(n) => write!(f, "<builtin {n}>"),
         }
     }
 }
@@ -131,79 +111,6 @@ impl fmt::Display for Value {
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
-    }
-}
-
-// ============================================================================
-// BangFunction — 클로저 + 파라미터 + 본문 보유
-// ============================================================================
-
-pub struct BangFunction {
-    pub name: Option<String>,
-    pub params: Vec<String>,
-    pub body: Block,
-    pub closure: Arc<Mutex<Env>>,
-}
-
-// ============================================================================
-// Env — 렉시컬 스코프 체인
-// ============================================================================
-
-pub struct Env {
-    pub vars: HashMap<String, Value>,
-    pub parent: Option<Arc<Mutex<Env>>>,
-}
-
-impl Default for Env {
-    fn default() -> Self { Self::new() }
-}
-
-impl Env {
-    pub fn new() -> Self {
-        Self { vars: HashMap::new(), parent: None }
-    }
-
-    pub fn with_parent(parent: Arc<Mutex<Env>>) -> Self {
-        Self { vars: HashMap::new(), parent: Some(parent) }
-    }
-
-    pub fn define(&mut self, name: String, value: Value) {
-        self.vars.insert(name, value);
-    }
-
-    /// 현재·부모 스코프를 순서대로 검색, 있으면 클론 반환
-    pub fn get(&self, name: &str) -> Option<Value> {
-        if let Some(v) = self.vars.get(name) {
-            return Some(v.clone());
-        }
-        if let Some(p) = &self.parent {
-            return p.lock().unwrap().get(name);
-        }
-        None
-    }
-
-    /// 스코프 체인에서 이름을 찾아 재대입. 없으면 false.
-    pub fn assign(&mut self, name: &str, value: Value) -> bool {
-        if self.vars.contains_key(name) {
-            self.vars.insert(name.to_string(), value);
-            return true;
-        }
-        if let Some(p) = &self.parent {
-            return p.lock().unwrap().assign(name, value);
-        }
-        false
-    }
-
-    /// spawn 용 깊은 스냅샷: 데이터(List/Map/Str)는 깊은 복사, 함수/채널/Future 는 Arc 클론
-    pub fn snapshot(&self) -> Arc<Mutex<Env>> {
-        let mut new_env = Env::new();
-        for (k, v) in &self.vars {
-            new_env.vars.insert(k.clone(), v.clone());
-        }
-        if let Some(p) = &self.parent {
-            new_env.parent = Some(p.lock().unwrap().snapshot());
-        }
-        Arc::new(Mutex::new(new_env))
     }
 }
 
@@ -264,89 +171,6 @@ impl BangChannel {
     pub fn close(&self) {
         let mut guard = self.sender.lock().unwrap();
         *guard = None; // Sender 드롭 → 채널 닫힘 → recv() 반환
-    }
-}
-
-// ============================================================================
-// BangFuture — spawn 결과 핸들 (Condvar 기반 캐싱)
-// ============================================================================
-
-pub struct BangFuture {
-    inner: Mutex<FutureState>,
-    ready: Condvar,
-}
-
-enum FutureState {
-    Pending(Receiver<Result<Value, RuntimeError>>),
-    Resolving, // 다른 스레드가 대기 중
-    Done(Result<Value, RuntimeError>),
-}
-
-impl BangFuture {
-    pub fn new(rx: Receiver<Result<Value, RuntimeError>>) -> Self {
-        Self {
-            inner: Mutex::new(FutureState::Pending(rx)),
-            ready: Condvar::new(),
-        }
-    }
-
-    /// 결과가 올 때까지 블록. 캐시된 경우 즉시 반환(cheap).
-    pub fn resolve(&self) -> Result<Value, RuntimeError> {
-        let mut guard = self.inner.lock().unwrap();
-        loop {
-            match &*guard {
-                FutureState::Done(r) => return r.clone(),
-                FutureState::Resolving => {
-                    // 다른 스레드가 대기 중 → Condvar 로 대기
-                    guard = self.ready.wait(guard).unwrap();
-                }
-                FutureState::Pending(_) => {
-                    // 우리가 수신 담당
-                    let rx = match std::mem::replace(&mut *guard, FutureState::Resolving) {
-                        FutureState::Pending(rx) => rx,
-                        _ => unreachable!(),
-                    };
-                    drop(guard); // 락 해제 후 블록
-                    let result = rx.recv().unwrap_or_else(|_| {
-                        Err(RuntimeError::no_span("작업 스레드 패닉"))
-                    });
-                    let mut guard = self.inner.lock().unwrap();
-                    *guard = FutureState::Done(result.clone());
-                    self.ready.notify_all();
-                    return result;
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================
-// 헬퍼: Future 해소
-// ============================================================================
-
-/// 얕게 해소: 최상위 Future 만 한 번 조인
-pub fn resolve_shallow(v: Value) -> Result<Value, RuntimeError> {
-    match v {
-        Value::Future(f) => f.resolve(),
-        other => Ok(other),
-    }
-}
-
-/// 깊게 해소: 컨테이너 내부 Future 까지 재귀 조인 (print 용)
-pub fn deep_resolve(v: Value) -> Result<Value, RuntimeError> {
-    let v = resolve_shallow(v)?;
-    match v {
-        Value::List(items) => {
-            let items = items.into_iter().map(deep_resolve).collect::<Result<Vec<_>, _>>()?;
-            Ok(Value::List(items))
-        }
-        Value::Map(map) => {
-            let map = map.into_iter()
-                .map(|(k, v)| deep_resolve(v).map(|v| (k, v)))
-                .collect::<Result<HashMap<_, _>, _>>()?;
-            Ok(Value::Map(map))
-        }
-        other => Ok(other),
     }
 }
 

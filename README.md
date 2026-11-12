@@ -63,7 +63,7 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/knoxxr/bang/releases/latest/download/bang-installer.ps1 | iex"
 ```
 
-> Windows에서 인터프리터/VM 실행은 그대로 동작한다. 단, AOT 컴파일(`bang compile`)은
+> Windows에서 실행(`bang run`)은 그대로 동작한다. 단, 실험적 AOT 컴파일(`bang compile`)은
 > C 컴파일러가 필요한데 Windows 기본 MSVC(`cl`)는 비호환이므로,
 > MSYS2(MinGW `gcc`) 또는 LLVM(`clang`)을 설치해 PATH에 두어야 한다.
 
@@ -116,10 +116,9 @@ chmod +x script.bang
 ```
 bang <파일.bang>          .bang 파일 실행 (run 생략 가능)
 bang                      REPL 진입
-bang run     [--interp] [--jit] [--dump-ast] <파일|->   실행 (기본: VM)
-                          --jit 은 소스에서 --features jit 로 빌드한 경우에만 동작
-                          (Homebrew/curl 배포본은 미포함)
-bang compile -o <출력> <파일>   AOT 컴파일 (C 트랜스파일 + cc/clang/gcc -O2)
+bang run     [--dump-ast] <파일|->   실행 (바이트코드 VM — 유일한 실행 엔진)
+bang compile -o <출력> <파일>   [실험적] AOT 컴파일 (C 트랜스파일 + cc/clang/gcc -O2)
+                          정수·문자열·함수만 지원. 미지원 기능은 컴파일 에러
 bang check   <파일>       오류 검사 + 정적 타입 검사 (실행 없음)
 bang build   <파일>       컴파일 검증 + 통계
 bang parse   <파일>       AST 출력
@@ -243,7 +242,7 @@ print(math.area(2))      // 12.56636
 - import 경로는 실행 디렉토리 기준 상대경로다.
 - 모듈은 **한 번만 실행**되고 캐시된다(싱글톤). 같은 파일을 여러 번 import해도
   최상위 코드는 한 번만 실행되며, 모든 import가 같은 모듈 인스턴스를 공유한다.
-- import는 기본 실행 엔진인 VM에서 동작한다(`--interp` 모드는 미지원).
+- 실험적 AOT 컴파일(`bang compile`)에서는 import를 지원하지 않는다(컴파일 에러).
 
 ### 패키지 (git 의존성)
 
@@ -318,7 +317,7 @@ try {
 - 내장 런타임 에러도 `catch`로 잡히며, catch 변수엔 에러 **메시지 문자열**이 바인딩된다.
 - `catch` 안에서 다시 `throw`하면 더 바깥 `try`로 전파된다(re-throw).
 - 잡히지 않은 예외는 프로그램을 종료시킨다.
-- 기본 실행 엔진인 VM에서 동작한다(`--interp` / AOT `compile`은 미지원).
+- 실험적 AOT 컴파일(`bang compile`)에서는 지원하지 않는다(컴파일 에러).
 
 ## 선택적 타입 힌트
 
@@ -345,7 +344,7 @@ fn id(v: any) -> any { return v }
 ```
 
 타입: `int` `float` `bool` `str` `nil` `list` `map` `fn` `any`.
-(런타임 검증은 VM 전용 — `--interp`/AOT는 힌트를 무시한다.)
+(실험적 AOT 컴파일은 타입 힌트가 있으면 컴파일 에러를 낸다 — 조용히 무시하지 않는다.)
 
 **정적 검사**: `bang check <파일>` 은 실행 전에 타입 힌트를 정적 분석해
 **확실한 충돌만** 보고한다(거짓 양성을 피하기 위해 동적/미지 타입은 통과).
@@ -360,7 +359,7 @@ $ bang check app.bang
 ```bash
 cargo build                                  # 디버그 빌드
 cargo build --release                        # 릴리스 빌드
-cargo build --features jit                   # Cranelift JIT 포함
+cargo build --no-default-features           # https(rustls) 없이 자급 코어만
 cargo test                                   # 전체 테스트
 cargo clippy --all-targets -- -D warnings    # 린트
 cargo run -- run examples/fibonacci.bang     # 개발 중 실행
@@ -377,10 +376,11 @@ cargo run -- run examples/fibonacci.bang     # 개발 중 실행
 
 ## 구현
 
-렉서·파서(직접 손으로 구현)부터 트리워킹 인터프리터, 바이트코드 VM, M:N 스케줄러,
-AOT C 트랜스파일러까지 Rust로 처음부터 구현했다. 외부 파서 제너레이터를 쓰지 않고,
-JSON·정규식(자체 엔진+캡처)·시간·난수·HTTP까지 stdlib를 자체 구현한다 — 유일한
-런타임 의존성은 논블로킹 I/O 리액터(`polling`) 하나다.
+렉서·파서(직접 손으로 구현)부터 바이트코드 VM, M:N 스케줄러, 실험적 AOT C 트랜스파일러까지
+Rust로 처음부터 구현했다. 실행 엔진은 VM 하나다(초기의 트리워킹 인터프리터와 Cranelift JIT는
+v0.30.0에서 제거). 외부 파서 제너레이터를 쓰지 않고, JSON·정규식(자체 엔진+캡처)·시간·난수·HTTP까지
+stdlib를 자체 구현한다 — 런타임 의존성은 논블로킹 I/O 리액터(`polling`)와, `https` 기능용
+TLS(`rustls`+`webpki-roots`, `--no-default-features`로 제외 가능)뿐이다.
 
 ## 라이선스
 

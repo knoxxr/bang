@@ -1,20 +1,27 @@
-// Bang 통합 테스트 — 인터프리터 (Phase 3)
+// Bang 통합 테스트 — 언어 의미 (값 의미론·자동 대기·클로저·채널 등)
+//
+// Phase 3에서 트리 워킹 인터프리터용으로 작성된 테스트를, 인터프리터 제거(Phase 44) 후
+// 정본 실행 엔진인 VM으로 이식했다. 단언(기대 출력)은 그대로이고 실행기만 바뀌었다.
 
-use bang::interpreter::Interpreter;
+use bang::compiler::compile;
 use bang::lexer::Lexer;
 use bang::parser::Parser;
+use bang::vm::Vm;
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
-/// 소스 문자열을 실행하고 출력 줄 목록 반환
+/// 소스 문자열을 VM으로 실행하고 출력 줄 목록 반환
 fn run_source(source: &str) -> Vec<String> {
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize().expect("tokenize 실패");
     let prog = Parser::new(tokens).parse().expect("parse 실패");
-    let interp = Interpreter::new();
-    interp.run(&prog).expect("run 실패");
-    let out = interp.output.lock().unwrap().clone();
-    out
+    let out = compile(&prog).expect("컴파일 실패");
+    let output = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mut vm = Vm::new(out.global_count as usize, output.clone());
+    vm.run(out.main_fn).expect("VM 실행 실패");
+    let lines = output.lock().unwrap().clone();
+    lines
 }
 
 /// examples/ 파일 실행

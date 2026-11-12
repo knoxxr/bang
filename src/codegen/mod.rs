@@ -1,14 +1,8 @@
-// Bang — Phase 9: 네이티브 백엔드 / Phase 10: AOT C 트랜스파일러
-
-#[cfg(feature = "jit")]
-pub mod jit;
-
-#[cfg(feature = "jit")]
-pub use jit::{try_jit_call, JitStats};
+// Bang — 네이티브 코드 생성 (실험적): AOT C 트랜스파일러 (Phase 10)
+//
+// 정본 실행 엔진은 바이트코드 VM이다. AOT는 정수·문자열·함수 부분집합만 지원하며,
+// 미지원 기능은 명확한 에러(TranspileError)로 거절한다.
+// (Cranelift JIT는 Phase 44에서 제거 — 바이트코드를 직접 해석해 VM 변경마다 깨졌고 빌드 불가였다.)
 
 pub mod transpile;
 pub use transpile::{transpile, TranspileError};
-
-/// JIT 기능이 비활성화된 빌드에서 `--jit` 플래그를 감지했을 때 반환하는 메시지
-pub const JIT_DISABLED_MSG: &str =
-    "JIT 백엔드가 비활성화되어 있습니다. `cargo build --features jit`으로 빌드하세요.";

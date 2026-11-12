@@ -160,7 +160,7 @@ impl fmt::Display for VmValue {
                 else { write!(f, "<fn>") }
             }
             VmValue::Bytes(b)    => crate::runtime::fmt_bytes(f, b),
-            VmValue::Builtin(i)  => write!(f, "<builtin {}>", BUILTINS.get(*i).unwrap_or(&"?")),
+            VmValue::Builtin(i)  => write!(f, "<builtin {}>", crate::stdlib::builtin_name(*i).unwrap_or("?")),
             VmValue::Channel(_)  => write!(f, "<channel>"),
             VmValue::Iter(_)     => write!(f, "<iter>"),
             VmValue::Future(_)   => write!(f, "<future>"),
@@ -290,156 +290,11 @@ impl fmt::Debug for VmClosure {
 }
 
 // ============================================================================
-// Builtin table (must match resolver.rs register_builtins order)
+// Builtins
 // ============================================================================
 
-pub const BUILTINS: &[&str] = &[
-    // 기본 (0-19)
-    "print",        // 0
-    "str",          // 1
-    "int",          // 2
-    "float",        // 3
-    "bool",         // 4
-    "len",          // 5
-    "type",         // 6
-    "channel",      // 7
-    "send",         // 8
-    "recv",         // 9
-    "close",        // 10
-    "parallel_map", // 11
-    "wait",         // 12
-    "push",         // 13
-    "pop",          // 14
-    "keys",         // 15
-    "values",       // 16
-    "range",        // 17
-    "assert",       // 18
-    "exit",         // 19
-    // 문자열 (20-32)
-    "split",        // 20
-    "join",         // 21
-    "trim",         // 22
-    "trim_start",   // 23
-    "trim_end",     // 24
-    "replace",      // 25
-    "contains",     // 26
-    "starts_with",  // 27
-    "ends_with",    // 28
-    "upper",        // 29
-    "lower",        // 30
-    "find",         // 31
-    "chars",        // 32
-    // 리스트 (33-43)
-    "sort",         // 33
-    "reverse",      // 34
-    "map",          // 35
-    "filter",       // 36
-    "reduce",       // 37
-    "any",          // 38
-    "all",          // 39
-    "flat",         // 40
-    "enumerate",    // 41
-    "zip",          // 42
-    "sum",          // 43
-    // 수학 (44-51)
-    "abs",          // 44
-    "sqrt",         // 45
-    "floor",        // 46
-    "ceil",         // 47
-    "round",        // 48
-    "pow",          // 49
-    "min",          // 50
-    "max",          // 51
-    // I/O (52-56)
-    "read_file",    // 52
-    "write_file",   // 53
-    "input",        // 54
-    "print_err",    // 55
-    "args",         // 56
-    // 모듈 (57)
-    "import",       // 57
-    // stdlib 확장 (58-63)
-    "slice",        // 58
-    "has",          // 59
-    "get",          // 60
-    "merge",        // 61
-    "repeat",       // 62
-    "index_of",     // 63
-    // stdlib: JSON / 시간 / 난수 (64-68)
-    "json_parse",     // 64
-    "json_stringify", // 65
-    "now_ms",         // 66
-    "random",         // 67
-    "random_int",     // 68
-    // stdlib: 파일시스템 / list 유틸 / 시간포맷 / 문자 (69-76)
-    "list_dir",     // 69
-    "file_exists",  // 70
-    "is_dir",       // 71
-    "sort_by",      // 72
-    "unique",       // 73
-    "format_time",  // 74
-    "ord",          // 75
-    "chr",          // 76
-    // stdlib: 정규식 (77-80)
-    "regex_match",    // 77
-    "regex_find",     // 78
-    "regex_find_all", // 79
-    "regex_replace",  // 80
-    "regex_groups",   // 81
-    // stdlib: math (82-92)
-    "gcd",        // 82
-    "clamp",      // 83
-    "sign",       // 84
-    "sin",        // 85
-    "cos",        // 86
-    "tan",        // 87
-    "log",        // 88
-    "log10",      // 89
-    "exp",        // 90
-    "pi",         // 91
-    "e",          // 92
-    // stdlib: 집합 연산 (93-95)
-    "union",      // 93
-    "intersect",  // 94
-    "difference", // 95
-    // stdlib: 네트워킹 TCP (96-100)
-    "tcp_listen", // 96
-    "tcp_accept", // 97
-    "tcp_read",   // 98
-    "tcp_write",  // 99
-    "tcp_close",  // 100
-    "tcp_read_until",  // 101
-    "tcp_set_timeout", // 102
-    "select",          // 103
-    // stdlib: 바이너리 파일 (104-105)
-    "file_size",       // 104
-    "tcp_send_file",   // 105
-    // 논블로킹 이벤트 루프 서버 (106)
-    "serve_event",     // 106
-    // 아웃바운드 네트워킹 (107-108)
-    "tcp_connect",     // 107
-    "http_get",        // 108
-    // 시스템: 프로세스·환경·대기·파일 조작 (109-116)
-    "proc_run",        // 109
-    "env_get",         // 110
-    "env_cwd",         // 111
-    "sleep",           // 112
-    "file_remove",     // 113
-    "file_move",       // 114
-    "dir_create",      // 115
-    "file_append",     // 116
-    // 바이트 값 타입 (117-122)
-    "bytes_from_str",  // 117
-    "bytes_to_str",    // 118
-    "bytes_from_hex",  // 119
-    "bytes_to_hex",    // 120
-    "file_read_bytes", // 121
-    "tcp_read_bytes",  // 122
-];
-
-pub fn builtin_index(name: &str) -> Option<usize> {
-    BUILTINS.iter().position(|&b| b == name)
-}
+// 빌트인 등록 테이블은 crate::stdlib::BUILTINS (이름·인자 수·구현의 단일 출처).
+pub use crate::stdlib::builtin_index;
 
 // ============================================================================
 // CallFrame
@@ -596,7 +451,7 @@ impl Vm {
 
     /// 모듈 파일을 읽어 sub-VM에서 실행하고 export 맵을 만들어 캐시에 넣는다.
     /// (호출자는 module_loading 표시/해제로 순환 import를 감지한다.)
-    fn import_module(&mut self, path: &str, key: &str, span: Span)
+    pub(crate) fn import_module(&mut self, path: &str, key: &str, span: Span)
         -> Result<VmValue, RuntimeError>
     {
         let source = std::fs::read_to_string(path)
@@ -635,7 +490,7 @@ impl Vm {
     /// handler: fn(req_str) -> resp_str (전체 HTTP 응답 문자열을 반환).
     /// 유휴 keep-alive 연결은 리액터에 파킹되어 스레드를 점유하지 않는다(C10K 1차).
     /// 주의: 단일 스레드라 CPU 무거운 핸들러는 루프를 막는다(향후 풀 오프로드 과제).
-    fn run_event_server(&self, addr: &str, handler: Arc<VmClosure>, span: Span)
+    pub(crate) fn run_event_server(&self, addr: &str, handler: Arc<VmClosure>, span: Span)
         -> Result<VmValue, RuntimeError>
     {
         use std::io::{Read, Write};
@@ -749,7 +604,7 @@ impl Vm {
         if ip < spans.len() { spans[ip] } else { Span::new(0, 0) }
     }
 
-    fn stack_pop(&mut self) -> VmValue {
+    pub(crate) fn stack_pop(&mut self) -> VmValue {
         self.stack.pop().expect("VM: empty stack on pop")
     }
 
@@ -780,7 +635,7 @@ impl Vm {
 
     /// 예외 처리 래퍼: exec_dispatch가 Err를 내면, 이 스코프(stop_depth) 안의
     /// 핸들러가 있으면 되감아 catch에서 재개하고, 없으면 Err를 전파한다.
-    fn exec_until(&mut self, stop_depth: usize) -> Result<(), RuntimeError> {
+    pub(crate) fn exec_until(&mut self, stop_depth: usize) -> Result<(), RuntimeError> {
         loop {
             match self.exec_dispatch(stop_depth) {
                 Ok(()) => return Ok(()),
@@ -1268,7 +1123,7 @@ impl Vm {
     // Function call
     // -----------------------------------------------------------------------
 
-    fn do_call(&mut self, arg_count: usize, span: Span, stop_depth: usize) -> Result<(), RuntimeError> {
+    pub(crate) fn do_call(&mut self, arg_count: usize, span: Span, stop_depth: usize) -> Result<(), RuntimeError> {
         let callee_idx = self.stack.len() - arg_count - 1;
         let callee = self.stack[callee_idx].clone();
 
@@ -1282,17 +1137,6 @@ impl Vm {
                 }
                 let callee_idx = self.stack.len() - arg_count - 1;
                 let base = callee_idx + 1; // 첫 인자 위치
-
-                // Phase 9 Part B: JIT 호출 시도 (Int-only 함수에만 적용)
-                #[cfg(feature = "jit")]
-                {
-                    let args: Vec<VmValue> = self.stack[base..].to_vec();
-                    if let Some(result) = crate::codegen::jit::try_jit_call(&closure.func, &args, span) {
-                        self.stack.truncate(callee_idx); // 인자 + callee 제거
-                        self.stack.push(result?);
-                        return Ok(());
-                    }
-                }
 
                 // 풀에서 locals를 가져와 인자를 슬롯 0..arg_count에 채운다 (중간 Vec 없음)
                 let local_count = closure.func.local_count;
@@ -1337,1248 +1181,9 @@ impl Vm {
         span: Span,
         stop_depth: usize,
     ) -> Result<VmValue, RuntimeError> {
-        match idx {
-            0 => { // print — Future 깊이 해소
-                let mut parts = Vec::with_capacity(args.len());
-                for v in args {
-                    let resolved = deep_resolve(v, span)?;
-                    parts.push(format!("{resolved}"));
-                }
-                let line = parts.join(" ");
-                self.output.lock().unwrap().push(line.clone());
-                println!("{line}");
-                Ok(VmValue::Nil)
-            }
-            1 => { // str(x)
-                req_args("str", &args, 1, span)?;
-                Ok(VmValue::Str(format!("{}", args[0])))
-            }
-            2 => { // int(x)
-                req_args("int", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::Int(n)   => Ok(VmValue::Int(*n)),
-                    VmValue::Float(n) => Ok(VmValue::Int(*n as i64)),
-                    VmValue::Bool(b)  => Ok(VmValue::Int(if *b { 1 } else { 0 })),
-                    VmValue::Str(s)   => s.trim().parse::<i64>()
-                        .map(VmValue::Int)
-                        .map_err(|_| RuntimeError::new(format!("int 변환 실패: '{s}'"), span)),
-                    other => Err(RuntimeError::new(
-                        format!("int(): {} 변환 불가", other.type_name()), span)),
-                }
-            }
-            3 => { // float(x)
-                req_args("float", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::Float(n) => Ok(VmValue::Float(*n)),
-                    VmValue::Int(n)   => Ok(VmValue::Float(*n as f64)),
-                    VmValue::Str(s)   => s.trim().parse::<f64>()
-                        .map(VmValue::Float)
-                        .map_err(|_| RuntimeError::new(format!("float 변환 실패: '{s}'"), span)),
-                    other => Err(RuntimeError::new(
-                        format!("float(): {} 변환 불가", other.type_name()), span)),
-                }
-            }
-            4 => { // bool(x)
-                req_args("bool", &args, 1, span)?;
-                Ok(VmValue::Bool(args[0].is_truthy()))
-            }
-            5 => { // len(x)
-                req_args("len", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::List(v) => Ok(VmValue::Int(v.len() as i64)),
-                    VmValue::Str(s)  => Ok(VmValue::Int(s.chars().count() as i64)),
-                    VmValue::Map(m)  => Ok(VmValue::Int(m.len() as i64)),
-                    VmValue::Bytes(b) => Ok(VmValue::Int(b.len() as i64)),
-                    other => Err(RuntimeError::new(
-                        format!("len(): {} 지원 안 됨", other.type_name()), span)),
-                }
-            }
-            6 => { // type(x)
-                req_args("type", &args, 1, span)?;
-                Ok(VmValue::Str(args[0].type_name().to_string()))
-            }
-            7 => { // channel([cap])
-                let cap = args.first().and_then(|v| match v {
-                    VmValue::Int(n) => Some(*n as usize),
-                    _ => None,
-                }).unwrap_or(0);
-                Ok(VmValue::Channel(Arc::new(BangChannel::new(cap))))
-            }
-            8 => { // send(ch, val)
-                req_args("send", &args, 2, span)?;
-                match &args[0] {
-                    VmValue::Channel(ch) => {
-                        ch.send(to_runtime(&args[1], span)?)
-                            .map_err(|e| RuntimeError::new(e.message, span))?;
-                        Ok(VmValue::Nil)
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("send(): Channel 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            9 => { // recv(ch)
-                req_args("recv", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::Channel(ch) => Ok(ch.recv().map(from_runtime).unwrap_or(VmValue::Nil)),
-                    other => Err(RuntimeError::new(
-                        format!("recv(): Channel 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            10 => { // close(ch)
-                req_args("close", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::Channel(ch) => { ch.close(); Ok(VmValue::Nil) }
-                    other => Err(RuntimeError::new(
-                        format!("close(): Channel 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            11 => { // parallel_map(list, fn) — sequential in Part A
-                req_args("parallel_map", &args, 2, span)?;
-                let list = match &args[0] {
-                    VmValue::List(v) => (**v).clone(),
-                    other => return Err(RuntimeError::new(
-                        format!("parallel_map(): List 필요, {} 발견", other.type_name()), span)),
-                };
-                let func = args[1].clone();
-                let mut results = Vec::with_capacity(list.len());
-                for item in list {
-                    let depth_before = self.frames.len();
-                    self.stack.push(func.clone());
-                    self.stack.push(item);
-                    self.do_call(1, span, stop_depth)?;
-                    if self.frames.len() > depth_before {
-                        // User function: run until it returns
-                        self.exec_until(depth_before)?;
-                    }
-                    // Return value is on top of stack
-                    results.push(self.stack_pop());
-                }
-                Ok(VmValue::List(Arc::new(results)))
-            }
-            12 => { // wait(f) — Part A: value is already resolved
-                req_args("wait", &args, 1, span)?;
-                Ok(args[0].clone())
-            }
-            13 => { // push(list, val)
-                req_args("push", &args, 2, span)?;
-                match args[0].clone() {
-                    VmValue::List(mut v) => {
-                        Arc::make_mut(&mut v).push(args[1].clone());
-                        Ok(VmValue::List(v))
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("push(): List 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            14 => { // pop(list)
-                req_args("pop", &args, 1, span)?;
-                match args[0].clone() {
-                    VmValue::List(v) => Ok(v.last().cloned().unwrap_or(VmValue::Nil)),
-                    other => Err(RuntimeError::new(
-                        format!("pop(): List 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            15 => { // keys(map)
-                req_args("keys", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::Map(m) => {
-                        let mut keys: Vec<VmValue> =
-                            m.keys().map(|k| VmValue::Str(k.clone())).collect();
-                        keys.sort_by_key(|a| a.to_string());
-                        Ok(VmValue::List(Arc::new(keys)))
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("keys(): Map 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            16 => { // values(map)
-                req_args("values", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::Map(m) => {
-                        let mut pairs: Vec<_> = m.iter().collect();
-                        pairs.sort_by_key(|(k, _)| k.as_str());
-                        Ok(VmValue::List(Arc::new(pairs.into_iter().map(|(_, v)| v.clone()).collect())))
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("values(): Map 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            17 => { // range
-                match args.len() {
-                    1 => {
-                        let n = as_int(&args[0], span)?;
-                        Ok(VmValue::List(Arc::new((0..n).map(VmValue::Int).collect())))
-                    }
-                    2 => {
-                        let s = as_int(&args[0], span)?;
-                        let e = as_int(&args[1], span)?;
-                        Ok(VmValue::List(Arc::new((s..e).map(VmValue::Int).collect())))
-                    }
-                    3 => {
-                        let s    = as_int(&args[0], span)?;
-                        let e    = as_int(&args[1], span)?;
-                        let step = as_int(&args[2], span)?;
-                        if step == 0 {
-                            return Err(RuntimeError::new("range: step는 0이 될 수 없음", span));
-                        }
-                        let mut v = Vec::new();
-                        let mut i = s;
-                        while (step > 0 && i < e) || (step < 0 && i > e) {
-                            v.push(VmValue::Int(i));
-                            i += step;
-                        }
-                        Ok(VmValue::List(Arc::new(v)))
-                    }
-                    _ => Err(RuntimeError::new("range: 인자 1~3개 필요", span)),
-                }
-            }
-            18 => { // assert
-                if args.is_empty() {
-                    return Err(RuntimeError::new("assert: 인자 필요", span));
-                }
-                if !args[0].is_truthy() {
-                    let msg = args.get(1).map(|v| format!("{v}")).unwrap_or_default();
-                    return Err(RuntimeError::new(
-                        format!("assertion 실패{}", if msg.is_empty() { String::new() }
-                                else { format!(": {msg}") }),
-                        span));
-                }
-                Ok(VmValue::Nil)
-            }
-            19 => { // exit
-                let code = args.first().and_then(|v| match v {
-                    VmValue::Int(n) => Some(*n as i32),
-                    _ => None,
-                }).unwrap_or(0);
-                std::process::exit(code);
-            }
-            // ── 문자열 (20-32) ──────────────────────────────────────────────────
-            20 => { // split(s, sep)
-                req_args("split", &args, 2, span)?;
-                let s = str_arg("split", &args[0], span)?;
-                let sep = str_arg("split", &args[1], span)?;
-                Ok(VmValue::List(Arc::new(s.split(sep.as_str()).map(|p| VmValue::Str(p.to_string())).collect())))
-            }
-            21 => { // join(list, sep)
-                req_args("join", &args, 2, span)?;
-                let list = list_arg("join", &args[0], span)?;
-                let sep = str_arg("join", &args[1], span)?;
-                let parts: Vec<String> = list.iter().map(|v| format!("{v}")).collect();
-                Ok(VmValue::Str(parts.join(&sep)))
-            }
-            22 => { // trim(s)
-                req_args("trim", &args, 1, span)?;
-                Ok(VmValue::Str(str_arg("trim", &args[0], span)?.trim().to_string()))
-            }
-            23 => { // trim_start(s)
-                req_args("trim_start", &args, 1, span)?;
-                Ok(VmValue::Str(str_arg("trim_start", &args[0], span)?.trim_start().to_string()))
-            }
-            24 => { // trim_end(s)
-                req_args("trim_end", &args, 1, span)?;
-                Ok(VmValue::Str(str_arg("trim_end", &args[0], span)?.trim_end().to_string()))
-            }
-            25 => { // replace(s, from, to)
-                req_args("replace", &args, 3, span)?;
-                let s    = str_arg("replace", &args[0], span)?;
-                let from = str_arg("replace", &args[1], span)?;
-                let to   = str_arg("replace", &args[2], span)?;
-                Ok(VmValue::Str(s.replace(from.as_str(), &to)))
-            }
-            26 => { // contains(s, sub)
-                req_args("contains", &args, 2, span)?;
-                let s   = str_arg("contains", &args[0], span)?;
-                let sub = str_arg("contains", &args[1], span)?;
-                Ok(VmValue::Bool(s.contains(sub.as_str())))
-            }
-            27 => { // starts_with(s, prefix)
-                req_args("starts_with", &args, 2, span)?;
-                let s   = str_arg("starts_with", &args[0], span)?;
-                let pre = str_arg("starts_with", &args[1], span)?;
-                Ok(VmValue::Bool(s.starts_with(pre.as_str())))
-            }
-            28 => { // ends_with(s, suffix)
-                req_args("ends_with", &args, 2, span)?;
-                let s   = str_arg("ends_with", &args[0], span)?;
-                let suf = str_arg("ends_with", &args[1], span)?;
-                Ok(VmValue::Bool(s.ends_with(suf.as_str())))
-            }
-            29 => { // upper(s)
-                req_args("upper", &args, 1, span)?;
-                Ok(VmValue::Str(str_arg("upper", &args[0], span)?.to_uppercase()))
-            }
-            30 => { // lower(s)
-                req_args("lower", &args, 1, span)?;
-                Ok(VmValue::Str(str_arg("lower", &args[0], span)?.to_lowercase()))
-            }
-            31 => { // find(s, sub) → Int (-1 if not found)
-                req_args("find", &args, 2, span)?;
-                let s   = str_arg("find", &args[0], span)?;
-                let sub = str_arg("find", &args[1], span)?;
-                let idx = s.find(sub.as_str())
-                    .map(|b| s[..b].chars().count() as i64)
-                    .unwrap_or(-1);
-                Ok(VmValue::Int(idx))
-            }
-            32 => { // chars(s) → List of single-char strings
-                req_args("chars", &args, 1, span)?;
-                let s = str_arg("chars", &args[0], span)?;
-                Ok(VmValue::List(Arc::new(s.chars().map(|c| VmValue::Str(c.to_string())).collect())))
-            }
-
-            // ── 리스트 (33-43) ──────────────────────────────────────────────────
-            33 => { // sort(list) → sorted copy (numbers or strings)
-                req_args("sort", &args, 1, span)?;
-                let mut list = list_arg("sort", &args[0], span)?;
-                let mut err: Option<RuntimeError> = None;
-                list.sort_by(|a, b| {
-                    if err.is_some() { return std::cmp::Ordering::Equal; }
-                    match vm_cmp(a, b, span) {
-                        Ok(o) => o,
-                        Err(e) => { err = Some(e); std::cmp::Ordering::Equal }
-                    }
-                });
-                if let Some(e) = err { return Err(e); }
-                Ok(VmValue::List(Arc::new(list)))
-            }
-            34 => { // reverse(list) → reversed copy
-                req_args("reverse", &args, 1, span)?;
-                let mut list = list_arg("reverse", &args[0], span)?;
-                list.reverse();
-                Ok(VmValue::List(Arc::new(list)))
-            }
-            35 => { // map(list, fn) → List
-                req_args("map", &args, 2, span)?;
-                let list = list_arg("map", &args[0], span)?;
-                let func = args[1].clone();
-                let mut results = Vec::with_capacity(list.len());
-                for item in list {
-                    let depth_before = self.frames.len();
-                    self.stack.push(func.clone());
-                    self.stack.push(item);
-                    self.do_call(1, span, stop_depth)?;
-                    if self.frames.len() > depth_before {
-                        self.exec_until(depth_before)?;
-                    }
-                    results.push(self.stack_pop());
-                }
-                Ok(VmValue::List(Arc::new(results)))
-            }
-            36 => { // filter(list, fn) → List
-                req_args("filter", &args, 2, span)?;
-                let list = list_arg("filter", &args[0], span)?;
-                let func = args[1].clone();
-                let mut results = Vec::new();
-                for item in list {
-                    let depth_before = self.frames.len();
-                    self.stack.push(func.clone());
-                    self.stack.push(item.clone());
-                    self.do_call(1, span, stop_depth)?;
-                    if self.frames.len() > depth_before {
-                        self.exec_until(depth_before)?;
-                    }
-                    if self.stack_pop().is_truthy() { results.push(item); }
-                }
-                Ok(VmValue::List(Arc::new(results)))
-            }
-            37 => { // reduce(list, fn, init) → value
-                req_args("reduce", &args, 3, span)?;
-                let list = list_arg("reduce", &args[0], span)?;
-                let func = args[1].clone();
-                let mut acc = args[2].clone();
-                for item in list {
-                    let depth_before = self.frames.len();
-                    self.stack.push(func.clone());
-                    self.stack.push(acc);
-                    self.stack.push(item);
-                    self.do_call(2, span, stop_depth)?;
-                    if self.frames.len() > depth_before {
-                        self.exec_until(depth_before)?;
-                    }
-                    acc = self.stack_pop();
-                }
-                Ok(acc)
-            }
-            38 => { // any(list, fn) → Bool
-                req_args("any", &args, 2, span)?;
-                let list = list_arg("any", &args[0], span)?;
-                let func = args[1].clone();
-                for item in list {
-                    let depth_before = self.frames.len();
-                    self.stack.push(func.clone());
-                    self.stack.push(item);
-                    self.do_call(1, span, stop_depth)?;
-                    if self.frames.len() > depth_before {
-                        self.exec_until(depth_before)?;
-                    }
-                    if self.stack_pop().is_truthy() { return Ok(VmValue::Bool(true)); }
-                }
-                Ok(VmValue::Bool(false))
-            }
-            39 => { // all(list, fn) → Bool
-                req_args("all", &args, 2, span)?;
-                let list = list_arg("all", &args[0], span)?;
-                let func = args[1].clone();
-                for item in list {
-                    let depth_before = self.frames.len();
-                    self.stack.push(func.clone());
-                    self.stack.push(item);
-                    self.do_call(1, span, stop_depth)?;
-                    if self.frames.len() > depth_before {
-                        self.exec_until(depth_before)?;
-                    }
-                    if !self.stack_pop().is_truthy() { return Ok(VmValue::Bool(false)); }
-                }
-                Ok(VmValue::Bool(true))
-            }
-            40 => { // flat(list) → flattened one level
-                req_args("flat", &args, 1, span)?;
-                let list = list_arg("flat", &args[0], span)?;
-                let mut out = Vec::new();
-                for item in list {
-                    match item {
-                        VmValue::List(inner) => out.extend(inner.iter().cloned()),
-                        other => out.push(other),
-                    }
-                }
-                Ok(VmValue::List(Arc::new(out)))
-            }
-            41 => { // enumerate(list) → List of [i, val]
-                req_args("enumerate", &args, 1, span)?;
-                let list = list_arg("enumerate", &args[0], span)?;
-                let out = list.into_iter().enumerate()
-                    .map(|(i, v)| VmValue::List(Arc::new(vec![VmValue::Int(i as i64), v])))
-                    .collect();
-                Ok(VmValue::List(Arc::new(out)))
-            }
-            42 => { // zip(list1, list2) → List of [a, b]
-                req_args("zip", &args, 2, span)?;
-                let l1 = list_arg("zip", &args[0], span)?;
-                let l2 = list_arg("zip", &args[1], span)?;
-                let out = l1.into_iter().zip(l2)
-                    .map(|(a, b)| VmValue::List(Arc::new(vec![a, b])))
-                    .collect();
-                Ok(VmValue::List(Arc::new(out)))
-            }
-            43 => { // sum(list) → number
-                req_args("sum", &args, 1, span)?;
-                let list = list_arg("sum", &args[0], span)?;
-                let mut total_i = 0i64;
-                let mut total_f = 0.0f64;
-                let mut has_float = false;
-                for v in list {
-                    match v {
-                        VmValue::Int(n)   => total_i = total_i.checked_add(n)
-                            .ok_or_else(|| overflow_err("sum", span))?,
-                        VmValue::Float(n) => { total_f += n; has_float = true; }
-                        other => return Err(RuntimeError::new(
-                            format!("sum(): 숫자 리스트 필요, {} 발견", other.type_name()), span)),
-                    }
-                }
-                if has_float {
-                    Ok(VmValue::Float(total_i as f64 + total_f))
-                } else {
-                    Ok(VmValue::Int(total_i))
-                }
-            }
-
-            // ── 수학 (44-51) ────────────────────────────────────────────────────
-            44 => { // abs(x)
-                req_args("abs", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::Int(n)   => n.checked_abs().map(VmValue::Int)
-                        .ok_or_else(|| overflow_err("abs", span)),
-                    VmValue::Float(n) => Ok(VmValue::Float(n.abs())),
-                    other => Err(RuntimeError::new(format!("abs(): 숫자 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            45 => { // sqrt(x)
-                req_args("sqrt", &args, 1, span)?;
-                let n = as_float(&args[0], span)?;
-                Ok(VmValue::Float(n.sqrt()))
-            }
-            46 => { // floor(x)
-                req_args("floor", &args, 1, span)?;
-                let n = as_float(&args[0], span)?;
-                Ok(VmValue::Int(n.floor() as i64))
-            }
-            47 => { // ceil(x)
-                req_args("ceil", &args, 1, span)?;
-                let n = as_float(&args[0], span)?;
-                Ok(VmValue::Int(n.ceil() as i64))
-            }
-            48 => { // round(x)
-                req_args("round", &args, 1, span)?;
-                let n = as_float(&args[0], span)?;
-                Ok(VmValue::Int(n.round() as i64))
-            }
-            49 => { // pow(base, exp)
-                req_args("pow", &args, 2, span)?;
-                let base = as_float(&args[0], span)?;
-                let exp  = as_float(&args[1], span)?;
-                let result = base.powf(exp);
-                if result.fract() == 0.0 && result.abs() < i64::MAX as f64 {
-                    if let (VmValue::Int(_), VmValue::Int(e)) = (&args[0], &args[1]) {
-                        if *e >= 0 { return Ok(VmValue::Int(result as i64)); }
-                    }
-                }
-                Ok(VmValue::Float(result))
-            }
-            50 => { // min(a, b) or min(list)
-                match args.len() {
-                    1 => {
-                        let list = list_arg("min", &args[0], span)?;
-                        if list.is_empty() {
-                            return Err(RuntimeError::new("min(): 빈 리스트", span));
-                        }
-                        let mut m = list[0].clone();
-                        for v in &list[1..] {
-                            if vm_cmp(v, &m, span)? == std::cmp::Ordering::Less { m = v.clone(); }
-                        }
-                        Ok(m)
-                    }
-                    2 => {
-                        let a = args[0].clone();
-                        let b = args[1].clone();
-                        if vm_cmp(&a, &b, span)? == std::cmp::Ordering::Less { Ok(a) } else { Ok(b) }
-                    }
-                    _ => Err(RuntimeError::new("min(): 인자 1개(리스트) 또는 2개 필요", span)),
-                }
-            }
-            51 => { // max(a, b) or max(list)
-                match args.len() {
-                    1 => {
-                        let list = list_arg("max", &args[0], span)?;
-                        if list.is_empty() {
-                            return Err(RuntimeError::new("max(): 빈 리스트", span));
-                        }
-                        let mut m = list[0].clone();
-                        for v in &list[1..] {
-                            if vm_cmp(v, &m, span)? == std::cmp::Ordering::Greater { m = v.clone(); }
-                        }
-                        Ok(m)
-                    }
-                    2 => {
-                        let a = args[0].clone();
-                        let b = args[1].clone();
-                        if vm_cmp(&a, &b, span)? == std::cmp::Ordering::Greater { Ok(a) } else { Ok(b) }
-                    }
-                    _ => Err(RuntimeError::new("max(): 인자 1개(리스트) 또는 2개 필요", span)),
-                }
-            }
-
-            // ── I/O (52-56) ─────────────────────────────────────────────────────
-            52 => { // read_file(path) → Str
-                req_args("read_file", &args, 1, span)?;
-                let path = str_arg("read_file", &args[0], span)?;
-                let content = std::fs::read_to_string(&path)
-                    .map_err(|e| RuntimeError::new(format!("read_file(): '{path}': {e}"), span))?;
-                Ok(VmValue::Str(content))
-            }
-            53 => { // write_file(path, content: Str|Bytes)
-                req_args("write_file", &args, 2, span)?;
-                let path    = str_arg("write_file", &args[0], span)?;
-                let content = data_arg("write_file", &args[1], span)?;
-                std::fs::write(&path, content)
-                    .map_err(|e| RuntimeError::new(format!("write_file(): '{path}': {e}"), span))?;
-                Ok(VmValue::Nil)
-            }
-            54 => { // input(prompt?) → Str
-                if args.len() > 1 {
-                    return Err(RuntimeError::new("input(): 인자 0 또는 1개 필요", span));
-                }
-                if let Some(prompt) = args.first() {
-                    print!("{prompt}");
-                    use std::io::Write;
-                    let _ = std::io::stdout().flush();
-                }
-                let mut line = String::new();
-                std::io::stdin().read_line(&mut line)
-                    .map_err(|e| RuntimeError::new(format!("input(): {e}"), span))?;
-                Ok(VmValue::Str(line.trim_end_matches('\n').trim_end_matches('\r').to_string()))
-            }
-            55 => { // print_err(...) → nil
-                let mut parts = Vec::with_capacity(args.len());
-                for v in args {
-                    let resolved = deep_resolve(v, span)?;
-                    parts.push(format!("{resolved}"));
-                }
-                eprintln!("{}", parts.join(" "));
-                Ok(VmValue::Nil)
-            }
-            56 => { // args() → List of CLI args
-                let cli_args: Vec<VmValue> = std::env::args()
-                    .map(VmValue::Str)
-                    .collect();
-                Ok(VmValue::List(Arc::new(cli_args)))
-            }
-
-            // ── 모듈 (57) ───────────────────────────────────────────────────────
-            57 => { // import(spec) → Map of module exports (캐시된 싱글톤)
-                req_args("import", &args, 1, span)?;
-                let spec = str_arg("import", &args[0], span)?;
-                // 이름 해석: 바레 이름은 bang_modules/ 및 BANG_PATH에서 검색,
-                // .bang/경로 구분자 포함이면 직접 경로.
-                let path = resolve_module(&spec).ok_or_else(|| RuntimeError::new(
-                    format!("import(): 모듈을 찾을 수 없음: '{spec}' (bang_modules/ 또는 BANG_PATH 확인)"), span))?;
-                let path = path.to_string_lossy().into_owned();
-                // 캐시 키: 정규화된 절대경로 (실패 시 해석된 경로)
-                let key = std::fs::canonicalize(&path)
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| path.clone());
-                if let Some(cached) = module_cache().lock().unwrap().get(&key).cloned() {
-                    return Ok(cached); // 이미 로드됨 → 같은 모듈 인스턴스 반환
-                }
-                // 순환 import 감지: 로딩 중인 모듈을 다시 import하면 무한 재귀 대신 에러
-                if !module_loading().lock().unwrap().insert(key.clone()) {
-                    return Err(RuntimeError::new(
-                        format!("import(): 순환 import 감지: '{path}'"), span));
-                }
-                let result = self.import_module(&path, &key, span);
-                module_loading().lock().unwrap().remove(&key);
-                result
-            }
-
-            // ── stdlib 확장 (58-63) ──────────────────────────────────────────
-            58 => { // slice(seq, start, end) — list/str 부분 추출
-                req_args("slice", &args, 3, span)?;
-                let start = int_of("slice", &args[1], span)?;
-                let end = int_of("slice", &args[2], span)?;
-                match &args[0] {
-                    VmValue::List(items) => {
-                        let len = items.len() as i64;
-                        let s = start.clamp(0, len) as usize;
-                        let e = end.clamp(0, len) as usize;
-                        let sub = if s < e { items[s..e].to_vec() } else { Vec::new() };
-                        Ok(VmValue::List(Arc::new(sub)))
-                    }
-                    VmValue::Str(s0) => {
-                        let chars: Vec<char> = s0.chars().collect();
-                        let len = chars.len() as i64;
-                        let s = start.clamp(0, len) as usize;
-                        let e = end.clamp(0, len) as usize;
-                        let sub: String = if s < e { chars[s..e].iter().collect() } else { String::new() };
-                        Ok(VmValue::Str(sub))
-                    }
-                    VmValue::Bytes(b) => {
-                        let len = b.len() as i64;
-                        let s = start.clamp(0, len) as usize;
-                        let e = end.clamp(0, len) as usize;
-                        let sub = if s < e { b[s..e].to_vec() } else { Vec::new() };
-                        Ok(VmValue::Bytes(Arc::new(sub)))
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("slice: List/Str/Bytes 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            59 => { // has(map, key) → Bool
-                req_args("has", &args, 2, span)?;
-                match &args[0] {
-                    VmValue::Map(m) => Ok(VmValue::Bool(m.contains_key(&args[1].to_string()))),
-                    other => Err(RuntimeError::new(
-                        format!("has: Map 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            60 => { // get(map, key, default)
-                req_args("get", &args, 3, span)?;
-                match &args[0] {
-                    VmValue::Map(m) => Ok(m.get(&args[1].to_string())
-                        .cloned().unwrap_or_else(|| args[2].clone())),
-                    other => Err(RuntimeError::new(
-                        format!("get: Map 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            61 => { // merge(map1, map2) → 새 map (map2 우선)
-                req_args("merge", &args, 2, span)?;
-                match (&args[0], &args[1]) {
-                    (VmValue::Map(a), VmValue::Map(b)) => {
-                        let mut m = (**a).clone();
-                        for (k, v) in b.iter() { m.insert(k.clone(), v.clone()); }
-                        Ok(VmValue::Map(Arc::new(m)))
-                    }
-                    _ => Err(RuntimeError::new("merge: 두 인자 모두 Map이어야 함", span)),
-                }
-            }
-            62 => { // repeat(str, n)
-                req_args("repeat", &args, 2, span)?;
-                let s = str_arg("repeat", &args[0], span)?;
-                let n = int_of("repeat", &args[1], span)?;
-                if n < 0 {
-                    return Err(RuntimeError::new("repeat: n은 음수가 될 수 없음", span));
-                }
-                Ok(VmValue::Str(s.repeat(n as usize)))
-            }
-            63 => { // index_of(list, x) → 첫 인덱스 또는 -1
-                req_args("index_of", &args, 2, span)?;
-                let list = list_arg("index_of", &args[0], span)?;
-                let idx = list.iter().position(|e| vm_eq(e, &args[1]))
-                    .map(|i| i as i64).unwrap_or(-1);
-                Ok(VmValue::Int(idx))
-            }
-
-            // ── JSON / 시간 / 난수 (64-68) ────────────────────────────────────
-            64 => { // json_parse(str) → value
-                req_args("json_parse", &args, 1, span)?;
-                let s = str_arg("json_parse", &args[0], span)?;
-                json_parse(&s, span)
-            }
-            65 => { // json_stringify(value) → str
-                req_args("json_stringify", &args, 1, span)?;
-                let mut out = String::new();
-                json_stringify(&args[0], &mut out, span)?;
-                Ok(VmValue::Str(out))
-            }
-            66 => { // now_ms() → epoch millis
-                req_args("now_ms", &args, 0, span)?;
-                let ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                Ok(VmValue::Int(ms))
-            }
-            67 => { // random() → [0,1) float
-                req_args("random", &args, 0, span)?;
-                Ok(VmValue::Float(next_random()))
-            }
-            68 => { // random_int(lo, hi) → [lo, hi] 정수 (포함)
-                req_args("random_int", &args, 2, span)?;
-                let lo = int_of("random_int", &args[0], span)?;
-                let hi = int_of("random_int", &args[1], span)?;
-                if hi < lo {
-                    return Err(RuntimeError::new("random_int: hi >= lo 이어야 함", span));
-                }
-                let range = (hi - lo + 1) as f64;
-                let n = lo + (next_random() * range) as i64;
-                Ok(VmValue::Int(n.min(hi)))
-            }
-
-            // ── 파일시스템 / list 유틸 / 시간포맷 / 문자 (69-76) ──────────────
-            69 => { // list_dir(path) → List of entry names
-                req_args("list_dir", &args, 1, span)?;
-                let path = str_arg("list_dir", &args[0], span)?;
-                let mut names = Vec::new();
-                let rd = std::fs::read_dir(&path)
-                    .map_err(|e| RuntimeError::new(format!("list_dir('{path}'): {e}"), span))?;
-                for entry in rd.flatten() {
-                    names.push(VmValue::Str(entry.file_name().to_string_lossy().into_owned()));
-                }
-                Ok(VmValue::List(Arc::new(names)))
-            }
-            70 => { // file_exists(path) → Bool
-                req_args("file_exists", &args, 1, span)?;
-                let path = str_arg("file_exists", &args[0], span)?;
-                Ok(VmValue::Bool(std::path::Path::new(&path).exists()))
-            }
-            71 => { // is_dir(path) → Bool
-                req_args("is_dir", &args, 1, span)?;
-                let path = str_arg("is_dir", &args[0], span)?;
-                Ok(VmValue::Bool(std::path::Path::new(&path).is_dir()))
-            }
-            72 => { // sort_by(list, keyfn) → 키 기준 정렬 사본
-                req_args("sort_by", &args, 2, span)?;
-                let list = list_arg("sort_by", &args[0], span)?;
-                let func = args[1].clone();
-                // 각 원소의 키를 계산 (고차 호출)
-                let mut keyed: Vec<(VmValue, VmValue)> = Vec::with_capacity(list.len());
-                for item in list {
-                    let depth_before = self.frames.len();
-                    self.stack.push(func.clone());
-                    self.stack.push(item.clone());
-                    self.do_call(1, span, stop_depth)?;
-                    if self.frames.len() > depth_before {
-                        self.exec_until(depth_before)?;
-                    }
-                    let key = self.stack_pop();
-                    keyed.push((key, item));
-                }
-                let mut err: Option<RuntimeError> = None;
-                keyed.sort_by(|a, b| {
-                    if err.is_some() { return std::cmp::Ordering::Equal; }
-                    match vm_cmp(&a.0, &b.0, span) {
-                        Ok(o) => o,
-                        Err(e) => { err = Some(e); std::cmp::Ordering::Equal }
-                    }
-                });
-                if let Some(e) = err { return Err(e); }
-                Ok(VmValue::List(Arc::new(keyed.into_iter().map(|(_, v)| v).collect())))
-            }
-            73 => { // unique(list) → 순서 유지 중복 제거
-                req_args("unique", &args, 1, span)?;
-                let list = list_arg("unique", &args[0], span)?;
-                let mut out: Vec<VmValue> = Vec::new();
-                for item in list {
-                    if !out.iter().any(|e| vm_eq(e, &item)) {
-                        out.push(item);
-                    }
-                }
-                Ok(VmValue::List(Arc::new(out)))
-            }
-            74 => { // format_time(ms) → "YYYY-MM-DD HH:MM:SS" (UTC)
-                req_args("format_time", &args, 1, span)?;
-                let ms = int_of("format_time", &args[0], span)?;
-                Ok(VmValue::Str(format_time_utc(ms)))
-            }
-            75 => { // ord(str) → 첫 문자의 코드포인트
-                req_args("ord", &args, 1, span)?;
-                let s = str_arg("ord", &args[0], span)?;
-                match s.chars().next() {
-                    Some(c) => Ok(VmValue::Int(c as i64)),
-                    None => Err(RuntimeError::new("ord: 빈 문자열", span)),
-                }
-            }
-            76 => { // chr(int) → 한 문자 문자열
-                req_args("chr", &args, 1, span)?;
-                let n = int_of("chr", &args[0], span)?;
-                match u32::try_from(n).ok().and_then(char::from_u32) {
-                    Some(c) => Ok(VmValue::Str(c.to_string())),
-                    None => Err(RuntimeError::new(format!("chr: 잘못된 코드포인트 {n}"), span)),
-                }
-            }
-
-            // ── 정규식 (77-80) ────────────────────────────────────────────────
-            77 => { // regex_match(s, pat) → Bool
-                req_args("regex_match", &args, 2, span)?;
-                let s = str_arg("regex_match", &args[0], span)?;
-                let pat = str_arg("regex_match", &args[1], span)?;
-                let re = compile_regex(&pat, span)?;
-                Ok(VmValue::Bool(re.is_match(&s.chars().collect::<Vec<_>>())))
-            }
-            78 => { // regex_find(s, pat) → 첫 매치 문자열 또는 nil
-                req_args("regex_find", &args, 2, span)?;
-                let s = str_arg("regex_find", &args[0], span)?;
-                let pat = str_arg("regex_find", &args[1], span)?;
-                let re = compile_regex(&pat, span)?;
-                let chars: Vec<char> = s.chars().collect();
-                match re.search(&chars) {
-                    Some((a, b)) => Ok(VmValue::Str(chars[a..b].iter().collect())),
-                    None => Ok(VmValue::Nil),
-                }
-            }
-            79 => { // regex_find_all(s, pat) → List of 매치 문자열
-                req_args("regex_find_all", &args, 2, span)?;
-                let s = str_arg("regex_find_all", &args[0], span)?;
-                let pat = str_arg("regex_find_all", &args[1], span)?;
-                let re = compile_regex(&pat, span)?;
-                let chars: Vec<char> = s.chars().collect();
-                let matches: Vec<VmValue> = re.find_all(&chars).into_iter()
-                    .map(|(a, b)| VmValue::Str(chars[a..b].iter().collect()))
-                    .collect();
-                Ok(VmValue::List(Arc::new(matches)))
-            }
-            80 => { // regex_replace(s, pat, repl) → 치환된 문자열
-                req_args("regex_replace", &args, 3, span)?;
-                let s = str_arg("regex_replace", &args[0], span)?;
-                let pat = str_arg("regex_replace", &args[1], span)?;
-                let repl = str_arg("regex_replace", &args[2], span)?;
-                let re = compile_regex(&pat, span)?;
-                let chars: Vec<char> = s.chars().collect();
-                Ok(VmValue::Str(re.replace_all(&chars, &repl)))
-            }
-            81 => { // regex_groups(s, pat) → [전체매치, g1, g2, ...] 또는 nil
-                req_args("regex_groups", &args, 2, span)?;
-                let s = str_arg("regex_groups", &args[0], span)?;
-                let pat = str_arg("regex_groups", &args[1], span)?;
-                let re = compile_regex(&pat, span)?;
-                let chars: Vec<char> = s.chars().collect();
-                match re.captures(&chars) {
-                    Some(groups) => {
-                        let items: Vec<VmValue> = groups.into_iter()
-                            .map(|g| match g {
-                                Some((a, b)) => VmValue::Str(chars[a..b].iter().collect()),
-                                None => VmValue::Nil,
-                            })
-                            .collect();
-                        Ok(VmValue::List(Arc::new(items)))
-                    }
-                    None => Ok(VmValue::Nil),
-                }
-            }
-
-            // ── math (82-92) ──────────────────────────────────────────────────
-            82 => { // gcd(a, b)
-                req_args("gcd", &args, 2, span)?;
-                // unsigned_abs: i64::MIN.abs() 오버플로 회피. 결과가 i64 범위를 넘으면 에러.
-                let mut a = int_of("gcd", &args[0], span)?.unsigned_abs();
-                let mut b = int_of("gcd", &args[1], span)?.unsigned_abs();
-                while b != 0 { let t = b; b = a % b; a = t; }
-                i64::try_from(a).map(VmValue::Int)
-                    .map_err(|_| overflow_err("gcd", span))
-            }
-            83 => { // clamp(x, lo, hi) → 원본 타입 유지
-                req_args("clamp", &args, 3, span)?;
-                if vm_cmp(&args[0], &args[1], span)? == Ordering::Less {
-                    Ok(args[1].clone())
-                } else if vm_cmp(&args[0], &args[2], span)? == Ordering::Greater {
-                    Ok(args[2].clone())
-                } else {
-                    Ok(args[0].clone())
-                }
-            }
-            84 => { // sign(x) → -1 / 0 / 1
-                req_args("sign", &args, 1, span)?;
-                let x = num_of("sign", &args[0], span)?;
-                Ok(VmValue::Int(if x > 0.0 { 1 } else if x < 0.0 { -1 } else { 0 }))
-            }
-            85 => { req_args("sin", &args, 1, span)?; Ok(VmValue::Float(num_of("sin", &args[0], span)?.sin())) }
-            86 => { req_args("cos", &args, 1, span)?; Ok(VmValue::Float(num_of("cos", &args[0], span)?.cos())) }
-            87 => { req_args("tan", &args, 1, span)?; Ok(VmValue::Float(num_of("tan", &args[0], span)?.tan())) }
-            88 => { req_args("log", &args, 1, span)?; Ok(VmValue::Float(num_of("log", &args[0], span)?.ln())) }
-            89 => { req_args("log10", &args, 1, span)?; Ok(VmValue::Float(num_of("log10", &args[0], span)?.log10())) }
-            90 => { req_args("exp", &args, 1, span)?; Ok(VmValue::Float(num_of("exp", &args[0], span)?.exp())) }
-            91 => { req_args("pi", &args, 0, span)?; Ok(VmValue::Float(std::f64::consts::PI)) }
-            92 => { req_args("e", &args, 0, span)?; Ok(VmValue::Float(std::f64::consts::E)) }
-
-            // ── 집합 연산 (리스트 기반) (93-95) ───────────────────────────────
-            93 => { // union(a, b) → 중복 제거 합집합 (a 순서 후 b의 새 원소)
-                req_args("union", &args, 2, span)?;
-                let a = list_arg("union", &args[0], span)?;
-                let b = list_arg("union", &args[1], span)?;
-                let mut out: Vec<VmValue> = Vec::new();
-                for item in a.into_iter().chain(b) {
-                    if !out.iter().any(|e| vm_eq(e, &item)) { out.push(item); }
-                }
-                Ok(VmValue::List(Arc::new(out)))
-            }
-            94 => { // intersect(a, b) → a 중 b에도 있는 원소 (중복 제거)
-                req_args("intersect", &args, 2, span)?;
-                let a = list_arg("intersect", &args[0], span)?;
-                let b = list_arg("intersect", &args[1], span)?;
-                let mut out: Vec<VmValue> = Vec::new();
-                for item in a {
-                    if b.iter().any(|e| vm_eq(e, &item)) && !out.iter().any(|e| vm_eq(e, &item)) {
-                        out.push(item);
-                    }
-                }
-                Ok(VmValue::List(Arc::new(out)))
-            }
-            95 => { // difference(a, b) → a 중 b에 없는 원소 (중복 제거)
-                req_args("difference", &args, 2, span)?;
-                let a = list_arg("difference", &args[0], span)?;
-                let b = list_arg("difference", &args[1], span)?;
-                let mut out: Vec<VmValue> = Vec::new();
-                for item in a {
-                    if !b.iter().any(|e| vm_eq(e, &item)) && !out.iter().any(|e| vm_eq(e, &item)) {
-                        out.push(item);
-                    }
-                }
-                Ok(VmValue::List(Arc::new(out)))
-            }
-
-            // ── 네트워킹 TCP (96-100) ─────────────────────────────────────────
-            96 => { // tcp_listen(addr) → TcpListener  (예: "127.0.0.1:8080")
-                req_args("tcp_listen", &args, 1, span)?;
-                let addr = str_arg("tcp_listen", &args[0], span)?;
-                let listener = std::net::TcpListener::bind(&addr)
-                    .map_err(|e| RuntimeError::new(format!("tcp_listen('{addr}'): {e}"), span))?;
-                Ok(VmValue::TcpListener(Arc::new(listener)))
-            }
-            97 => { // tcp_accept(server) → TcpConn  (블로킹)
-                req_args("tcp_accept", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::TcpListener(l) => {
-                        let (stream, _peer) = l.accept()
-                            .map_err(|e| RuntimeError::new(format!("tcp_accept(): {e}"), span))?;
-                        Ok(VmValue::TcpConn(Arc::new(Mutex::new(stream))))
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("tcp_accept: TcpListener 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            98 => { // tcp_read(conn) → str  (최대 4096바이트 1회 읽기, EOF면 "")
-                req_args("tcp_read", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::TcpConn(c) => {
-                        use std::io::Read;
-                        let mut buf = [0u8; 4096];
-                        let n = {
-                            let mut s = c.lock().unwrap();
-                            s.read(&mut buf)
-                                .map_err(|e| RuntimeError::new(format!("tcp_read(): {e}"), span))?
-                        };
-                        Ok(VmValue::Str(String::from_utf8_lossy(&buf[..n]).into_owned()))
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("tcp_read: TcpConn 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            99 => { // tcp_write(conn, data: Str|Bytes) → nil
-                req_args("tcp_write", &args, 2, span)?;
-                let data = data_arg("tcp_write", &args[1], span)?;
-                match &args[0] {
-                    VmValue::TcpConn(c) => {
-                        use std::io::Write;
-                        let mut s = c.lock().unwrap();
-                        s.write_all(data)
-                            .map_err(|e| RuntimeError::new(format!("tcp_write(): {e}"), span))?;
-                        Ok(VmValue::Nil)
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("tcp_write: TcpConn 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            100 => { // tcp_close(conn) → nil
-                req_args("tcp_close", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::TcpConn(c) => {
-                        let s = c.lock().unwrap();
-                        let _ = s.shutdown(std::net::Shutdown::Both);
-                        Ok(VmValue::Nil)
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("tcp_close: TcpConn 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-
-            101 => { // tcp_read_until(conn, marker) → marker 나올 때까지 누적 읽기
-                req_args("tcp_read_until", &args, 2, span)?;
-                let marker = str_arg("tcp_read_until", &args[1], span)?;
-                match &args[0] {
-                    VmValue::TcpConn(c) => {
-                        use std::io::Read;
-                        let mut acc = String::new();
-                        let mut buf = [0u8; 1024];
-                        loop {
-                            if !marker.is_empty() && acc.contains(&marker) { break; }
-                            let n = {
-                                let mut s = c.lock().unwrap();
-                                s.read(&mut buf)
-                                    .map_err(|e| RuntimeError::new(format!("tcp_read_until(): {e}"), span))?
-                            };
-                            if n == 0 { break; } // EOF
-                            acc.push_str(&String::from_utf8_lossy(&buf[..n]));
-                        }
-                        Ok(VmValue::Str(acc))
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("tcp_read_until: TcpConn 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-            102 => { // tcp_set_timeout(conn, ms) → 읽기 타임아웃 설정 (0 = 무제한)
-                req_args("tcp_set_timeout", &args, 2, span)?;
-                let ms = int_of("tcp_set_timeout", &args[1], span)?;
-                match &args[0] {
-                    VmValue::TcpConn(c) => {
-                        let dur = if ms <= 0 { None }
-                            else { Some(std::time::Duration::from_millis(ms as u64)) };
-                        let s = c.lock().unwrap();
-                        s.set_read_timeout(dur)
-                            .map_err(|e| RuntimeError::new(format!("tcp_set_timeout(): {e}"), span))?;
-                        Ok(VmValue::Nil)
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("tcp_set_timeout: TcpConn 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-
-            103 => { // select(channels) → [index, value] (먼저 준비된 채널), 모두 닫히면 nil
-                req_args("select", &args, 1, span)?;
-                let list = list_arg("select", &args[0], span)?;
-                // 모든 인자가 채널인지 확인
-                let mut chans = Vec::with_capacity(list.len());
-                for v in &list {
-                    match v {
-                        VmValue::Channel(c) => chans.push(c.clone()),
-                        other => return Err(RuntimeError::new(
-                            format!("select: 채널 리스트 필요, {} 발견", other.type_name()), span)),
-                    }
-                }
-                if chans.is_empty() {
-                    return Err(RuntimeError::new("select: 빈 채널 리스트", span));
-                }
-                use crate::runtime::TryRecv;
-                loop {
-                    let mut all_closed = true;
-                    for (i, ch) in chans.iter().enumerate() {
-                        match ch.try_recv() {
-                            TryRecv::Value(v) => {
-                                return Ok(VmValue::List(Arc::new(vec![
-                                    VmValue::Int(i as i64),
-                                    from_runtime(v),
-                                ])));
-                            }
-                            TryRecv::Empty => all_closed = false,
-                            TryRecv::Closed => {}
-                        }
-                    }
-                    if all_closed {
-                        return Ok(VmValue::Nil); // 모든 채널 닫힘
-                    }
-                    // 준비된 채널 없음 → 잠깐 양보 후 재시도 (폴링 select)
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-            }
-
-            // ── 바이너리 파일 (104-105) ───────────────────────────────────────
-            104 => { // file_size(path) → Int (바이트 수, Content-Length 용)
-                req_args("file_size", &args, 1, span)?;
-                let path = str_arg("file_size", &args[0], span)?;
-                let meta = std::fs::metadata(&path)
-                    .map_err(|e| RuntimeError::new(format!("file_size('{path}'): {e}"), span))?;
-                Ok(VmValue::Int(meta.len() as i64))
-            }
-            105 => { // tcp_send_file(conn, path) → Int (보낸 바이트 수). UTF-8 변환 없이 무손실 전송.
-                req_args("tcp_send_file", &args, 2, span)?;
-                let path = str_arg("tcp_send_file", &args[1], span)?;
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| RuntimeError::new(format!("tcp_send_file('{path}'): {e}"), span))?;
-                match &args[0] {
-                    VmValue::TcpConn(c) => {
-                        use std::io::Write;
-                        let mut s = c.lock().unwrap();
-                        s.write_all(&bytes)
-                            .map_err(|e| RuntimeError::new(format!("tcp_send_file(): {e}"), span))?;
-                        Ok(VmValue::Int(bytes.len() as i64))
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("tcp_send_file: TcpConn 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-
-            106 => { // serve_event(addr, handler) — 논블로킹 이벤트 루프 서버
-                // handler: fn(req_str) -> resp_str. 단일 스레드가 리액터로 많은 연결을
-                // 멀티플렉싱 → 유휴 keep-alive 연결이 스레드를 점유하지 않음(C10K 1차).
-                req_args("serve_event", &args, 2, span)?;
-                let addr = str_arg("serve_event", &args[0], span)?;
-                let handler = match &args[1] {
-                    VmValue::Closure(c) => c.clone(),
-                    other => return Err(RuntimeError::new(
-                        format!("serve_event: 핸들러(함수) 필요, {} 발견", other.type_name()), span)),
-                };
-                self.run_event_server(&addr, handler, span)
-            }
-
-            // ── 아웃바운드 네트워킹 (107-108) ─────────────────────────────────
-            107 => { // tcp_connect(addr) → TcpConn  (예: "example.com:80")
-                req_args("tcp_connect", &args, 1, span)?;
-                let addr = str_arg("tcp_connect", &args[0], span)?;
-                let stream = std::net::TcpStream::connect(&addr)
-                    .map_err(|e| RuntimeError::new(format!("tcp_connect('{addr}'): {e}"), span))?;
-                Ok(VmValue::TcpConn(Arc::new(Mutex::new(stream))))
-            }
-            108 => { // http_get(url) → {status, headers, body}
-                req_args("http_get", &args, 1, span)?;
-                let url = str_arg("http_get", &args[0], span)?;
-                http_get(&url, span)
-            }
-            109 => { // proc_run(argv) → {code, stdout, stderr}  (셸 미경유)
-                req_args("proc_run", &args, 1, span)?;
-                proc_run(&args[0], span)
-            }
-            110 => { // env_get(name) → Str 또는 nil
-                req_args("env_get", &args, 1, span)?;
-                let name = str_arg("env_get", &args[0], span)?;
-                match std::env::var(&name) {
-                    Ok(v) => Ok(VmValue::Str(v)),
-                    Err(std::env::VarError::NotPresent) => Ok(VmValue::Nil),
-                    Err(std::env::VarError::NotUnicode(_)) => Err(RuntimeError::new(
-                        format!("env_get('{name}'): 값이 유효한 유니코드가 아님"), span)),
-                }
-            }
-            111 => { // env_cwd() → Str
-                req_args("env_cwd", &args, 0, span)?;
-                let dir = std::env::current_dir()
-                    .map_err(|e| RuntimeError::new(format!("env_cwd(): {e}"), span))?;
-                Ok(VmValue::Str(dir.to_string_lossy().into_owned()))
-            }
-            112 => { // sleep(ms) → nil  (현재 작업만 대기 — 탄력 풀이 다른 작업 처리)
-                req_args("sleep", &args, 1, span)?;
-                let ms = int_of("sleep", &args[0], span)?;
-                if ms < 0 {
-                    return Err(RuntimeError::new(
-                        format!("sleep(): 음수 시간은 허용되지 않음: {ms}"), span));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(ms as u64));
-                Ok(VmValue::Nil)
-            }
-            113 => { // file_remove(path) → nil  (파일만; 디렉터리는 에러)
-                req_args("file_remove", &args, 1, span)?;
-                let path = str_arg("file_remove", &args[0], span)?;
-                if std::path::Path::new(&path).is_dir() {
-                    return Err(RuntimeError::new(
-                        format!("file_remove('{path}'): 디렉터리는 삭제할 수 없음 (파일만 지원)"), span));
-                }
-                std::fs::remove_file(&path)
-                    .map_err(|e| RuntimeError::new(format!("file_remove('{path}'): {e}"), span))?;
-                Ok(VmValue::Nil)
-            }
-            114 => { // file_move(src, dst) → nil  (같은 볼륨 내 이동/이름 변경)
-                req_args("file_move", &args, 2, span)?;
-                let src = str_arg("file_move", &args[0], span)?;
-                let dst = str_arg("file_move", &args[1], span)?;
-                std::fs::rename(&src, &dst)
-                    .map_err(|e| RuntimeError::new(format!("file_move('{src}', '{dst}'): {e}"), span))?;
-                Ok(VmValue::Nil)
-            }
-            115 => { // dir_create(path) → nil  (중간 경로 포함, 이미 있으면 통과)
-                req_args("dir_create", &args, 1, span)?;
-                let path = str_arg("dir_create", &args[0], span)?;
-                std::fs::create_dir_all(&path)
-                    .map_err(|e| RuntimeError::new(format!("dir_create('{path}'): {e}"), span))?;
-                Ok(VmValue::Nil)
-            }
-            116 => { // file_append(path, content: Str|Bytes) → nil  (없으면 생성)
-                req_args("file_append", &args, 2, span)?;
-                let path    = str_arg("file_append", &args[0], span)?;
-                let content = data_arg("file_append", &args[1], span)?;
-                use std::io::Write as _;
-                std::fs::OpenOptions::new().create(true).append(true).open(&path)
-                    .and_then(|mut f| f.write_all(content))
-                    .map_err(|e| RuntimeError::new(format!("file_append('{path}'): {e}"), span))?;
-                Ok(VmValue::Nil)
-            }
-            117 => { // bytes_from_str(s) → Bytes (UTF-8 인코딩)
-                req_args("bytes_from_str", &args, 1, span)?;
-                let s = str_arg("bytes_from_str", &args[0], span)?;
-                Ok(VmValue::Bytes(Arc::new(s.into_bytes())))
-            }
-            118 => { // bytes_to_str(b) → Str (유효한 UTF-8이 아니면 에러)
-                req_args("bytes_to_str", &args, 1, span)?;
-                let b = bytes_arg("bytes_to_str", &args[0], span)?;
-                let s = std::str::from_utf8(b).map_err(|e| RuntimeError::new(
-                    format!("bytes_to_str(): 유효한 UTF-8이 아님 ({e})"), span))?;
-                Ok(VmValue::Str(s.to_string()))
-            }
-            119 => { // bytes_from_hex(s) → Bytes ("48656c6c6f", 대소문자 무관)
-                req_args("bytes_from_hex", &args, 1, span)?;
-                let s = str_arg("bytes_from_hex", &args[0], span)?;
-                Ok(VmValue::Bytes(Arc::new(hex_decode(&s, span)?)))
-            }
-            120 => { // bytes_to_hex(b) → Str (소문자)
-                req_args("bytes_to_hex", &args, 1, span)?;
-                let b = bytes_arg("bytes_to_hex", &args[0], span)?;
-                let mut out = String::with_capacity(b.len() * 2);
-                for x in b {
-                    out.push_str(&format!("{x:02x}"));
-                }
-                Ok(VmValue::Str(out))
-            }
-            121 => { // file_read_bytes(path) → Bytes (무손실, UTF-8 무관)
-                req_args("file_read_bytes", &args, 1, span)?;
-                let path = str_arg("file_read_bytes", &args[0], span)?;
-                let data = std::fs::read(&path)
-                    .map_err(|e| RuntimeError::new(format!("file_read_bytes('{path}'): {e}"), span))?;
-                Ok(VmValue::Bytes(Arc::new(data)))
-            }
-            122 => { // tcp_read_bytes(conn) → Bytes (최대 4096바이트 1회 읽기, EOF면 빈 Bytes)
-                req_args("tcp_read_bytes", &args, 1, span)?;
-                match &args[0] {
-                    VmValue::TcpConn(c) => {
-                        use std::io::Read;
-                        let mut buf = [0u8; 4096];
-                        let n = {
-                            let mut s = c.lock().map_err(|_| RuntimeError::new(
-                                "tcp_read_bytes(): 연결 잠금 실패", span))?;
-                            s.read(&mut buf)
-                                .map_err(|e| RuntimeError::new(format!("tcp_read_bytes(): {e}"), span))?
-                        };
-                        Ok(VmValue::Bytes(Arc::new(buf[..n].to_vec())))
-                    }
-                    other => Err(RuntimeError::new(
-                        format!("tcp_read_bytes: TcpConn 필요, {} 발견", other.type_name()), span)),
-                }
-            }
-
-            _ => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
+        match crate::stdlib::BUILTINS.get(idx) {
+            Some(b) => (b.func)(self, args, span, stop_depth),
+            None => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
         }
     }
 }
@@ -2588,7 +1193,7 @@ impl Vm {
 // ============================================================================
 
 /// 정수 오버플로 에러 (try/catch로 잡힘). debug/release 의미 동일.
-fn overflow_err(op: &str, span: Span) -> RuntimeError {
+pub(crate) fn overflow_err(op: &str, span: Span) -> RuntimeError {
     RuntimeError::new(format!("정수 오버플로: {op} 결과가 64비트 범위를 벗어남"), span)
 }
 
@@ -2648,7 +1253,7 @@ fn vm_arith(l: VmValue, r: VmValue, span: Span, op: char) -> Result<VmValue, Run
     }
 }
 
-fn vm_eq(l: &VmValue, r: &VmValue) -> bool {
+pub(crate) fn vm_eq(l: &VmValue, r: &VmValue) -> bool {
     match (l, r) {
         (VmValue::Int(a),   VmValue::Int(b))   => a == b,
         (VmValue::Float(a), VmValue::Float(b)) => a == b,
@@ -2664,7 +1269,7 @@ fn vm_eq(l: &VmValue, r: &VmValue) -> bool {
     }
 }
 
-fn vm_cmp(l: &VmValue, r: &VmValue, span: Span) -> Result<Ordering, RuntimeError> {
+pub(crate) fn vm_cmp(l: &VmValue, r: &VmValue, span: Span) -> Result<Ordering, RuntimeError> {
     match (l, r) {
         (VmValue::Int(a),   VmValue::Int(b))   => Ok(a.cmp(b)),
         (VmValue::Float(a), VmValue::Float(b)) => Ok(a.partial_cmp(b).unwrap_or(Ordering::Equal)),
@@ -2746,7 +1351,7 @@ fn vm_field_get(target: VmValue, name: &str, span: Span) -> Result<VmValue, Runt
     }
 }
 
-fn num_of(name: &str, v: &VmValue, span: Span) -> Result<f64, RuntimeError> {
+pub(crate) fn num_of(name: &str, v: &VmValue, span: Span) -> Result<f64, RuntimeError> {
     match v {
         VmValue::Int(n) => Ok(*n as f64),
         VmValue::Float(n) => Ok(*n),
@@ -2755,7 +1360,7 @@ fn num_of(name: &str, v: &VmValue, span: Span) -> Result<f64, RuntimeError> {
     }
 }
 
-fn int_of(name: &str, v: &VmValue, span: Span) -> Result<i64, RuntimeError> {
+pub(crate) fn int_of(name: &str, v: &VmValue, span: Span) -> Result<i64, RuntimeError> {
     match v {
         VmValue::Int(n) => Ok(*n),
         other => Err(RuntimeError::new(
@@ -2763,7 +1368,7 @@ fn int_of(name: &str, v: &VmValue, span: Span) -> Result<i64, RuntimeError> {
     }
 }
 
-fn str_arg(name: &str, v: &VmValue, span: Span) -> Result<String, RuntimeError> {
+pub(crate) fn str_arg(name: &str, v: &VmValue, span: Span) -> Result<String, RuntimeError> {
     match v {
         VmValue::Str(s) => Ok(s.clone()),
         other => Err(RuntimeError::new(
@@ -2771,7 +1376,7 @@ fn str_arg(name: &str, v: &VmValue, span: Span) -> Result<String, RuntimeError> 
     }
 }
 
-fn bytes_arg<'a>(name: &str, v: &'a VmValue, span: Span) -> Result<&'a [u8], RuntimeError> {
+pub(crate) fn bytes_arg<'a>(name: &str, v: &'a VmValue, span: Span) -> Result<&'a [u8], RuntimeError> {
     match v {
         VmValue::Bytes(b) => Ok(b.as_slice()),
         other => Err(RuntimeError::new(
@@ -2780,7 +1385,7 @@ fn bytes_arg<'a>(name: &str, v: &'a VmValue, span: Span) -> Result<&'a [u8], Run
 }
 
 /// 쓰기 계열 빌트인용: Str(UTF-8 그대로) 또는 Bytes(무손실)를 받는다.
-fn data_arg<'a>(name: &str, v: &'a VmValue, span: Span) -> Result<&'a [u8], RuntimeError> {
+pub(crate) fn data_arg<'a>(name: &str, v: &'a VmValue, span: Span) -> Result<&'a [u8], RuntimeError> {
     match v {
         VmValue::Str(s) => Ok(s.as_bytes()),
         VmValue::Bytes(b) => Ok(b.as_slice()),
@@ -2789,27 +1394,7 @@ fn data_arg<'a>(name: &str, v: &'a VmValue, span: Span) -> Result<&'a [u8], Runt
     }
 }
 
-fn hex_decode(s: &str, span: Span) -> Result<Vec<u8>, RuntimeError> {
-    let digits = s.as_bytes();
-    if digits.len() % 2 == 1 { // (is_multiple_of는 Rust 1.87+ — GUIDE의 1.82 지원 유지)
-        return Err(RuntimeError::new(
-            format!("bytes_from_hex(): 16진수 자릿수가 홀수 ({}자)", digits.len()), span));
-    }
-    let nib = |c: u8, pos: usize| -> Result<u8, RuntimeError> {
-        match c {
-            b'0'..=b'9' => Ok(c - b'0'),
-            b'a'..=b'f' => Ok(c - b'a' + 10),
-            b'A'..=b'F' => Ok(c - b'A' + 10),
-            _ => Err(RuntimeError::new(
-                format!("bytes_from_hex(): {pos}번째 문자가 16진수가 아님"), span)),
-        }
-    };
-    digits.chunks(2).enumerate()
-        .map(|(i, p)| Ok(nib(p[0], i * 2)? << 4 | nib(p[1], i * 2 + 1)?))
-        .collect()
-}
-
-fn list_arg(name: &str, v: &VmValue, span: Span) -> Result<Vec<VmValue>, RuntimeError> {
+pub(crate) fn list_arg(name: &str, v: &VmValue, span: Span) -> Result<Vec<VmValue>, RuntimeError> {
     match v {
         VmValue::List(items) => Ok((**items).clone()),
         other => Err(RuntimeError::new(
@@ -2817,7 +1402,7 @@ fn list_arg(name: &str, v: &VmValue, span: Span) -> Result<Vec<VmValue>, Runtime
     }
 }
 
-fn as_float(v: &VmValue, span: Span) -> Result<f64, RuntimeError> {
+pub(crate) fn as_float(v: &VmValue, span: Span) -> Result<f64, RuntimeError> {
     match v {
         VmValue::Int(n)   => Ok(*n as f64),
         VmValue::Float(n) => Ok(*n),
@@ -2826,7 +1411,7 @@ fn as_float(v: &VmValue, span: Span) -> Result<f64, RuntimeError> {
     }
 }
 
-fn req_args(name: &str, args: &[VmValue], n: usize, span: Span) -> Result<(), RuntimeError> {
+pub(crate) fn req_args(name: &str, args: &[VmValue], n: usize, span: Span) -> Result<(), RuntimeError> {
     if args.len() != n {
         Err(RuntimeError::new(
             format!("{name}(): {n}개 인자 필요, {}개 전달", args.len()), span))
@@ -2835,7 +1420,7 @@ fn req_args(name: &str, args: &[VmValue], n: usize, span: Span) -> Result<(), Ru
     }
 }
 
-fn as_int(v: &VmValue, span: Span) -> Result<i64, RuntimeError> {
+pub(crate) fn as_int(v: &VmValue, span: Span) -> Result<i64, RuntimeError> {
     match v {
         VmValue::Int(n)   => Ok(*n),
         VmValue::Float(n) => Ok(*n as i64),
@@ -2853,7 +1438,7 @@ fn auto_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
 }
 
 /// Future 깊이 해소 (print용): 컨테이너 안의 Future도 재귀 처리.
-fn deep_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
+pub(crate) fn deep_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
     let v = auto_resolve(v, span)?;
     match v {
         VmValue::List(items) => {
@@ -2874,20 +1459,20 @@ fn deep_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
 /// 각 upvalue의 현재 값을 읽어 새로운 독립적 Upvalue 슬롯에 저장.
 /// import 모듈 캐시 — 같은 파일은 한 번만 실행되고 결과(export 맵)를 공유한다.
 /// (모듈을 싱글톤으로 만드는 패키지 시스템 v1의 핵심.)
-fn module_cache() -> &'static Mutex<HashMap<String, VmValue>> {
+pub(crate) fn module_cache() -> &'static Mutex<HashMap<String, VmValue>> {
     static CACHE: OnceLock<Mutex<HashMap<String, VmValue>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// 현재 로딩 중인 모듈 집합 — 순환 import(a→b→a)를 무한 재귀(스택 오버플로) 대신
 /// 잡을 수 있는 런타임 에러로 감지한다.
-fn module_loading() -> &'static Mutex<std::collections::HashSet<String>> {
+pub(crate) fn module_loading() -> &'static Mutex<std::collections::HashSet<String>> {
     static LOADING: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     LOADING.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
 }
 
 /// import 모듈 해석. 바레 이름은 검색 경로에서 찾고, 경로/확장자가 있으면 직접 경로.
-fn resolve_module(spec: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn resolve_module(spec: &str) -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     // 직접 경로: .bang 확장자나 경로 구분자 포함
     if spec.ends_with(".bang") || spec.contains('/') || spec.contains('\\') {
@@ -2909,275 +1494,6 @@ fn resolve_module(spec: &str) -> Option<std::path::PathBuf> {
         }
     }
     candidates.into_iter().find(|p| p.is_file())
-}
-
-/// 정규식 패턴 컴파일 (에러는 try/catch로 잡히는 런타임 에러).
-fn compile_regex(pat: &str, span: Span) -> Result<crate::regex::Regex, RuntimeError> {
-    crate::regex::compile(pat)
-        .map_err(|e| RuntimeError::new(format!("정규식 오류: {e}"), span))
-}
-
-// ── PRNG (xorshift64, 시간 시드) ────────────────────────────────────────────
-fn rng_state() -> &'static Mutex<u64> {
-    static S: OnceLock<Mutex<u64>> = OnceLock::new();
-    S.get_or_init(|| {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9e37_79b9_7f4a_7c15)
-            | 1;
-        Mutex::new(seed)
-    })
-}
-
-/// [0, 1) 범위의 난수.
-fn next_random() -> f64 {
-    let mut guard = match rng_state().lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
-    };
-    let mut x = *guard;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *guard = x;
-    ((x >> 11) as f64) / ((1u64 << 53) as f64)
-}
-
-/// epoch 밀리초 → "YYYY-MM-DD HH:MM:SS" (UTC). 외부 의존성 없이 civil-date 변환.
-fn format_time_utc(ms: i64) -> String {
-    let secs = ms.div_euclid(1000);
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    // Howard Hinnant's days_from_civil 역변환 (civil_from_days)
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    let year = if m <= 2 { y + 1 } else { y };
-    format!("{year:04}-{m:02}-{d:02} {hh:02}:{mm:02}:{ss:02}")
-}
-
-// ── JSON ────────────────────────────────────────────────────────────────────
-
-/// JSON 텍스트 → VmValue. object→Map, array→List, number→Int/Float, null→Nil.
-fn json_parse(s: &str, span: Span) -> Result<VmValue, RuntimeError> {
-    let chars: Vec<char> = s.chars().collect();
-    let mut p = JsonParser { chars: &chars, pos: 0, span, depth: 0 };
-    p.skip_ws();
-    let v = p.parse_value()?;
-    p.skip_ws();
-    if p.pos != p.chars.len() {
-        return Err(RuntimeError::new("json_parse: 끝에 잉여 문자", span));
-    }
-    Ok(v)
-}
-
-/// JSON 중첩 깊이 상한 (재귀 파서의 스택 오버플로 방지).
-const JSON_MAX_DEPTH: usize = 512;
-
-struct JsonParser<'a> {
-    chars: &'a [char],
-    pos: usize,
-    span: Span,
-    depth: usize,
-}
-
-impl JsonParser<'_> {
-    fn err(&self, msg: &str) -> RuntimeError {
-        RuntimeError::new(format!("json_parse: {msg}"), self.span)
-    }
-    fn peek(&self) -> Option<char> { self.chars.get(self.pos).copied() }
-    fn skip_ws(&mut self) {
-        while let Some(c) = self.peek() {
-            if c == ' ' || c == '\t' || c == '\n' || c == '\r' { self.pos += 1; } else { break; }
-        }
-    }
-    fn parse_value(&mut self) -> Result<VmValue, RuntimeError> {
-        self.skip_ws();
-        // 깊이 가드: 깊은 중첩([[[.../{{{...)에서 스택 오버플로 대신 잡히는 에러
-        if self.depth > JSON_MAX_DEPTH {
-            return Err(self.err("중첩이 너무 깊음"));
-        }
-        match self.peek() {
-            Some('{') => { self.depth += 1; let r = self.parse_object(); self.depth -= 1; r }
-            Some('[') => { self.depth += 1; let r = self.parse_array(); self.depth -= 1; r }
-            Some('"') => Ok(VmValue::Str(self.parse_string()?)),
-            Some('t') | Some('f') => self.parse_bool(),
-            Some('n') => self.parse_null(),
-            Some(c) if c == '-' || c.is_ascii_digit() => self.parse_number(),
-            _ => Err(self.err("예상하지 못한 토큰")),
-        }
-    }
-    fn expect(&mut self, lit: &str) -> Result<(), RuntimeError> {
-        for ec in lit.chars() {
-            if self.peek() == Some(ec) { self.pos += 1; } else { return Err(self.err("리터럴 불일치")); }
-        }
-        Ok(())
-    }
-    fn parse_bool(&mut self) -> Result<VmValue, RuntimeError> {
-        if self.peek() == Some('t') { self.expect("true")?; Ok(VmValue::Bool(true)) }
-        else { self.expect("false")?; Ok(VmValue::Bool(false)) }
-    }
-    fn parse_null(&mut self) -> Result<VmValue, RuntimeError> {
-        self.expect("null")?; Ok(VmValue::Nil)
-    }
-    fn parse_string(&mut self) -> Result<String, RuntimeError> {
-        self.pos += 1; // opening "
-        let mut out = String::new();
-        loop {
-            match self.peek() {
-                None => return Err(self.err("종료되지 않은 문자열")),
-                Some('"') => { self.pos += 1; break; }
-                Some('\\') => {
-                    self.pos += 1;
-                    match self.peek() {
-                        Some('"') => out.push('"'),
-                        Some('\\') => out.push('\\'),
-                        Some('/') => out.push('/'),
-                        Some('n') => out.push('\n'),
-                        Some('t') => out.push('\t'),
-                        Some('r') => out.push('\r'),
-                        Some('b') => out.push('\u{0008}'),
-                        Some('f') => out.push('\u{000C}'),
-                        Some('u') => {
-                            let mut code = 0u32;
-                            for _ in 0..4 {
-                                self.pos += 1;
-                                let d = self.peek().and_then(|c| c.to_digit(16))
-                                    .ok_or_else(|| self.err("잘못된 \\u 이스케이프"))?;
-                                code = code * 16 + d;
-                            }
-                            out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
-                        }
-                        _ => return Err(self.err("잘못된 이스케이프")),
-                    }
-                    self.pos += 1;
-                }
-                Some(c) => { out.push(c); self.pos += 1; }
-            }
-        }
-        Ok(out)
-    }
-    fn parse_number(&mut self) -> Result<VmValue, RuntimeError> {
-        let start = self.pos;
-        let mut is_float = false;
-        if self.peek() == Some('-') { self.pos += 1; }
-        while let Some(c) = self.peek() {
-            match c {
-                '0'..='9' => self.pos += 1,
-                '.' | 'e' | 'E' | '+' | '-' => { is_float = true; self.pos += 1; }
-                _ => break,
-            }
-        }
-        let text: String = self.chars[start..self.pos].iter().collect();
-        if is_float {
-            text.parse::<f64>().map(VmValue::Float).map_err(|_| self.err("잘못된 숫자"))
-        } else {
-            match text.parse::<i64>() {
-                Ok(n) => Ok(VmValue::Int(n)),
-                Err(_) => text.parse::<f64>().map(VmValue::Float).map_err(|_| self.err("잘못된 숫자")),
-            }
-        }
-    }
-    fn parse_array(&mut self) -> Result<VmValue, RuntimeError> {
-        self.pos += 1; // [
-        let mut items = Vec::new();
-        self.skip_ws();
-        if self.peek() == Some(']') { self.pos += 1; return Ok(VmValue::List(Arc::new(items))); }
-        loop {
-            items.push(self.parse_value()?);
-            self.skip_ws();
-            match self.peek() {
-                Some(',') => { self.pos += 1; }
-                Some(']') => { self.pos += 1; break; }
-                _ => return Err(self.err("배열에 ',' 또는 ']' 기대")),
-            }
-        }
-        Ok(VmValue::List(Arc::new(items)))
-    }
-    fn parse_object(&mut self) -> Result<VmValue, RuntimeError> {
-        self.pos += 1; // {
-        let mut map = HashMap::new();
-        self.skip_ws();
-        if self.peek() == Some('}') { self.pos += 1; return Ok(VmValue::Map(Arc::new(map))); }
-        loop {
-            self.skip_ws();
-            if self.peek() != Some('"') { return Err(self.err("객체 키는 문자열")); }
-            let key = self.parse_string()?;
-            self.skip_ws();
-            if self.peek() != Some(':') { return Err(self.err("키 뒤에 ':' 기대")); }
-            self.pos += 1;
-            let val = self.parse_value()?;
-            map.insert(key, val);
-            self.skip_ws();
-            match self.peek() {
-                Some(',') => { self.pos += 1; }
-                Some('}') => { self.pos += 1; break; }
-                _ => return Err(self.err("객체에 ',' 또는 '}' 기대")),
-            }
-        }
-        Ok(VmValue::Map(Arc::new(map)))
-    }
-}
-
-/// VmValue → JSON 텍스트. 함수/채널/Future는 직렬화 불가(에러).
-fn json_stringify(v: &VmValue, out: &mut String, span: Span) -> Result<(), RuntimeError> {
-    match v {
-        VmValue::Int(n) => { out.push_str(&n.to_string()); }
-        VmValue::Float(n) => { out.push_str(&n.to_string()); }
-        VmValue::Bool(b) => { out.push_str(if *b { "true" } else { "false" }); }
-        VmValue::Nil => { out.push_str("null"); }
-        VmValue::Str(s) => json_escape(s, out),
-        VmValue::List(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 { out.push(','); }
-                json_stringify(item, out, span)?;
-            }
-            out.push(']');
-        }
-        VmValue::Map(m) => {
-            out.push('{');
-            // 안정적 출력을 위해 키 정렬
-            let mut keys: Vec<&String> = m.keys().collect();
-            keys.sort();
-            for (i, k) in keys.iter().enumerate() {
-                if i > 0 { out.push(','); }
-                json_escape(k, out);
-                out.push(':');
-                json_stringify(&m[*k], out, span)?;
-            }
-            out.push('}');
-        }
-        other => return Err(RuntimeError::new(
-            format!("json_stringify: {} 타입은 직렬화할 수 없음", other.type_name()), span)),
-    }
-    Ok(())
-}
-
-fn json_escape(s: &str, out: &mut String) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            '\u{0008}' => out.push_str("\\b"),
-            '\u{000C}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 /// 런타임 값이 타입 힌트와 일치하는지 검사 (Any는 위에서 처리됨).
@@ -3225,214 +1541,8 @@ fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
     Arc::new(VmClosure { func: c.func.clone(), upvalues, globals: new_globals })
 }
 
-// ── http_get: 최소 HTTP/1.1 클라이언트 ────────────────────────────────────────
-//
-// http:// 는 자급 구현. https:// 는 `https` feature(기본 켜짐)일 때 rustls로 TLS를 입힌다
-// (HTTP 처리 코드는 동일 — 스트림만 교체). feature를 끄면 https는 명시적 에러.
-// Connection: close 로 요청하고 EOF까지 읽는다. Transfer-Encoding: chunked 디코딩.
-// 리다이렉트는 따라가지 않는다(상태 코드와 location 헤더를 그대로 반환).
-
-/// http_get이 다루는 스트림 (평문 TcpStream 또는 TLS 스트림).
-trait HttpStream: std::io::Read + std::io::Write {}
-impl<T: std::io::Read + std::io::Write> HttpStream for T {}
-
-/// 파싱된 URL.
-struct HttpUrl {
-    tls: bool,
-    host: String,
-    port: u16,
-    path: String,
-}
-
-/// URL 파싱: http(s)://host[:port]/path?query
-fn parse_http_url(url: &str, span: Span) -> Result<HttpUrl, RuntimeError> {
-    let (tls, rest) = if let Some(r) = url.strip_prefix("https://") {
-        (true, r)
-    } else if let Some(r) = url.strip_prefix("http://") {
-        (false, r)
-    } else {
-        return Err(RuntimeError::new(
-            format!("http_get: URL은 http:// 또는 https:// 로 시작해야 함: '{url}'"), span));
-    };
-    let (hostport, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], rest[i..].to_string()),
-        None => (rest, "/".to_string()),
-    };
-    let (host, port) = match hostport.rsplit_once(':') {
-        Some((h, p)) => {
-            let port: u16 = p.parse().map_err(|_| RuntimeError::new(
-                format!("http_get: 잘못된 포트: '{p}'"), span))?;
-            (h.to_string(), port)
-        }
-        None => (hostport.to_string(), if tls { 443 } else { 80 }),
-    };
-    if host.is_empty() {
-        return Err(RuntimeError::new(format!("http_get: 호스트가 비어 있음: '{url}'"), span));
-    }
-    Ok(HttpUrl { tls, host, port, path })
-}
-
-/// TCP 스트림에 TLS를 입힌다. 설정(루트 인증서 포함)은 프로세스당 한 번만 만든다.
-#[cfg(feature = "https")]
-fn tls_wrap(mut tcp: std::net::TcpStream, host: &str) -> Result<Box<dyn HttpStream>, String> {
-    use rustls::pki_types::ServerName;
-    static CONFIG: OnceLock<Result<Arc<rustls::ClientConfig>, String>> = OnceLock::new();
-    let config = CONFIG.get_or_init(|| {
-        let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
-        rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .map(|b| Arc::new(b.with_root_certificates(roots).with_no_client_auth()))
-            .map_err(|e| format!("TLS 설정 실패: {e}"))
-    }).clone()?;
-    let name = ServerName::try_from(host.to_string())
-        .map_err(|e| format!("TLS 서버 이름이 잘못됨 '{host}': {e}"))?;
-    let mut conn = rustls::ClientConnection::new(config, name)
-        .map_err(|e| format!("TLS 연결 생성 실패: {e}"))?;
-    // 핸드셰이크를 여기서 끝내 인증서 오류가 "TLS 핸드셰이크 실패"로 보고되게 한다
-    // (그렇지 않으면 첫 쓰기 때 일어나 "요청 전송 실패"로 보인다).
-    while conn.is_handshaking() {
-        conn.complete_io(&mut tcp).map_err(|e| format!("TLS 핸드셰이크 실패: {e}"))?;
-    }
-    Ok(Box::new(rustls::StreamOwned::new(conn, tcp)))
-}
-
-#[cfg(not(feature = "https"))]
-fn tls_wrap(_tcp: std::net::TcpStream, _host: &str) -> Result<Box<dyn HttpStream>, String> {
-    Err("이 bang 빌드는 https를 지원하지 않음 (`https` feature 없이 빌드됨) — http:// 를 쓰세요".into())
-}
-
-/// TLS 피어가 close_notify 없이 연결을 끊는 경우(흔함)는 rustls가 UnexpectedEof로 알린다.
-/// 본문 길이를 Content-Length/chunked로 이미 확인하므로 EOF와 같게 취급한다.
-fn is_eof_like(e: &std::io::Error) -> bool {
-    e.kind() == std::io::ErrorKind::UnexpectedEof
-}
-
-/// Transfer-Encoding: chunked 본문 디코딩 (크기 줄은 16진수 [;확장] CRLF).
-fn decode_chunked(body: &[u8]) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    let mut pos = 0;
-    loop {
-        // 크기 줄 찾기
-        let line_end = find_subseq(&body[pos..], b"\r\n")? + pos;
-        let size_str = std::str::from_utf8(&body[pos..line_end]).ok()?;
-        let size_hex = size_str.split(';').next()?.trim();
-        let size = usize::from_str_radix(size_hex, 16).ok()?;
-        pos = line_end + 2;
-        if size == 0 {
-            return Some(out); // 마지막 청크 (트레일러 무시)
-        }
-        if pos + size > body.len() {
-            return None; // 잘린 응답
-        }
-        out.extend_from_slice(&body[pos..pos + size]);
-        pos += size + 2; // 청크 뒤 CRLF
-    }
-}
-
-/// http_get(url) → {status: Int, headers: Map(소문자 키), body: Str}
-fn http_get(url: &str, span: Span) -> Result<VmValue, RuntimeError> {
-    use std::io::{Read, Write};
-    let HttpUrl { tls, host, port, path } = parse_http_url(url, span)?;
-    let err = |m: String| RuntimeError::new(format!("http_get('{url}'): {m}"), span);
-
-    let tcp = std::net::TcpStream::connect((host.as_str(), port))
-        .map_err(|e| err(format!("연결 실패: {e}")))?;
-    let timeout = Some(std::time::Duration::from_secs(10));
-    let _ = tcp.set_read_timeout(timeout);
-    let _ = tcp.set_write_timeout(timeout);
-    let mut stream: Box<dyn HttpStream> = if tls {
-        tls_wrap(tcp, &host).map_err(err)?
-    } else {
-        Box::new(tcp)
-    };
-
-    let req = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: bang/{}\r\nAccept: */*\r\n\r\n",
-        env!("CARGO_PKG_VERSION"));
-    stream.write_all(req.as_bytes()).map_err(|e| err(format!("요청 전송 실패: {e}")))?;
-
-    // 헤더 끝(\r\n\r\n)까지 먼저 읽는다. read_to_end는 서버가 keep-alive면
-    // 타임아웃까지 대기하므로 쓰지 않는다.
-    let mut raw = Vec::new();
-    let mut buf = [0u8; 4096];
-    let sep = loop {
-        if let Some(p) = find_subseq(&raw, b"\r\n\r\n") { break p; }
-        let n = match stream.read(&mut buf) {
-            Ok(n) => n,
-            Err(e) if is_eof_like(&e) => 0,
-            Err(e) => return Err(err(format!("응답 수신 실패: {e}"))),
-        };
-        if n == 0 { return Err(err("헤더 완성 전 연결 종료".into())); }
-        raw.extend_from_slice(&buf[..n]);
-    };
-    let head = String::from_utf8_lossy(&raw[..sep]).into_owned();
-
-    // 상태줄: HTTP/1.1 200 OK
-    let mut lines = head.split("\r\n");
-    let status_line = lines.next().unwrap_or("");
-    let status: i64 = status_line.split_whitespace().nth(1)
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| err(format!("상태줄 파싱 실패: '{status_line}'")))?;
-
-    // 헤더 (소문자 키 — bang-web 관례와 일치)
-    let mut headers = HashMap::new();
-    let mut chunked = false;
-    let mut content_length: Option<usize> = None;
-    for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            let key = k.trim().to_lowercase();
-            let val = v.trim().to_string();
-            if key == "transfer-encoding" && val.to_lowercase().contains("chunked") {
-                chunked = true;
-            }
-            if key == "content-length" {
-                content_length = val.parse().ok();
-            }
-            headers.insert(key, VmValue::Str(val));
-        }
-    }
-
-    // 헤더 이후 이미 읽은 본문 바이트 + 남은 본문 수신.
-    let mut body_buf = raw[sep + 4..].to_vec();
-    // 종료 조건: chunked면 "0\r\n\r\n", Content-Length면 그 길이, 둘 다 없으면 EOF(close).
-    loop {
-        let done = if chunked {
-            find_subseq(&body_buf, b"0\r\n\r\n").is_some()
-        } else if let Some(len) = content_length {
-            body_buf.len() >= len
-        } else {
-            false // EOF까지
-        };
-        if done { break; }
-        let n = match stream.read(&mut buf) {
-            Ok(0) => break, // EOF
-            Ok(n) => n,
-            Err(ref e) if is_eof_like(e) => break,
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut => break,
-            Err(e) => return Err(err(format!("본문 수신 실패: {e}"))),
-        };
-        body_buf.extend_from_slice(&buf[..n]);
-    }
-
-    let body = if chunked {
-        decode_chunked(&body_buf).ok_or_else(|| err("chunked 본문 디코딩 실패".into()))?
-    } else if let Some(len) = content_length {
-        body_buf.truncate(len);
-        body_buf
-    } else {
-        body_buf
-    };
-
-    let mut map = HashMap::new();
-    map.insert("status".to_string(), VmValue::Int(status));
-    map.insert("headers".to_string(), VmValue::Map(Arc::new(headers)));
-    map.insert("body".to_string(), VmValue::Str(String::from_utf8_lossy(&body).into_owned()));
-    Ok(VmValue::Map(Arc::new(map)))
-}
-
 /// 바이트 슬라이스에서 부분열의 시작 위치를 찾는다 (HTTP 헤더 끝 감지용).
-fn find_subseq(hay: &[u8], needle: &[u8]) -> Option<usize> {
+pub(crate) fn find_subseq(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() { return None; }
     hay.windows(needle.len()).position(|w| w == needle)
 }
@@ -3460,7 +1570,7 @@ fn warn_if_spawn_err(result: Result<VmValue, RuntimeError>) {
 
 /// 채널 송신용 변환. 데이터 값(스칼라·List·Map)만 허용한다.
 /// 함수/채널/Future/Tcp 등 참조 타입은 컨테이너 안에 있어도 에러 (조용히 Nil로 떨구지 않음).
-fn to_runtime(v: &VmValue, span: Span) -> Result<crate::runtime::Value, RuntimeError> {
+pub(crate) fn to_runtime(v: &VmValue, span: Span) -> Result<crate::runtime::Value, RuntimeError> {
     use crate::runtime::Value as RV;
     Ok(match v {
         VmValue::Int(n)   => RV::Int(*n),
@@ -3481,39 +1591,7 @@ fn to_runtime(v: &VmValue, span: Span) -> Result<crate::runtime::Value, RuntimeE
     })
 }
 
-/// proc_run(argv) — 셸을 거치지 않고 argv[0]을 직접 실행. stdin은 연결하지 않는다.
-/// 0이 아닌 종료 코드는 에러가 아니라 code로 반환. 시그널 종료 시 code = nil.
-/// stdout/stderr의 비-UTF-8 바이트는 U+FFFD로 대체 (바이트 타입 도입 전 한계, SPEC 명시).
-fn proc_run(argv: &VmValue, span: Span) -> Result<VmValue, RuntimeError> {
-    let items = list_arg("proc_run", argv, span)?;
-    let mut parts = Vec::with_capacity(items.len());
-    for (i, it) in items.iter().enumerate() {
-        match it {
-            VmValue::Str(s) => parts.push(s.clone()),
-            other => return Err(RuntimeError::new(
-                format!("proc_run(): argv[{i}]는 문자열이어야 함, {} 발견", other.type_name()), span)),
-        }
-    }
-    let Some((prog, rest)) = parts.split_first() else {
-        return Err(RuntimeError::new("proc_run(): argv가 비어 있음 (실행할 명령 필요)", span));
-    };
-    let out = std::process::Command::new(prog)
-        .args(rest)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| RuntimeError::new(format!("proc_run('{prog}'): {e}"), span))?;
-    let code = match out.status.code() {
-        Some(c) => VmValue::Int(c as i64),
-        None => VmValue::Nil,
-    };
-    let mut m = HashMap::new();
-    m.insert("code".to_string(), code);
-    m.insert("stdout".to_string(), VmValue::Str(String::from_utf8_lossy(&out.stdout).into_owned()));
-    m.insert("stderr".to_string(), VmValue::Str(String::from_utf8_lossy(&out.stderr).into_owned()));
-    Ok(VmValue::Map(Arc::new(m)))
-}
-
-fn from_runtime(v: crate::runtime::Value) -> VmValue {
+pub(crate) fn from_runtime(v: crate::runtime::Value) -> VmValue {
     use crate::runtime::Value as RV;
     match v {
         RV::Int(n)   => VmValue::Int(n),
@@ -3524,6 +1602,5 @@ fn from_runtime(v: crate::runtime::Value) -> VmValue {
         RV::Nil      => VmValue::Nil,
         RV::List(items) => VmValue::List(Arc::new(items.into_iter().map(from_runtime).collect())),
         RV::Map(m) => VmValue::Map(Arc::new(m.into_iter().map(|(k, v)| (k, from_runtime(v))).collect())),
-        _ => VmValue::Nil,
     }
 }

@@ -7,8 +7,11 @@ Rust로 처음부터 구현한다. 소스 확장자는 .bang, CLI/바이너리 �
 
 구현 언어: Rust (edition 2021).
 렉서·파서는 직접 손으로 구현한다. 외부 파서 제너레이터(lalrpop, pest 등) 미사용.
-백엔드 전략(단계적): (1) 트리 워킹 인터프리터 → (2) 바이트코드 VM(메인 실행 경로)
-→ (3) 선택적 네이티브(Cranelift 우선). 현재는 (1)→(2)에 집중.
+백엔드 전략: 바이트코드 VM이 유일한 정본 실행 엔진이다. 네이티브 경로는 실험적 AOT C
+트랜스파일러(bang compile)만 유지하며, 미지원 기능은 반드시 명확한 에러로 거절한다.
+(이력: (1) 트리 워킹 인터프리터 → (2) VM 단계를 거쳤고, Phase 44(v0.30.0, 사용자 승인)에서
+인터프리터와 Cranelift JIT를 제거했다 — 인터프리터는 빌트인 11/122 지원·타입 힌트를 조용히
+무시했고, JIT는 빌드 불가였다. 새 백엔드는 VM과 같은 의미를 보장할 수 있을 때만 추가한다.)
 에러는 항상 (line, col) span을 담아 사람이 읽기 좋게 출력한다.
 한 번에 한 Phase만 진행한다. 사용자가 다음 Phase를 지시하기 전에는 범위를 넘지 않는다.
 
@@ -60,13 +63,14 @@ src/
   ast/          AST 노드 (kind + span 분리: struct X { kind, span })
   parser/       재귀 하강 + Pratt
   resolver/     스코프/바인딩 정적 해석 (Phase 4)
-  interpreter/  트리 워킹 평가 + 동시성 의미 (Phase 3)
   compiler/     AST → 바이트코드 (Phase 5)
   vm/           스택 VM + GC (Phase 5)
-  runtime/      스케줄러·채널·Future (Phase 3 OS스레드 → Phase 5 M:N). BangChannel::try_recv(select용)
-  stdlib/       내장 함수·모듈 (Phase 6) — 실제 빌트인 구현은 vm.rs call_builtin
+  runtime/      RuntimeError + 채널(BangChannel, try_recv는 select용) + 채널 전송용 데이터 전용 Value
+  stdlib/       빌트인 단일 등록 테이블(mod.rs BUILTINS: 이름·인자 수·구현) + 분야별 구현 파일
+                (core/concurrency/string/collections/math/json/time/fs/regex/net/sys/bytes).
+                resolver(이름·인자 수)와 VM(디스패치)이 이 테이블 하나를 읽는다 (Phase 44).
   scheduler/    M:N 스케줄러 (Phase 9) + 탄력 풀(Phase 28: idle 0이면 임시워커, cap 512)
-  codegen/      Cranelift JIT(jit, cranelift 버전 비호환으로 현재 빌드불가) + AOT C 트랜스파일러(transpile)
+  codegen/      [실험적] AOT C 트랜스파일러(transpile) — 정수·문자열·함수 부분집합, 미지원은 에러
   typeck/       정적 타입 검사 (Phase 25, bang check 통합)
   regex/        자체 정규식 엔진 (Phase 21~22, 백트래킹 VM + 캡처)
   pkg/          bang.toml 매니페스트 파서 (Phase 23, bang add/install)
@@ -76,9 +80,27 @@ docs/PHILOSOPHY.md 헌법(9조 + 영구 거부 목록 + 거절의 기록). 기�
 docs/VISION.md  활성화 계획(철학+GTM 종합). P0~P2 실행 로드맵.
 docs/TUTORIAL.md 진행형 입문 튜토리얼 (먼저 읽는 문서).
 docs/GUIDE.md   사용자 가이드 (초기 버전 기준 — 최신은 TUTORIAL/SPEC).
-빌트인 인덱스: resolver.rs 등록 순서 == vm.rs BUILTINS 배열 == call_builtin match. 끝에만 추가(번호 불변).
+정본 실행 엔진: VM. SPEC의 의미는 VM 기준이며, 다른 백엔드는 미지원 기능에서 명확한 에러를 내야 한다.
+
+빌트인 추가 절차 (번호 = src/stdlib/mod.rs BUILTINS에서의 위치, 바이트코드에 박히는 대외 계약)
+  1. 분야 파일(src/stdlib/<분야>.rs)에 구현 함수 작성:
+     pub(crate) fn b_<이름>(vm: &mut Vm, args: Vec<VmValue>, span: Span, stop_depth: usize)
+       -> Result<VmValue, RuntimeError>
+     인자 검사는 req_args/str_arg/int_of/list_arg/bytes_arg/data_arg. 실패는 RuntimeError(catch 가능),
+     unwrap/panic 금지. 쓰지 않는 매개변수는 _ 접두사.
+  2. BUILTINS **끝에만** 한 행 추가: Builtin { name, arity(None=가변), func }, // 번호
+     기존 행의 순서·이름·인자 수는 절대 바꾸지 않는다.
+  3. tests/builtin_table_test.rs GOLDEN 끝에 같은 행 추가 (기존 행 수정 = 계약 위반).
+  4. 결정적 동작이면 tests/fixtures/builtins_snapshot.bang에 호출 추가 + .expected 갱신.
+  5. 문서: SPEC 해당 장, llms.txt(개수 포함), README 표, TUTORIAL(필요 시),
+     editors/vscode-bang 문법 빌트인 목록·README 개수, CLAUDE.md 체크리스트.
+빌트인 명명 규칙
+  - 분야 접두사: tcp_* (소켓), regex_*, json_*, proc_* (프로세스), env_* (환경),
+    file_* (파일), dir_* (디렉터리), bytes_* (바이트 변환). 동사는 접두사 뒤: file_read_bytes.
+  - 기존 비접두사 이름(read_file, list_dir, is_dir, sleep 등)은 번호 계약상 유지하며 개명하지 않는다.
+  - 범용 연산(len, slice, push, map 등)은 접두사 없이 여러 타입을 받는 하나의 이름으로 확장한다.
 의존성: polling(리액터), rustls+webpki-roots(https feature, 기본 켜짐 — 자급 코어의 유일한 예외).
-        cranelift는 jit feature(현재 비호환). CI는 --no-default-features 빌드도 검증.
+        CI는 --no-default-features 빌드도 검증. (cranelift는 Phase 44에서 JIT와 함께 제거)
 examples/       기본 샘플 + 동시성 샘플(channels/parallel_block/spawn_basic 등)이 한 디렉토리에 평면 배치.
                 상단 주석의 기대 출력이 통합 테스트 정답지.
 
@@ -449,3 +471,25 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                (tests: 337 green 양쪽 feature, clippy 0)
              발견(미수정): 렉서가 UTF-8 BOM을 오류로 처리 — Windows 편집기/PowerShell 5.1이 저장한
                파일이 첫 글자에서 실패.
+✅ Phase 44 — 빌트인 등록 단일화 + 실행 백엔드 정리 (VM 단일 정본) — v0.30.0
+             2부(빌트인): src/stdlib/mod.rs BUILTINS(이름·인자 수·fn 포인터) 단일 테이블. resolver의 목록과
+               vm.rs BUILTINS(&[&str])·call_builtin 거대 match(1,248줄) 제거 → 테이블 디스패치 1줄.
+               분기 123개를 분야별 12개 파일 b_<이름> 함수로 이동(self.→vm.), 빌트인 전용 헬퍼
+               (JSON 파서·HTTP 클라이언트·proc_run·hex·PRNG·시간포맷·regex 컴파일)도 이동.
+               VM 메서드 5개·헬퍼 다수를 pub(crate)로 공개. 빌트인 추가 절차·명명 규칙은 위 "모듈 경계" 참고.
+               리팩터링 전 작성한 계약 테스트: tests/builtin_table_test.rs(GOLDEN 123행 이름·번호·인자 수
+               + fixtures/builtins_snapshot 동작 스냅샷 31줄) — 전후 동일하게 통과.
+               성능(Windows release, 번갈아 실행): fib_seq 9회 중앙값 전 13.26s / 후 13.19s,
+               빌트인 마이크로벤치 전 0.926s / 후 0.886s → 저하 없음.
+             1부(백엔드, 사용자 승인): 트리 워킹 인터프리터(834줄)·Cranelift JIT(464줄+의존성 5) 삭제.
+               --interp/--jit는 "v0.30.0에서 제거" 명확한 에러(파일 경로 오인 방지, cli_test +1).
+               interpreter_test 26개 → tests/semantics_test.rs로 이식(단언 불변, 실행기만 VM).
+               vm_test 예제 12개: 인터프리터 비교 → 예제 상단 "// 기대 출력:" 주석 비교로 전환
+               (hello/conditionals 주석 신설, fibonacci 주석을 실제 출력 형식으로 정정).
+               삭제한 테스트: test_vm_interp_flag_still_works 1개(인터프리터 존재 확인용).
+               runtime.rs: 인터프리터 전용(BangFunction/Env/BangFuture/resolve 헬퍼) 제거, Value를 데이터
+               전용으로 축소 → "채널은 데이터만" 타입 보장 + unsafe impl Send/Sync 제거.
+               AOT는 [실험적] 유지: 타입 힌트를 조용히 무시하던 것 → 컴파일 에러(transpile 단위 +1).
+               cc 없을 때 transpile_test 스킵을 stderr에 표시. SPEC 1장 "VM이 정본" 명시.
+               CLAUDE.md 변경 금지 결정의 백엔드 전략 문구 갱신(사용자 승인).
+               vm.rs 3,234 → 약 1,600줄. (tests: 343 green 양쪽 feature, clippy 0)

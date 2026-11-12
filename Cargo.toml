@@ -1,6 +1,6 @@
 [package]
 name = "bang"
-version = "0.29.0"
+version = "0.30.0"
 edition = "2021"
 description = "Bang 프로그래밍 언어 컴파일러/런타임"
 license = "MIT"
@@ -29,23 +29,10 @@ polling = "3"
 # 루트 인증서는 webpki-roots(Mozilla 목록 내장) — 사내 자체 CA 환경은 미지원(SPEC 한계 명시).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 webpki-roots = { version = "1", optional = true }
-# Phase 9 Part B: Cranelift JIT (선택적 기능 — `--features jit` 빌드 시 활성화)
-cranelift-codegen  = { version = "0.109", optional = true }
-cranelift-jit      = { version = "0.109", optional = true }
-cranelift-module   = { version = "0.109", optional = true }
-cranelift-frontend = { version = "0.109", optional = true }
-cranelift-native   = { version = "0.109", optional = true }
 
 [features]
 default = ["https"]
 https = ["dep:rustls", "dep:webpki-roots"]
-jit = [
-    "dep:cranelift-codegen",
-    "dep:cranelift-jit",
-    "dep:cranelift-module",
-    "dep:cranelift-frontend",
-    "dep:cranelift-native",
-]
 
 # The profile that 'dist' will build with
 [profile.dist]

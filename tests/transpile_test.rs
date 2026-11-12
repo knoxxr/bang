@@ -44,7 +44,9 @@ fn compile_and_run(src: &str, tag: &str) -> Option<String> {
     let status = match status {
         Ok(s) => s,
         Err(_) => {
-            // cc 미설치 환경 → 테스트 스킵
+            // cc 미설치 환경 → 테스트 스킵. 조용히 통과로 보이지 않게 이유를 남긴다
+            // (`cargo test -- --nocapture`로 확인. CI의 ubuntu/macos에는 cc가 있어 실제로 실행된다).
+            eprintln!("SKIP transpile_test[{tag}]: cc를 찾을 수 없어 AOT 컴파일·실행 검증을 건너뜀");
             let _ = fs::remove_file(&c_path);
             return None;
         }

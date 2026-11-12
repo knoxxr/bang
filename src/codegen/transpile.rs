@@ -276,7 +276,12 @@ impl Transpiler {
     fn emit_fn_defs(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             if let StmtKind::Let { name, value, .. } = &stmt.kind {
-                if let ExprKind::Function { params, body, .. } = &value.kind {
+                if let ExprKind::Function { params, body, param_types, ret_type, .. } = &value.kind {
+                    // VM은 타입 힌트를 런타임 검증한다. AOT가 무시하면 같은 프로그램의 결과가
+                    // 달라지므로(조용한 불일치) 명확한 에러로 거절한다.
+                    if param_types.iter().any(Option::is_some) || ret_type.is_some() {
+                        self.err("AOT: 타입 힌트 미지원 (VM은 런타임 검증 — 힌트를 지우거나 bang run 사용)", stmt.span);
+                    }
                     self.emit_fn_def(name, params, body);
                 }
             }
@@ -316,7 +321,10 @@ impl Transpiler {
     fn emit_stmt(&mut self, stmt: &Stmt) {
         let sp = stmt.span;
         match &stmt.kind {
-            StmtKind::Let { name, value, .. } => {
+            StmtKind::Let { name, value, ty } => {
+                if ty.is_some() {
+                    self.err("AOT: 타입 힌트 미지원 (VM은 런타임 검증 — 힌트를 지우거나 bang run 사용)", sp);
+                }
                 // 최상위 함수 정의는 이미 처리 → 건너뜀
                 if matches!(value.kind, ExprKind::Function { .. }) && self.scope_stack.len() == 1 {
                     return;
@@ -684,6 +692,19 @@ mod tests {
     fn parse(src: &str) -> Program {
         let tokens = Lexer::new(src).tokenize().expect("tokenize 실패");
         Parser::new(tokens).parse().expect("parse 실패")
+    }
+
+    /// 타입 힌트는 VM에서 런타임 검증되므로 AOT가 무시하면 결과가 달라진다 → 명확한 에러.
+    #[test]
+    fn test_transpile_rejects_type_hints() {
+        for src in [
+            "let x: int = \"oops\"\nprint(x)",
+            "fn f(a: int) { return a }\nprint(f(1))",
+            "fn g(a) -> int { return a }\nprint(g(1))",
+        ] {
+            let errs = transpile(&parse(src)).expect_err(src);
+            assert!(errs.iter().any(|e| e.to_string().contains("타입 힌트")), "{src}: {errs:?}");
+        }
     }
 
     #[test]

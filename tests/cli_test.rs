@@ -130,3 +130,21 @@ fn test_bang_new_scaffold() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// 제거된 백엔드 플래그(--interp/--jit)는 파일 경로로 오인되지 않고 명확한 에러를 낸다 (Phase 44).
+#[test]
+fn test_removed_backend_flags_error_clearly() {
+    let path = temp_bang("print(1)\n");
+    for flag in ["--interp", "--jit"] {
+        let out = Command::new(BANG)
+            .args(["run", flag])
+            .arg(&path)
+            .output()
+            .expect("실행 실패");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{flag}: 실패해야 함");
+        assert!(stderr.contains("제거"), "{flag}: stderr = {stderr}");
+        assert!(out.stdout.is_empty(), "{flag}: 실행되면 안 됨");
+    }
+    let _ = fs::remove_file(&path);
+}

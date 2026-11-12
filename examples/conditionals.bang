@@ -1,4 +1,8 @@
 // 조건문
+// 기대 출력:
+// positive
+// exactly ten
+
 let x = 10
 
 if x > 0 {

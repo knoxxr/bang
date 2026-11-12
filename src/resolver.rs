@@ -280,160 +280,17 @@ impl Resolver {
         self.pop_scope(false); // Builtin: 미사용 경고 없음
     }
 
-    /// 내장 함수들을 전역 스코프에 등록.
+    /// 내장 함수들을 전역 스코프에 등록 (단일 테이블 crate::stdlib::BUILTINS에서 이름·인자 수).
     fn register_builtins(&mut self) {
-        let builtins: &[(&str, Option<usize>)] = &[
-            // 기본 (0-19)
-            ("print",        None),
-            ("str",          Some(1)),
-            ("int",          Some(1)),
-            ("float",        Some(1)),
-            ("bool",         Some(1)),
-            ("len",          Some(1)),
-            ("type",         Some(1)),
-            ("channel",      None),
-            ("send",         Some(2)),
-            ("recv",         Some(1)),
-            ("close",        Some(1)),
-            ("parallel_map", Some(2)),
-            ("wait",         Some(1)),
-            ("push",         Some(2)),
-            ("pop",          Some(1)),
-            ("keys",         Some(1)),
-            ("values",       Some(1)),
-            ("range",        None),
-            ("assert",       None),
-            ("exit",         None),
-            // 문자열 (20-32)
-            ("split",        Some(2)),
-            ("join",         Some(2)),
-            ("trim",         Some(1)),
-            ("trim_start",   Some(1)),
-            ("trim_end",     Some(1)),
-            ("replace",      Some(3)),
-            ("contains",     Some(2)),
-            ("starts_with",  Some(2)),
-            ("ends_with",    Some(2)),
-            ("upper",        Some(1)),
-            ("lower",        Some(1)),
-            ("find",         Some(2)),
-            ("chars",        Some(1)),
-            // 리스트 (33-43)
-            ("sort",         Some(1)),
-            ("reverse",      Some(1)),
-            ("map",          Some(2)),
-            ("filter",       Some(2)),
-            ("reduce",       Some(3)),
-            ("any",          Some(2)),
-            ("all",          Some(2)),
-            ("flat",         Some(1)),
-            ("enumerate",    Some(1)),
-            ("zip",          Some(2)),
-            ("sum",          Some(1)),
-            // 수학 (44-51)
-            ("abs",          Some(1)),
-            ("sqrt",         Some(1)),
-            ("floor",        Some(1)),
-            ("ceil",         Some(1)),
-            ("round",        Some(1)),
-            ("pow",          Some(2)),
-            ("min",          None),
-            ("max",          None),
-            // I/O (52-56)
-            ("read_file",    Some(1)),
-            ("write_file",   Some(2)),
-            ("input",        None),
-            ("print_err",    None),
-            ("args",         Some(0)),
-            // 모듈 (57)
-            ("import",       Some(1)),
-            // stdlib 확장 (58-63)
-            ("slice",        Some(3)),
-            ("has",          Some(2)),
-            ("get",          Some(3)),
-            ("merge",        Some(2)),
-            ("repeat",       Some(2)),
-            ("index_of",     Some(2)),
-            // stdlib: JSON / 시간 / 난수 (64-68)
-            ("json_parse",     Some(1)),
-            ("json_stringify", Some(1)),
-            ("now_ms",         Some(0)),
-            ("random",         Some(0)),
-            ("random_int",     Some(2)),
-            // stdlib: 파일시스템 / list 유틸 / 시간포맷 / 문자 (69-76)
-            ("list_dir",     Some(1)),
-            ("file_exists",  Some(1)),
-            ("is_dir",       Some(1)),
-            ("sort_by",      Some(2)),
-            ("unique",       Some(1)),
-            ("format_time",  Some(1)),
-            ("ord",          Some(1)),
-            ("chr",          Some(1)),
-            // stdlib: 정규식 (77-80)
-            ("regex_match",    Some(2)),
-            ("regex_find",     Some(2)),
-            ("regex_find_all", Some(2)),
-            ("regex_replace",  Some(3)),
-            ("regex_groups",   Some(2)),
-            // stdlib: math (82-92)
-            ("gcd",        Some(2)),
-            ("clamp",      Some(3)),
-            ("sign",       Some(1)),
-            ("sin",        Some(1)),
-            ("cos",        Some(1)),
-            ("tan",        Some(1)),
-            ("log",        Some(1)),
-            ("log10",      Some(1)),
-            ("exp",        Some(1)),
-            ("pi",         Some(0)),
-            ("e",          Some(0)),
-            // stdlib: 집합 연산 (리스트 기반) (93-95)
-            ("union",      Some(2)),
-            ("intersect",  Some(2)),
-            ("difference", Some(2)),
-            // stdlib: 네트워킹 TCP (96-100)
-            ("tcp_listen", Some(1)),
-            ("tcp_accept", Some(1)),
-            ("tcp_read",   Some(1)),
-            ("tcp_write",  Some(2)),
-            ("tcp_close",  Some(1)),
-            ("tcp_read_until",  Some(2)),
-            ("tcp_set_timeout", Some(2)),
-            // 동시성: 멀티 채널 대기 (103)
-            ("select",          Some(1)),
-            // stdlib: 바이너리 파일 (104-105)
-            ("file_size",     Some(1)),
-            ("tcp_send_file", Some(2)),
-            ("serve_event",   Some(2)),
-            // 아웃바운드 네트워킹 (107-108)
-            ("tcp_connect",   Some(1)),
-            ("http_get",      Some(1)),
-            // 시스템: 프로세스·환경·대기·파일 조작 (109-116)
-            ("proc_run",      Some(1)),
-            ("env_get",       Some(1)),
-            ("env_cwd",       Some(0)),
-            ("sleep",         Some(1)),
-            ("file_remove",   Some(1)),
-            ("file_move",     Some(2)),
-            ("dir_create",    Some(1)),
-            ("file_append",   Some(2)),
-            // 바이트 값 타입 (117-122)
-            ("bytes_from_str",  Some(1)),
-            ("bytes_to_str",    Some(1)),
-            ("bytes_from_hex",  Some(1)),
-            ("bytes_to_hex",    Some(1)),
-            ("file_read_bytes", Some(1)),
-            ("tcp_read_bytes",  Some(1)),
-        ];
         let frame = self.scopes.last_mut().unwrap();
-        for (name, arity) in builtins {
+        for b in crate::stdlib::BUILTINS {
             let slot = frame.vars.len();
-            frame.vars.push((name.to_string(), VarInfo {
+            frame.vars.push((b.name.to_string(), VarInfo {
                 slot,
                 state: VarState::Defined,
                 used: true,
                 span: Span::new(0, 0),
-                arity: *arity,
+                arity: b.arity,
             }));
         }
     }
