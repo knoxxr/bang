@@ -26,8 +26,9 @@ Rust로 처음부터 구현한다. 소스 확장자는 .bang, CLI/바이너리 �
 클로저는 변수를 붙잡는다(한 작업 안에서 공유 — Python식 늦은 바인딩). 작업 경계(spawn·
 parallel_map·bang test)를 넘는 값은 vm::Isolator가 안에 든 클로저와 그 상태까지 복사한다
 (Phase 53, 헌법 1조 개정). 새 작업 경계를 만들면 반드시 Isolator를 거칠 것.
-함수·채널·Future는 참조 의미론(Arc 공유). 채널이 유일하게 허용된 명시적 공유 통로다.
-이 규칙이 "공유 가변 상태 없음"을 보장한다. 성능을 이유로 컨테이너에 공유 가변 참조를
+함수·채널·Future는 참조 의미론(Arc 공유) — 단 작업 경계에서 함수(클로저 상태)는 Isolator가 복사하고
+Future 결과도 격리된다. 작업끼리 값을 주고받는 명시적 통로는 채널과 작업의 반환값뿐이다.
+이 규칙이 "작업 사이의 공유 가변 값 없음"을 보장한다(파일·소켓 등 외부 자원은 본래 공유됨). 성능을 이유로 컨테이너에 공유 가변 참조를
 도입하지 말 것 — 동시성 안전성의 근거가 무너진다.
 
 
@@ -67,7 +68,7 @@ src/
   parser/       재귀 하강 + Pratt
   resolver/     스코프/바인딩 정적 해석 (Phase 4)
   compiler/     AST → 바이트코드 (Phase 5)
-  vm/           스택 VM + GC (Phase 5)
+  vm/           스택 VM (Phase 5). 메모리는 참조 카운팅(Arc) — 순환 수집기 없음(SPEC 15장 한계)
   runtime/      RuntimeError + 채널(BangChannel, try_recv는 select용) + 채널 전송용 데이터 전용 Value
   stdlib/       빌트인 단일 등록 테이블(mod.rs BUILTINS: 이름·인자 수·구현) + 분야별 구현 파일
                 (core/concurrency/string/collections/math/json/time/fs/regex/net/sys/bytes/csv).
@@ -682,3 +683,12 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              VM↔AOT 동치 테스트(tests/transpile_test.rs aot_matches_vm_on_corpus): 23개 프로그램(에러 경우 포함)을
                두 엔진으로 실행해 stdout·종료 코드 비교 — 전부 일치. 한계: AOT 에러 메시지에 줄·열 없음.
              문서: SPEC 1장(AOT 지원 범위·동치 보장). (tests: 432 green, clippy 0)
+✅ Phase 59 — 헌법·문서를 현실에 맞춤 (헌법 점검 B·C 항목) — 문서만 변경, 버전 불변
+             헌법: 정체성 문장 "공유 가변 상태 제거" → "작업 사이의 공유 가변 값"(파일·소켓 등 외부 자원은 본래 공유).
+               5조 의존성 정정(polling + https용 rustls/ring/webpki-roots, 기능 플래그로 제외 가능).
+               9조 명확화("타입 힌트가 필수가 되는 일은 없다" — 하위 호환 약속 아님, 구조 오류는 항상 거절).
+               거부 목록: 락 행("채널이 유일한 통로" → 채널·반환값), "컨테이너 공유 가변 참조" → "작업 사이의"(1조 개정과 일치).
+             언어 정책 이행: README 영어 요약 섹션 신설(정체성·데모·구조적 동시성·정직한 한계·문서 안내).
+             SPEC 15장 신설: 참조 카운팅, 순환 참조 누수(클로저가 끼는 두 경우·실측 298MB vs 12MB·회피법 — 실측 검증).
+             SPEC 6장: 자동 대기는 얕다([spawn g()] == [3]은 false, wait로 꺼내 비교 — 실측 검증).
+             README 값 의미론 문구 과장 수정, VISION 의존성 문구, CLAUDE.md 불변 규칙 문구·vm "GC" 표기 정정, llms.txt 순환 주의.

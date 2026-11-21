@@ -27,8 +27,8 @@ bang에는 그게 없다. `spawn`/`parallel_map`만 있으면 된다.
 
 - **투명 동시성** — 함수 색칠(async/await) 없이 `spawn`/`parallel`만으로 병렬 실행.
   Future는 값이 필요한 시점에 자동 조인된다(`await` 키워드 없음).
-- **값 의미론** — list/map/string은 복제되어 전달된다. 공유 가변 상태가 없으니
-  데이터 레이스가 문법적으로 불가능하다.
+- **값 의미론** — list/map/string은 복제되어 전달된다. 작업 사이에 공유되는 가변 값이 없으니
+  언어 안의 값에서는 데이터 레이스가 생길 수 없다. (파일·소켓 같은 외부 자원은 본래 공유된다.)
 - **구조적 동시성** — 모든 작업은 스코프에 뿌리내리고 자동 조인된다. 작업 누수가 없다.
 - **사람이 읽기 좋은 에러** — 모든 오류에 `(line, col)`과 소스 컨텍스트가 붙는다.
 
@@ -392,3 +392,28 @@ TLS(`rustls`+`webpki-roots`, `--no-default-features`로 제외 가능)뿐이다.
 ## 라이선스
 
 [MIT](LICENSE)
+
+---
+
+## English summary
+
+**bang** is a small, dynamically typed scripting language where you think sequentially and run in parallel.
+There is no async/await (no function coloring), no GIL, and no locks: `spawn` makes an ordinary function call
+run on another core, and values (lists, maps, strings) are copied across task boundaries, so tasks cannot
+race on shared language values.
+
+```bang
+// Fetch URLs concurrently — no async, no callbacks, no locks.
+let pages = parallel_map(urls, fn(url) { return http_get(url) })
+print(f"fetched {len(pages)} pages")
+```
+
+- **Install**: `brew install knoxxr/tap/bang`, or the shell / PowerShell installers above.
+- **Structured concurrency**: every task is joined before the function that spawned it returns; unhandled task
+  errors propagate to the caller.
+- **Honest limits**: sequential execution is about 3–4× slower than CPython ([benchmarks](bench/README.md));
+  memory is reference-counted with no cycle collector (see SPEC §15); the experimental native compiler
+  (`bang compile`) supports only a small subset.
+- **Docs** are written in Korean first: [TUTORIAL](docs/TUTORIAL.md), [SPEC](docs/SPEC.md),
+  [PHILOSOPHY](docs/PHILOSOPHY.md). [`llms.txt`](llms.txt) gives an LLM enough context to write bang.
+
