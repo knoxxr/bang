@@ -475,22 +475,22 @@ impl Vm {
         -> Result<VmValue, RuntimeError>
     {
         let source = std::fs::read_to_string(path)
-            .map_err(|e| RuntimeError::new(format!("import(): '{path}': {e}"), span))?;
+            .map_err(|e| RuntimeError::new(format!("import(): '{path}': {e}"), span).with_kind(crate::runtime::kind::IMPORT))?;
         let tokens = crate::lexer::Lexer::new(&source)
             .tokenize()
             .map_err(|e| RuntimeError::new(
-                format!("import(): 렉서 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span))?;
+                format!("import(): 렉서 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span).with_kind(crate::runtime::kind::IMPORT))?;
         let prog = crate::parser::Parser::new(tokens)
             .parse()
             .map_err(|e| RuntimeError::new(
-                format!("import(): 파서 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span))?;
+                format!("import(): 파서 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span).with_kind(crate::runtime::kind::IMPORT))?;
         let out = crate::compiler::compile(&prog)
             .map_err(|e| RuntimeError::new(
-                format!("import(): 컴파일 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span))?;
+                format!("import(): 컴파일 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span).with_kind(crate::runtime::kind::IMPORT))?;
         // 모듈의 top-level print는 메인 프로그램 출력으로 보낸다.
         let mut sub_vm = Vm::new(out.global_count as usize, self.output.clone());
         sub_vm.run(out.main_fn)
-            .map_err(|e| RuntimeError::new(format!("import(): 모듈 실행 오류 in '{path}': {e}"), span))?;
+            .map_err(|e| RuntimeError::new(format!("import(): 모듈 실행 오류 in '{path}': {e}"), span).with_kind(crate::runtime::kind::IMPORT))?;
         // 모듈의 export(최상위 바인딩)를 Map으로. 함수 값은 sub_vm의
         // 모듈 전역 Arc를 그대로 들고 있어, 메인 VM에서 호출돼도
         // 자기 모듈 전역을 참조한다(sub_vm 드롭 후에도 Arc로 유지).
@@ -674,11 +674,16 @@ impl Vm {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     if let Some(h) = self.take_handler_above(stop_depth) {
+                        // 사용자 throw는 던진 값 그대로, 내장 에러는 {kind, message, line, col} 맵
                         let exc = self.pending_exception.take()
-                            .unwrap_or_else(|| VmValue::Str(e.message.clone()));
+                            .unwrap_or_else(|| error_to_value(&e));
                         self.unwind_to(&h, exc);
                         // 루프 계속 → catch 블록에서 재개
                     } else if let Some(v) = self.pending_exception.take() {
+                        // 다시 던진 내장 에러 맵이면 원래 에러로 복원 (메시지·위치 보존)
+                        if let Some(orig) = rethrown_error(&v) {
+                            return Err(orig);
+                        }
                         // 잡히지 않은 사용자 throw → 던진 값을 메시지에 표시
                         return Err(RuntimeError::new(
                             format!("잡히지 않은 예외: {v}"), e.span));
@@ -793,7 +798,7 @@ impl Vm {
                             .ok_or_else(|| overflow_err("단항 -", span))?),
                         VmValue::Float(n) => VmValue::Float(-n),
                         other => return Err(RuntimeError::new(
-                            format!("단항 -: 숫자 필요, {} 발견", other.type_name()), span)),
+                            format!("단항 -: 숫자 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
                     });
                 }
                 OP_NOT => {
@@ -1067,7 +1072,7 @@ impl Vm {
                             match cur_copy {
                                 VmValue::List(mut items) => { Arc::make_mut(&mut items).push(rhs); VmValue::List(items) }
                                 other => return Err(RuntimeError::new(
-                                    format!("push(): List 필요, {} 발견", other.type_name()), span)),
+                                    format!("push(): List 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::ARGUMENT)),
                             }
                         } else {
                             vm_add(cur_copy, auto_resolve(rhs, span)?, span)?
@@ -1110,12 +1115,12 @@ impl Vm {
                     // 2) 빌트인 name(x, args..) — UFCS
                     let Some(idx) = builtin_index(&name) else {
                         return Err(RuntimeError::new(
-                            format!("메서드 없음: {} 에 '{name}' 없음", target.type_name()), span));
+                            format!("메서드 없음: {} 에 '{name}' 없음", target.type_name()), span).with_kind(crate::runtime::kind::TYPE));
                     };
                     if discarded && crate::resolver::PURE_BUILTINS.contains(&name.as_str()) {
                         return Err(RuntimeError::new(format!(
                             "x.{name}(...)의 결과가 버려짐 — {name}은(는) 새 값을 돌려줄 뿐 x를 바꾸지 않습니다. \
-                             x = x.{name}(...)처럼 대입하세요 (리스트 추가는 xs += [v])"), span));
+                             x = x.{name}(...)처럼 대입하세요 (리스트 추가는 xs += [v])"), span).with_kind(crate::runtime::kind::VALUE));
                     }
                     self.stack[base] = target;
                     self.stack.insert(base, VmValue::Builtin(idx));
@@ -1143,9 +1148,9 @@ impl Vm {
                             self.stack.extend(items.iter().cloned());
                         }
                         VmValue::List(items) => return Err(RuntimeError::new(
-                            format!("분해: 값 {n}개 기대, {}개 발견", items.len()), span)),
+                            format!("분해: 값 {n}개 기대, {}개 발견", items.len()), span).with_kind(crate::runtime::kind::VALUE)),
                         other => return Err(RuntimeError::new(
-                            format!("분해: List 필요, {} 발견", other.type_name()), span)),
+                            format!("분해: List 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::VALUE)),
                     }
                 }
                 OP_FIELD_GET => {
@@ -1189,7 +1194,7 @@ impl Vm {
                         }
                         other => {
                             return Err(RuntimeError::new(
-                                format!("spawn: 클로저 필요, {} 발견", other.type_name()), span));
+                                format!("spawn: 클로저 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::TYPE));
                         }
                     }
                 }
@@ -1237,7 +1242,7 @@ impl Vm {
                         let exp = expected.map(|t| t.name()).unwrap_or("?");
                         // 타입 에러는 try/catch로 잡을 수 있는 런타임 에러
                         return Err(RuntimeError::new(
-                            format!("타입 불일치: {exp} 기대, {} 받음", v.type_name()), span));
+                            format!("타입 불일치: {exp} 기대, {} 받음", v.type_name()), span).with_kind(crate::runtime::kind::TYPE));
                     }
                     self.stack.push(v);
                 }
@@ -1275,7 +1280,7 @@ impl Vm {
                         },
                         other => return Err(RuntimeError::new(
                             format!("for-in: List/Map/Str/Bytes/Channel 필요, {} 발견", other.type_name()),
-                            span)),
+                            span).with_kind(crate::runtime::kind::TYPE)),
                     };
                     self.stack.push(VmValue::Iter(Arc::new(Mutex::new(iter))));
                 }
@@ -1361,7 +1366,7 @@ impl Vm {
 
             other => {
                 return Err(RuntimeError::new(
-                    format!("호출할 수 없는 값: {}", other.type_name()), span));
+                    format!("호출할 수 없는 값: {}", other.type_name()), span).with_kind(crate::runtime::kind::TYPE));
             }
         }
         Ok(())
@@ -1379,7 +1384,8 @@ impl Vm {
         stop_depth: usize,
     ) -> Result<VmValue, RuntimeError> {
         match crate::stdlib::BUILTINS.get(idx) {
-            Some(b) => (b.func)(self, args, span, stop_depth),
+            Some(b) => (b.func)(self, args, span, stop_depth)
+                .map_err(|e| crate::stdlib::categorize_error(b.name, e)),
             None => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
         }
     }
@@ -1391,7 +1397,7 @@ impl Vm {
 
 /// 정수 오버플로 에러 (try/catch로 잡힘). debug/release 의미 동일.
 pub(crate) fn overflow_err(op: &str, span: Span) -> RuntimeError {
-    RuntimeError::new(format!("정수 오버플로: {op} 결과가 64비트 범위를 벗어남"), span)
+    RuntimeError::new(format!("정수 오버플로: {op} 결과가 64비트 범위를 벗어남"), span).with_kind(crate::runtime::kind::OVERFLOW)
 }
 
 fn vm_add(l: VmValue, r: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
@@ -1405,7 +1411,7 @@ fn vm_add(l: VmValue, r: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
         (VmValue::List(mut a), VmValue::List(b)) => { Arc::make_mut(&mut a).extend(b.iter().cloned()); Ok(VmValue::List(a)) }
         (VmValue::Bytes(mut a), VmValue::Bytes(b)) => { Arc::make_mut(&mut a).extend_from_slice(&b); Ok(VmValue::Bytes(a)) }
         (l, r) => Err(RuntimeError::new(
-            format!("+: {} + {} 연산 불가", l.type_name(), r.type_name()), span)),
+            format!("+: {} + {} 연산 불가", l.type_name(), r.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
     }
 }
 
@@ -1420,7 +1426,7 @@ fn vm_arith(l: VmValue, r: VmValue, span: Span, op: char) -> Result<VmValue, Run
             '-' => a.checked_sub(*b).map(VmValue::Int).ok_or_else(|| overflow_err("-", span)),
             '*' => a.checked_mul(*b).map(VmValue::Int).ok_or_else(|| overflow_err("*", span)),
             '/' => {
-                if *b == 0 { return Err(RuntimeError::new("0으로 나눌 수 없음", span)); }
+                if *b == 0 { return Err(RuntimeError::new("0으로 나눌 수 없음", span).with_kind(crate::runtime::kind::ZERO_DIVISION)); }
                 // checked_rem: i64::MIN % -1 도 오버플로(debug panic) → checked로 방어
                 match a.checked_rem(*b) {
                     Some(0) => a.checked_div(*b).map(VmValue::Int)
@@ -1430,7 +1436,7 @@ fn vm_arith(l: VmValue, r: VmValue, span: Span, op: char) -> Result<VmValue, Run
                 }
             }
             '%' => {
-                if *b == 0 { return Err(RuntimeError::new("나머지: 0으로 나눌 수 없음", span)); }
+                if *b == 0 { return Err(RuntimeError::new("나머지: 0으로 나눌 수 없음", span).with_kind(crate::runtime::kind::ZERO_DIVISION)); }
                 a.checked_rem(*b).map(VmValue::Int).ok_or_else(|| overflow_err("%", span))
             }
             _ => unreachable!(),
@@ -1446,7 +1452,7 @@ fn vm_arith(l: VmValue, r: VmValue, span: Span, op: char) -> Result<VmValue, Run
             }))
         }
         (l, r) => Err(RuntimeError::new(
-            format!("{op}: {} {op} {} 연산 불가", l.type_name(), r.type_name()), span)),
+            format!("{op}: {} {op} {} 연산 불가", l.type_name(), r.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
     }
 }
 
@@ -1484,7 +1490,7 @@ pub(crate) fn vm_cmp(l: &VmValue, r: &VmValue, span: Span) -> Result<Ordering, R
         (VmValue::Float(a), VmValue::Int(b))   => Ok(a.partial_cmp(&(*b as f64)).unwrap_or(Ordering::Equal)),
         (VmValue::Str(a),   VmValue::Str(b))   => Ok(a.cmp(b)),
         (l, r) => Err(RuntimeError::new(
-            format!("비교: {} 와 {} 비교 불가", l.type_name(), r.type_name()), span)),
+            format!("비교: {} 와 {} 비교 불가", l.type_name(), r.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
     }
 }
 
@@ -1495,7 +1501,7 @@ fn vm_index_get(target: VmValue, idx: VmValue, span: Span) -> Result<VmValue, Ru
             let i = if *i < 0 { len + i } else { *i };
             if i < 0 || i >= len {
                 return Err(RuntimeError::new(
-                    format!("인덱스 범위 초과: {i} (길이 {len})"), span));
+                    format!("인덱스 범위 초과: {i} (길이 {len})"), span).with_kind(crate::runtime::kind::INDEX));
             }
             Ok(items[i as usize].clone())
         }
@@ -1505,7 +1511,7 @@ fn vm_index_get(target: VmValue, idx: VmValue, span: Span) -> Result<VmValue, Ru
             let i = if *i < 0 { len + i } else { *i };
             if i < 0 || i >= len {
                 return Err(RuntimeError::new(
-                    format!("문자열 인덱스 범위 초과: {i} (길이 {len})"), span));
+                    format!("문자열 인덱스 범위 초과: {i} (길이 {len})"), span).with_kind(crate::runtime::kind::INDEX));
             }
             Ok(VmValue::Str(chars[i as usize].to_string()))
         }
@@ -1514,16 +1520,16 @@ fn vm_index_get(target: VmValue, idx: VmValue, span: Span) -> Result<VmValue, Ru
             let i = if *i < 0 { len + i } else { *i };
             if i < 0 || i >= len {
                 return Err(RuntimeError::new(
-                    format!("바이트 인덱스 범위 초과: {i} (길이 {len})"), span));
+                    format!("바이트 인덱스 범위 초과: {i} (길이 {len})"), span).with_kind(crate::runtime::kind::INDEX));
             }
             Ok(VmValue::Int(b[i as usize] as i64))
         }
         (VmValue::Map(map), _) => {
             let key = idx.to_string();
-            Ok(map.get(&key).cloned().unwrap_or(VmValue::Nil))
+            map.get(&key).cloned().ok_or_else(|| missing_key(&key, span))
         }
         (target, idx) => Err(RuntimeError::new(
-            format!("인덱스: {} [{}] 지원 안 됨", target.type_name(), idx.type_name()), span)),
+            format!("인덱스: {} [{}] 지원 안 됨", target.type_name(), idx.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
     }
 }
 
@@ -1534,7 +1540,7 @@ fn vm_index_set(container: VmValue, idx: VmValue, val: VmValue, span: Span) -> R
             let i = if *i < 0 { len + i } else { *i };
             if i < 0 || i >= len {
                 return Err(RuntimeError::new(
-                    format!("인덱스 범위 초과: {i} (길이 {len})"), span));
+                    format!("인덱스 범위 초과: {i} (길이 {len})"), span).with_kind(crate::runtime::kind::INDEX));
             }
             Arc::make_mut(&mut items)[i as usize] = val;
             Ok(VmValue::List(items))
@@ -1544,9 +1550,9 @@ fn vm_index_set(container: VmValue, idx: VmValue, val: VmValue, span: Span) -> R
             Ok(VmValue::Map(map))
         }
         (VmValue::Bytes(_), _) => Err(RuntimeError::new(
-            "인덱스 대입: Bytes는 불변 — slice와 +로 새 Bytes를 만드세요", span)),
+            "인덱스 대입: Bytes는 불변 — slice와 +로 새 Bytes를 만드세요", span).with_kind(crate::runtime::kind::TYPE)),
         (container, _) => Err(RuntimeError::new(
-            format!("인덱스 대입: {} 지원 안 됨", container.type_name()), span)),
+            format!("인덱스 대입: {} 지원 안 됨", container.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
     }
 }
 
@@ -1561,7 +1567,7 @@ fn slice_bounds(len: usize, start: &VmValue, end: &VmValue, span: Span) -> Resul
                 Ok(i.clamp(0, len))
             }
             other => Err(RuntimeError::new(
-                format!("슬라이스 경계는 Int 또는 생략이어야 함, {} 발견", other.type_name()), span)),
+                format!("슬라이스 경계는 Int 또는 생략이어야 함, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
         }
     };
     let s = norm(start, 0)?;
@@ -1585,7 +1591,7 @@ fn vm_slice(target: VmValue, start: &VmValue, end: &VmValue, span: Span) -> Resu
             Ok(VmValue::Bytes(Arc::new(b[s..e].to_vec())))
         }
         other => Err(RuntimeError::new(
-            format!("슬라이스: List/Str/Bytes 필요, {} 발견", other.type_name()), span)),
+            format!("슬라이스: List/Str/Bytes 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
     }
 }
 
@@ -1599,7 +1605,7 @@ fn vm_contains(container: &VmValue, needle: &VmValue, span: Span) -> Result<bool
         (VmValue::Bytes(b), VmValue::Int(x)) => Ok(*x >= 0 && *x <= 255 && b.contains(&(*x as u8))),
         (VmValue::Bytes(b), VmValue::Bytes(sub)) => Ok(sub.is_empty() || find_subseq(b, sub).is_some()),
         (c, n) => Err(RuntimeError::new(
-            format!("in: {} 안에서 {} 찾기 지원 안 됨", c.type_name(), n.type_name()), span)),
+            format!("in: {} 안에서 {} 찾기 지원 안 됨", c.type_name(), n.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
     }
 }
 
@@ -1609,7 +1615,41 @@ fn arity_error(func: &CompiledFn, got: usize, span: Span) -> RuntimeError {
     } else {
         format!("{}~{}개", func.min_arity, func.arity)
     };
-    RuntimeError::new(format!("인자 개수 불일치: {need} 기대, {got}개 전달"), span)
+    RuntimeError::new(format!("인자 개수 불일치: {need} 기대, {got}개 전달"), span).with_kind(crate::runtime::kind::ARGUMENT)
+}
+
+/// 없는 맵 키 읽기 (Phase 48: 이전에는 조용히 nil).
+fn missing_key(key: &str, span: Span) -> RuntimeError {
+    RuntimeError::new(
+        format!("맵에 키 '{key}' 없음 (없을 수 있으면 get(m, k, 기본값) 또는 has(m, k))"),
+        span,
+    )
+    .with_kind(crate::runtime::kind::KEY)
+}
+
+/// 내장 런타임 에러 → `catch e`에 바인딩되는 맵 `{kind, message, line, col}` (Phase 48).
+pub(crate) fn error_to_value(e: &RuntimeError) -> VmValue {
+    let mut m = HashMap::new();
+    m.insert("kind".to_string(), VmValue::Str(e.kind.to_string()));
+    m.insert("message".to_string(), VmValue::Str(e.message.clone()));
+    m.insert("line".to_string(), VmValue::Int(e.span.line as i64));
+    m.insert("col".to_string(), VmValue::Int(e.span.col as i64));
+    VmValue::Map(Arc::new(m))
+}
+
+/// `throw e`로 다시 던진 에러 맵이 끝내 잡히지 않으면, 원래 에러(종류·메시지·위치)로 복원한다.
+fn rethrown_error(v: &VmValue) -> Option<RuntimeError> {
+    let VmValue::Map(m) = v else { return None };
+    let (Some(VmValue::Str(k)), Some(VmValue::Str(msg)), Some(VmValue::Int(line)), Some(VmValue::Int(col))) =
+        (m.get("kind"), m.get("message"), m.get("line"), m.get("col"))
+    else {
+        return None;
+    };
+    if m.len() != 4 {
+        return None;
+    }
+    let kind = crate::runtime::kind::ALL.iter().copied().find(|x| *x == k.as_str())?;
+    Some(RuntimeError::new(msg.clone(), Span::new(*line as usize, *col as usize)).with_kind(kind))
 }
 
 fn lock_err(span: Span) -> RuntimeError {
@@ -1673,18 +1713,18 @@ fn set_path(target: &mut VmValue, keys: &[VmValue], val: VmValue, binop: u8, spa
                 match map.get(&k) {
                     Some(old) => combine(old, val)?,
                     None => return Err(RuntimeError::new(
-                        format!("복합 대입: 맵에 키 '{k}' 없음 (get(m, k, 기본값) 사용)"), span)),
+                        format!("복합 대입: 맵에 키 '{k}' 없음 (get(m, k, 기본값) 사용)"), span).with_kind(crate::runtime::kind::KEY)),
                 }
             };
             Arc::make_mut(map).insert(k, new.clone());
             Ok(new)
         }
         (VmValue::Bytes(_), _) => Err(RuntimeError::new(
-            "인덱스 대입: Bytes는 불변 — slice와 +로 새 Bytes를 만드세요", span)),
+            "인덱스 대입: Bytes는 불변 — slice와 +로 새 Bytes를 만드세요", span).with_kind(crate::runtime::kind::TYPE)),
         (VmValue::List(_), key) => Err(RuntimeError::new(
-            format!("인덱스 대입: List 인덱스는 Int여야 함, {} 발견", key.type_name()), span)),
+            format!("인덱스 대입: List 인덱스는 Int여야 함, {} 발견", key.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
         (container, _) => Err(RuntimeError::new(
-            format!("인덱스 대입: {} 지원 안 됨", container.type_name()), span)),
+            format!("인덱스 대입: {} 지원 안 됨", container.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
     }
 }
 
@@ -1692,7 +1732,7 @@ fn list_pos(len: usize, i: i64, span: Span) -> Result<usize, RuntimeError> {
     let len = len as i64;
     let j = if i < 0 { len + i } else { i };
     if j < 0 || j >= len {
-        return Err(RuntimeError::new(format!("인덱스 범위 초과: {j} (길이 {len})"), span));
+        return Err(RuntimeError::new(format!("인덱스 범위 초과: {j} (길이 {len})"), span).with_kind(crate::runtime::kind::INDEX));
     }
     Ok(j as usize)
 }
@@ -1706,25 +1746,25 @@ fn child_mut<'a>(cur: &'a mut VmValue, key: &VmValue, span: Span) -> Result<&'a 
                 Ok(&mut Arc::make_mut(items)[i])
             }
             other => Err(RuntimeError::new(
-                format!("인덱스 대입: List 인덱스는 Int여야 함, {} 발견", other.type_name()), span)),
+                format!("인덱스 대입: List 인덱스는 Int여야 함, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
         },
         VmValue::Map(map) => {
             let k = key.to_string();
             if !map.contains_key(&k) {
-                return Err(RuntimeError::new(format!("인덱스 대입: 맵에 키 '{k}' 없음"), span));
+                return Err(RuntimeError::new(format!("인덱스 대입: 맵에 키 '{k}' 없음"), span).with_kind(crate::runtime::kind::KEY));
             }
             Arc::make_mut(map).get_mut(&k).ok_or_else(|| bad_slot(span))
         }
         other => Err(RuntimeError::new(
-            format!("인덱스 대입: {} 안쪽은 대입할 수 없음", other.type_name()), span)),
+            format!("인덱스 대입: {} 안쪽은 대입할 수 없음", other.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
     }
 }
 
 fn vm_field_get(target: VmValue, name: &str, span: Span) -> Result<VmValue, RuntimeError> {
     match target {
-        VmValue::Map(map) => Ok(map.get(name).cloned().unwrap_or(VmValue::Nil)),
+        VmValue::Map(map) => map.get(name).cloned().ok_or_else(|| missing_key(name, span)),
         other => Err(RuntimeError::new(
-            format!("필드 접근: {} 에 필드 '{}' 없음", other.type_name(), name), span)),
+            format!("필드 접근: {} 에 필드 '{}' 없음", other.type_name(), name), span).with_kind(crate::runtime::kind::TYPE)),
     }
 }
 
@@ -1733,7 +1773,7 @@ pub(crate) fn num_of(name: &str, v: &VmValue, span: Span) -> Result<f64, Runtime
         VmValue::Int(n) => Ok(*n as f64),
         VmValue::Float(n) => Ok(*n),
         other => Err(RuntimeError::new(
-            format!("{name}(): 숫자 필요, {} 발견", other.type_name()), span)),
+            format!("{name}(): 숫자 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::ARGUMENT)),
     }
 }
 
@@ -1741,7 +1781,7 @@ pub(crate) fn int_of(name: &str, v: &VmValue, span: Span) -> Result<i64, Runtime
     match v {
         VmValue::Int(n) => Ok(*n),
         other => Err(RuntimeError::new(
-            format!("{name}(): 정수 필요, {} 발견", other.type_name()), span)),
+            format!("{name}(): 정수 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::ARGUMENT)),
     }
 }
 
@@ -1749,7 +1789,7 @@ pub(crate) fn str_arg(name: &str, v: &VmValue, span: Span) -> Result<String, Run
     match v {
         VmValue::Str(s) => Ok(s.clone()),
         other => Err(RuntimeError::new(
-            format!("{name}(): 문자열 필요, {} 발견", other.type_name()), span)),
+            format!("{name}(): 문자열 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::ARGUMENT)),
     }
 }
 
@@ -1757,7 +1797,7 @@ pub(crate) fn bytes_arg<'a>(name: &str, v: &'a VmValue, span: Span) -> Result<&'
     match v {
         VmValue::Bytes(b) => Ok(b.as_slice()),
         other => Err(RuntimeError::new(
-            format!("{name}(): Bytes 필요, {} 발견", other.type_name()), span)),
+            format!("{name}(): Bytes 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::ARGUMENT)),
     }
 }
 
@@ -1767,7 +1807,7 @@ pub(crate) fn data_arg<'a>(name: &str, v: &'a VmValue, span: Span) -> Result<&'a
         VmValue::Str(s) => Ok(s.as_bytes()),
         VmValue::Bytes(b) => Ok(b.as_slice()),
         other => Err(RuntimeError::new(
-            format!("{name}(): 문자열 또는 Bytes 필요, {} 발견", other.type_name()), span)),
+            format!("{name}(): 문자열 또는 Bytes 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::ARGUMENT)),
     }
 }
 
@@ -1775,7 +1815,7 @@ pub(crate) fn list_arg(name: &str, v: &VmValue, span: Span) -> Result<Vec<VmValu
     match v {
         VmValue::List(items) => Ok((**items).clone()),
         other => Err(RuntimeError::new(
-            format!("{name}(): 리스트 필요, {} 발견", other.type_name()), span)),
+            format!("{name}(): 리스트 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::ARGUMENT)),
     }
 }
 
@@ -1784,14 +1824,14 @@ pub(crate) fn as_float(v: &VmValue, span: Span) -> Result<f64, RuntimeError> {
         VmValue::Int(n)   => Ok(*n as f64),
         VmValue::Float(n) => Ok(*n),
         other => Err(RuntimeError::new(
-            format!("부동소수점 필요, {} 발견", other.type_name()), span)),
+            format!("부동소수점 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::ARGUMENT)),
     }
 }
 
 pub(crate) fn req_args(name: &str, args: &[VmValue], n: usize, span: Span) -> Result<(), RuntimeError> {
     if args.len() != n {
         Err(RuntimeError::new(
-            format!("{name}(): {n}개 인자 필요, {}개 전달", args.len()), span))
+            format!("{name}(): {n}개 인자 필요, {}개 전달", args.len()), span).with_kind(crate::runtime::kind::ARGUMENT))
     } else {
         Ok(())
     }
@@ -1802,7 +1842,7 @@ pub(crate) fn as_int(v: &VmValue, span: Span) -> Result<i64, RuntimeError> {
         VmValue::Int(n)   => Ok(*n),
         VmValue::Float(n) => Ok(*n as i64),
         other => Err(RuntimeError::new(
-            format!("정수 필요, {} 발견", other.type_name()), span)),
+            format!("정수 필요, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::ARGUMENT)),
     }
 }
 
@@ -1964,7 +2004,7 @@ pub(crate) fn to_runtime(v: &VmValue, span: Span) -> Result<crate::runtime::Valu
         other => return Err(RuntimeError::new(
             format!("send(): {}은(는) 채널로 보낼 수 없음 \
                      (데이터 값만 전송 가능: int/float/bool/str/bytes/nil/list/map)", other.type_name()),
-            span)),
+            span).with_kind(crate::runtime::kind::VALUE)),
     })
 }
 

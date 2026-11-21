@@ -558,3 +558,17 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              발견(미수정): print가 vm.output Vec에도 모든 줄을 누적 — 장시간 서버에서 메모리 증가 (테스트용 캡처 잔재).
              문서: SPEC 5장(동등 비교)·13장 신설, README 명령/표, llms.txt(123개), TUTORIAL 11.6, VS Code 빌트인 목록.
              회귀: fmt 단위 +7, cli_test +2, vm_test +2, 스냅샷 +1줄. (tests: 385 green, clippy 0)
+✅ Phase 48 — 에러 모델 (사용자 결정 2·3·4, 헌법 7조 개정) — v0.35.0  [호환성 깨짐]
+             (결정 2) 잡힌 내장 에러 = 맵 {kind, message, line, col} (이전: 메시지 문자열). throw한 값은 그대로.
+               RuntimeError.kind(&'static str) + runtime::kind 상수 11종(zero_division overflow index key type
+               argument value io assertion import error — 대외 계약). VM 핵심 사이트 51곳 명시 태그,
+               빌트인 에러는 stdlib::categorize_error가 분야(이름 접두사)로 분류(인자 헬퍼는 argument 우선).
+               spawn/parallel_map을 건너도 kind 유지. catch에서 throw e로 다시 던진 에러 맵이 끝내 안 잡히면
+               원래 메시지·위치·kind로 복원(rethrown_error). 새 값 타입은 만들지 않음(작은 표면 — 거절 기록).
+               주의: print(e)는 맵 전체를 출력 — 메시지는 e.message.
+             (결정 3) 없는 맵 키 읽기(m[k], m.k) = key 에러 (이전: 조용히 nil). get/has/in으로 명시.
+             (결정 4) C FFI 보류 — PHILOSOPHY 거절의 기록 + VISION 부록.
+             헌법 7조 개정: "없는 맵 키 읽기도 잡히는 에러" 명시.
+             (발견·수정) examples 중 기대 출력 주석이 있는데 테스트에 빠진 6개(error_handling·type_hints·
+               json_demo·regex_demo·concurrency_demo·event_loop)를 vm_test에 추가 — 전부 통과.
+             문서: SPEC 8.1~8.3, README, llms.txt, TUTORIAL 8장. 회귀: vm_test +4(+예제 6). (tests: 395 green, clippy 0)

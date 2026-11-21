@@ -236,3 +236,5 @@ bang의 진짜 발명은 '빼기'다. 아래는 요청이 와도 영원히 추�
 
 - Set 내장 타입 — 코어 값 표면 확대 — 리스트 기반 union/intersect/difference로 대체 (Phase 24)
 - 코루틴 의존성(corosensei) 도입 — 자급 코어 원칙 — 연결 단위 상태머신을 런타임에 두는 B안 선택 (Phase 35)
+- C FFI — 자급 코어 원칙 — proc_run으로 외부 프로그램 호출, 수요 생기면 재검토 (Phase 48, 보류)
+- 에러 전용 값 타입 — 작은 표면 — catch e는 {kind, message, line, col} 맵 (Phase 48)

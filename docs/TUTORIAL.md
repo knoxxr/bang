@@ -289,6 +289,20 @@ try {
 }
 ```
 
+내장 에러(0 나눗셈, 없는 키 등)를 잡으면 `e`는 `{kind, message, line, col}` 맵이다.
+`kind`로 종류를 구별할 수 있다:
+
+```
+let scores = {"민수": 90}
+try {
+    print(scores["영희"])
+} catch e {
+    print(e.kind)          // key
+    print(e.message)       // 맵에 키 '영희' 없음 (없을 수 있으면 get(m, k, 기본값) 또는 has(m, k))
+}
+print(get(scores, "영희", 0))   // 0 — 없을 수 있는 키는 get으로
+```
+
 ---
 
 ## 9. 타입 힌트 (선택적)

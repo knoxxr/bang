@@ -59,4 +59,4 @@ write_file("b.bin", bytes_from_hex("0001ff"))
 print(file_read_bytes("b.bin"))
 // 단언
 assert_eq([1, {"a": "x"}], [1, {"a": "x"}])
-try { assert_eq("1", 1) } catch e { print(e) }
+try { assert_eq("1", 1) } catch e { print(e.message) }

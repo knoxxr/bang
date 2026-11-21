@@ -287,11 +287,11 @@ try {
     print("잡음: " + e)
 }
 
-// 내장 런타임 에러(0 나눗셈 등)도 잡힌다 — 메시지가 문자열로 바인딩
+// 내장 런타임 에러(0 나눗셈 등)도 잡힌다 — {kind, message, line, col} 맵
 try {
     let x = 1 / 0
 } catch e {
-    print(e)              // "0으로 나눌 수 없음"
+    print(e.message)      // "0으로 나눌 수 없음" (e.kind == "zero_division")
 }
 
 // 중첩 함수에서 던진 예외가 호출자의 try로 전파
@@ -317,7 +317,9 @@ try {
 
 - `throw <식>`은 문자열·맵·숫자 등 **임의의 값**을 던지며, 가장 가까운 바깥
   `try`의 `catch`로 (호출 스택을 가로질러) 전파된다.
-- 내장 런타임 에러도 `catch`로 잡히며, catch 변수엔 에러 **메시지 문자열**이 바인딩된다.
+- 내장 런타임 에러도 `catch`로 잡히며, catch 변수엔 맵 **`{kind, message, line, col}`**이
+  바인딩된다 (`e.kind`로 종류 구별 — `zero_division`/`index`/`key`/`type`/`io` 등, SPEC 8.2).
+- 맵에 없는 키를 읽으면 `key` 에러다 — 없을 수 있는 키는 `get(m, k, 기본값)`/`has(m, k)`.
 - `catch` 안에서 다시 `throw`하면 더 바깥 `try`로 전파된다(re-throw).
 - 잡히지 않은 예외는 프로그램을 종료시킨다.
 - 실험적 AOT 컴파일(`bang compile`)에서는 지원하지 않는다(컴파일 에러).
@@ -339,7 +341,7 @@ print(area(3, 4))        // 12
 try {
     let n: int = "oops"
 } catch e {
-    print(e)             // "타입 불일치: int 기대, Str 받음"
+    print(e.message)     // "타입 불일치: int 기대, Str 받음"
 }
 
 // any 는 모두 허용, 힌트 없는 코드는 완전 동적

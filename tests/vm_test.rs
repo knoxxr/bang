@@ -74,6 +74,13 @@ fn diff_file(name: &str) {
 #[test] fn test_vm_spawn_basic()    { diff_file("spawn_basic.bang"); }
 #[test] fn test_vm_parallel_block() { diff_file("parallel_block.bang"); }
 #[test] fn test_vm_channels()       { diff_file("channels.bang"); }
+// 기대 출력 주석이 있는데 빠져 있던 예제들 (Phase 48에서 추가)
+#[test] fn test_vm_error_handling()  { diff_file("error_handling.bang"); }
+#[test] fn test_vm_type_hints()      { diff_file("type_hints.bang"); }
+#[test] fn test_vm_json_demo()       { diff_file("json_demo.bang"); }
+#[test] fn test_vm_regex_demo()      { diff_file("regex_demo.bang"); }
+#[test] fn test_vm_concurrency_demo() { diff_file("concurrency_demo.bang"); }
+#[test] fn test_vm_event_loop()      { diff_file("event_loop.bang"); }
 
 // ============================================================================
 // VM 단위 테스트
@@ -837,7 +844,7 @@ fn test_vm_path_assign_keeps_value_semantics() {
 
 #[test]
 fn test_vm_path_assign_errors_leave_value_intact() {
-    let src = "let m = {\"a\": [1]}\ntry { m[\"zz\"][0] = 1 } catch e { print(e) }\ntry { m.a[5] = 1 } catch e { print(e) }\ntry { m.a[\"x\"] = 1 } catch e { print(e) }\nprint(m)";
+    let src = "let m = {\"a\": [1]}\ntry { m[\"zz\"][0] = 1 } catch e { print(e.message) }\ntry { m.a[5] = 1 } catch e { print(e.message) }\ntry { m.a[\"x\"] = 1 } catch e { print(e.message) }\nprint(m)";
     assert_eq!(
         run_vm(src),
         vec![
@@ -885,8 +892,8 @@ fn test_vm_parallel_map_is_parallel() {
 
 #[test]
 fn test_vm_parallel_map_order_errors_and_builtins() {
-    let src = "print(parallel_map(range(1000), fn(x) { return x * 2 })[999])\nprint(parallel_map([1, 2], str))\nprint(parallel_map([], fn(x) { return x }))\ntry {\n parallel_map([1, 0, 2], fn(x) { return 10 / x })\n} catch e {\n print(e)\n}";
-    assert_eq!(run_vm(src), vec!["1998", "[1, 2]", "[]", "0으로 나눌 수 없음"]);
+    let src = "print(parallel_map(range(1000), fn(x) { return x * 2 })[999])\nprint(parallel_map([1, 2], str))\nprint(parallel_map([], fn(x) { return x }))\ntry {\n parallel_map([1, 0, 2], fn(x) { return 10 / x })\n} catch e {\n print(e.kind, e.message)\n}";
+    assert_eq!(run_vm(src), vec!["1998", "[1, 2]", "[]", "zero_division 0으로 나눌 수 없음"]);
 }
 
 // ============================================================================
@@ -901,7 +908,7 @@ fn test_vm_compound_assign() {
 
 #[test]
 fn test_vm_compound_assign_path_evaluates_key_once() {
-    let src = "let calls = 0\nfn k() {\n calls += 1\n return \"a\"\n}\nlet m = {\"a\": 1, \"b\": [1, 2]}\nm[k()] += 10\nm.b[-1] *= 7\nprint(m)\nprint(calls)\ntry { m[\"zz\"] += 1 } catch e { print(e) }\nprint(m)";
+    let src = "let calls = 0\nfn k() {\n calls += 1\n return \"a\"\n}\nlet m = {\"a\": 1, \"b\": [1, 2]}\nm[k()] += 10\nm.b[-1] *= 7\nprint(m)\nprint(calls)\ntry { m[\"zz\"] += 1 } catch e { print(e.message) }\nprint(m)";
     assert_eq!(
         run_vm(src),
         vec!["{a: 11, b: [1, 14]}", "1", "복합 대입: 맵에 키 'zz' 없음 (get(m, k, 기본값) 사용)", "{a: 11, b: [1, 14]}"]
@@ -910,7 +917,7 @@ fn test_vm_compound_assign_path_evaluates_key_once() {
 
 #[test]
 fn test_vm_in_operator() {
-    let src = "let m = {\"a\": 1}\nprint(2 in [1, 2])\nprint(5 not in [1, 2])\nprint(\"a\" in m)\nprint(\"z\" not in m)\nprint(\"ell\" in \"hello\")\nprint([1] in [[1], 2])\nprint(255 in bytes_from_hex(\"00ff\"))\ntry { print(1 in 5) } catch e { print(e) }";
+    let src = "let m = {\"a\": 1}\nprint(2 in [1, 2])\nprint(5 not in [1, 2])\nprint(\"a\" in m)\nprint(\"z\" not in m)\nprint(\"ell\" in \"hello\")\nprint([1] in [[1], 2])\nprint(255 in bytes_from_hex(\"00ff\"))\ntry { print(1 in 5) } catch e { print(e.message) }";
     assert_eq!(
         run_vm(src),
         vec!["true", "true", "true", "true", "true", "true", "true", "in: Int 안에서 Int 찾기 지원 안 됨"]
@@ -919,7 +926,7 @@ fn test_vm_in_operator() {
 
 #[test]
 fn test_vm_for_over_map_str_bytes_and_pairs() {
-    let src = "for k in {\"b\": 2, \"a\": 1} { print(k) }\nfor k, v in {\"b\": 2, \"a\": 1} { print(k + str(v)) }\nfor c in \"한글\" { print(c) }\nfor x in bytes_from_hex(\"0aff\") { print(x) }\nfor i, v in enumerate([\"x\", \"y\"]) { print(str(i) + v) }\ntry {\n for p, q in [[1, 2, 3]] { print(p + q) }\n} catch e { print(e) }";
+    let src = "for k in {\"b\": 2, \"a\": 1} { print(k) }\nfor k, v in {\"b\": 2, \"a\": 1} { print(k + str(v)) }\nfor c in \"한글\" { print(c) }\nfor x in bytes_from_hex(\"0aff\") { print(x) }\nfor i, v in enumerate([\"x\", \"y\"]) { print(str(i) + v) }\ntry {\n for p, q in [[1, 2, 3]] { print(p + q) }\n} catch e { print(e.message) }";
     assert_eq!(
         run_vm(src),
         vec!["a", "b", "a1", "b2", "한", "글", "10", "255", "0x", "1y", "분해: 값 2개 기대, 3개 발견"]
@@ -928,7 +935,7 @@ fn test_vm_for_over_map_str_bytes_and_pairs() {
 
 #[test]
 fn test_vm_slice_syntax() {
-    let src = "let a = [0, 1, 2, 3, 4, 5]\nprint(a[1:3])\nprint(a[:2])\nprint(a[4:])\nprint(a[-2:])\nprint(a[:-4])\nprint(a[:])\nprint(a[10:20])\nprint(a[4:1])\nprint(\"héllo\"[1:3])\nprint(bytes_to_hex(bytes_from_hex(\"0102ff\")[1:]))\ntry { print(a[\"x\":]) } catch e { print(e) }";
+    let src = "let a = [0, 1, 2, 3, 4, 5]\nprint(a[1:3])\nprint(a[:2])\nprint(a[4:])\nprint(a[-2:])\nprint(a[:-4])\nprint(a[:])\nprint(a[10:20])\nprint(a[4:1])\nprint(\"héllo\"[1:3])\nprint(bytes_to_hex(bytes_from_hex(\"0102ff\")[1:]))\ntry { print(a[\"x\":]) } catch e { print(e.message) }";
     assert_eq!(
         run_vm(src),
         vec!["[1, 2]", "[0, 1]", "[4, 5]", "[4, 5]", "[0, 1]", "[0, 1, 2, 3, 4, 5]", "[]", "[]", "él", "02ff",
@@ -956,13 +963,13 @@ fn test_vm_default_params() {
 #[test]
 fn test_vm_default_params_runtime_arity_error() {
     // 정적 검사를 피하는 간접 호출 → 런타임 에러 메시지에 범위 표시
-    let src = "let fs = [fn(a, b = 1) { return a + b }]\ntry { fs[0]() } catch e { print(e) }\ntry { fs[0](1, 2, 3) } catch e { print(e) }";
+    let src = "let fs = [fn(a, b = 1) { return a + b }]\ntry { fs[0]() } catch e { print(e.message) }\ntry { fs[0](1, 2, 3) } catch e { print(e.message) }";
     assert_eq!(run_vm(src), vec!["인자 개수 불일치: 1~2개 기대, 0개 전달", "인자 개수 불일치: 1~2개 기대, 3개 전달"]);
 }
 
 #[test]
 fn test_vm_let_unpack() {
-    let src = "let [a, b] = [1, 2]\nprint(a + b)\nfn pair() { return [\"x\", 3] }\nfn use_pair() {\n let [name, n] = pair()\n return name + str(n)\n}\nprint(use_pair())\ntry {\n let [p, q] = [1, 2, 3]\n print(p + q)\n} catch e { print(e) }\ntry {\n let [p] = \"ab\"\n print(p)\n} catch e { print(e) }";
+    let src = "let [a, b] = [1, 2]\nprint(a + b)\nfn pair() { return [\"x\", 3] }\nfn use_pair() {\n let [name, n] = pair()\n return name + str(n)\n}\nprint(use_pair())\ntry {\n let [p, q] = [1, 2, 3]\n print(p + q)\n} catch e { print(e.message) }\ntry {\n let [p] = \"ab\"\n print(p)\n} catch e { print(e.message) }";
     assert_eq!(run_vm(src), vec!["3", "x3", "분해: 값 2개 기대, 3개 발견", "분해: List 필요, Str 발견"]);
 }
 
@@ -993,7 +1000,7 @@ fn test_vm_method_call_syntax() {
 
 #[test]
 fn test_vm_method_call_map_member_wins_and_errors() {
-    let src = "let obj = {\"push\": fn(x) { return x * 100 }, \"n\": 1}\nprint(obj.push(2))\nobj.push(3)\nlet xs = [1]\ntry { xs.push(2) } catch e { print(e) }\nprint(xs)\ntry { print([1].frob()) } catch e { print(e) }\nlet f = spawn \"future\".upper()\nprint(f)";
+    let src = "let obj = {\"push\": fn(x) { return x * 100 }, \"n\": 1}\nprint(obj.push(2))\nobj.push(3)\nlet xs = [1]\ntry { xs.push(2) } catch e { print(e.message) }\nprint(xs)\ntry { print([1].frob()) } catch e { print(e.message) }\nlet f = spawn \"future\".upper()\nprint(f)";
     assert_eq!(
         run_vm(src),
         vec![
@@ -1015,6 +1022,58 @@ fn test_vm_map_equality_is_structural() {
 
 #[test]
 fn test_vm_assert_eq() {
-    let src = "assert_eq([1, {\"a\": \"x\"}], [1, {\"a\": \"x\"}])\ntry { assert_eq(\"1\", 1) } catch e { print(e) }\ntry { assert_eq([1, 2], [1]) } catch e { print(e) }";
+    let src = "assert_eq([1, {\"a\": \"x\"}], [1, {\"a\": \"x\"}])\ntry { assert_eq(\"1\", 1) } catch e { print(e.message) }\ntry { assert_eq([1, 2], [1]) } catch e { print(e.message) }";
     assert_eq!(run_vm(src), vec!["assert_eq 실패: 기대 1, 실제 \"1\"", "assert_eq 실패: 기대 [1], 실제 [1, 2]"]);
+}
+
+// ============================================================================
+// Phase 48 — 에러 모델: catch e = {kind, message, line, col}, 없는 키는 에러
+// ============================================================================
+
+#[test]
+fn test_vm_caught_builtin_error_is_map() {
+    let src = "try {\n let x = 1 / 0\n} catch e {\n print(e.kind)\n print(e.message)\n print(e.line, e.col)\n print(type(e))\n}\ntry { throw \"사용자\" } catch e { print(e) }\ntry { throw {\"code\": 7} } catch e { print(e.code) }";
+    assert_eq!(run_vm(src), vec!["zero_division", "0으로 나눌 수 없음", "2 10", "Map", "사용자", "7"]);
+}
+
+#[test]
+fn test_vm_error_kinds() {
+    let cases = [
+        ("[1][5]", "index"),
+        ("{\"a\": 1}[\"b\"]", "key"),
+        ("{\"a\": 1}.b", "key"),
+        ("1 + \"a\"", "type"),
+        ("9223372036854775807 + 1", "overflow"),
+        ("10 % 0", "zero_division"),
+        ("len(1, 2)", "argument"),
+        ("json_parse(\"{bad\")", "value"),
+        ("read_file(\"/없는/경로/x.txt\")", "io"),
+        ("assert(false)", "assertion"),
+        ("5()", "type"),
+    ];
+    for (expr, want) in cases {
+        let src = format!("let f = fn() {{ return {expr} }}\ntry {{ f() }} catch e {{ print(e.kind) }}");
+        assert_eq!(run_vm(&src), vec![want.to_string()], "{expr}");
+    }
+}
+
+#[test]
+fn test_vm_missing_key_is_error_and_get_has_still_work() {
+    let src = "let m = {\"a\": 1}\nprint(get(m, \"b\", 0))\nprint(has(m, \"b\"))\nprint(\"b\" in m)\ntry { print(m[\"b\"]) } catch e { print(e.message) }\ntry { print(m.b) } catch e { print(e.kind) }\nprint(m.a)";
+    assert_eq!(
+        run_vm(src),
+        vec!["0", "false", "false", "맵에 키 'b' 없음 (없을 수 있으면 get(m, k, 기본값) 또는 has(m, k))", "key", "1"]
+    );
+}
+
+#[test]
+fn test_vm_rethrown_builtin_error_keeps_original() {
+    // catch 후 throw e로 다시 던진 내장 에러가 끝내 잡히지 않으면 원래 메시지·위치·종류로 보고
+    let prog = lex_parse("fn f() {\n try {\n  return [1][9]\n } catch e {\n  throw e\n }\n}\nf()");
+    let out = compile(&prog).expect("컴파일");
+    let mut vm = Vm::new(out.global_count as usize, Arc::new(Mutex::new(Vec::new())));
+    let err = vm.run(out.main_fn).expect_err("잡히지 않아야 함");
+    assert_eq!(err.kind, "index");
+    assert!(err.message.contains("인덱스 범위 초과"), "{}", err.message);
+    assert_eq!((err.span.line, err.span.col), (3, 10));
 }

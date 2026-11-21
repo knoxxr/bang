@@ -191,6 +191,35 @@ pub fn builtin_name(idx: usize) -> Option<&'static str> {
     BUILTINS.get(idx).map(|b| b.name)
 }
 
+/// 빌트인이 낸 에러의 종류가 아직 정해지지 않았으면(`error`) 빌트인 분야로 정한다 (Phase 48).
+/// 인자 검사 헬퍼(req_args·str_arg 등)는 이미 `argument`를 붙이므로 그대로 둔다.
+pub fn categorize_error(name: &str, e: RuntimeError) -> RuntimeError {
+    use crate::runtime::kind;
+    if e.kind != kind::ERROR {
+        return e;
+    }
+    let k = if name.starts_with("file_") || name.starts_with("dir_") || name.starts_with("tcp_")
+        || name.starts_with("proc_") || name.starts_with("env_")
+        || matches!(name, "read_file" | "write_file" | "list_dir" | "is_dir" | "file_exists"
+            | "http_get" | "serve_event" | "input")
+    {
+        kind::IO
+    } else if name.starts_with("json_") || name.starts_with("regex_") || name.starts_with("bytes_")
+        || matches!(name, "int" | "float" | "chr" | "ord")
+    {
+        kind::VALUE
+    } else if matches!(name, "assert" | "assert_eq") {
+        kind::ASSERTION
+    } else if name == "import" {
+        kind::IMPORT
+    } else if e.message.contains(" 필요, ") || e.message.contains("인자") {
+        kind::ARGUMENT
+    } else {
+        kind::ERROR
+    };
+    e.with_kind(k)
+}
+
 /// 번호 → 인자 수 (`Some(None)` = 가변 인자, `None` = 없는 번호).
 pub fn builtin_arity(idx: usize) -> Option<Option<usize>> {
     BUILTINS.get(idx).map(|b| b.arity)
