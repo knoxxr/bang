@@ -1217,3 +1217,24 @@ fn test_vm_future_result_isolated_per_task_and_field_autowait() {
         + "let f = spawn make()\nfn work(obj) {\n for _ in range(500) { obj.inc() }\n return obj.get()\n}\nlet a = spawn work(f)\nlet b = spawn work(f)\nprint(a, b, f.get())\nlet g = spawn (fn() { return {\"k\": [7]} })()\nprint(g.k[0], g[\"k\"])";
     assert_eq!(run_vm(&src), vec!["500 500 0", "7 [7]"]);
 }
+
+// ============================================================================
+// Phase 54 — print 출력 대상: Stdout(쌓지 않음) / Capture(테스트용)
+// ============================================================================
+
+#[test]
+fn test_vm_capture_output_includes_spawned_tasks() {
+    let src = "fn hello(n) { print(f\"작업 {n}\") }\nparallel {\n spawn hello(1)\n}\nprint(\"끝\")\nlet r = parallel_map([2], fn(n) {\n print(f\"맵 {n}\")\n return n\n})";
+    assert_eq!(run_vm(src), vec!["작업 1", "끝", "맵 2"]);
+}
+
+#[test]
+fn test_vm_stdout_mode_keeps_no_buffer() {
+    // Stdout 모드는 버퍼 자체가 없다 — 오래 도는 프로그램의 메모리가 출력량에 비례해 늘지 않는다
+    let out = bang::vm::Output::Stdout;
+    assert!(matches!(out, bang::vm::Output::Stdout));
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let cap: bang::vm::Output = buf.clone().into();
+    cap.write_line("x".into()).unwrap();
+    assert_eq!(*buf.lock().unwrap(), vec!["x".to_string()]);
+}

@@ -15,8 +15,9 @@ pub(crate) fn b_print(
         parts.push(format!("{resolved}"));
     }
     let line = parts.join(" ");
-    vm.output.lock().unwrap().push(line.clone());
-    println!("{line}");
+    vm.output
+        .write_line(line)
+        .map_err(|m| RuntimeError::new(format!("print(): {m}"), span).with_kind(crate::runtime::kind::IO))?;
     Ok(VmValue::Nil)
 }
 

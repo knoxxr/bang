@@ -203,8 +203,7 @@ fn run_vm_program(prog: &bang::ast::Program, source: &str) {
             process::exit(1);
         }
     };
-    let output = Arc::new(Mutex::new(Vec::<String>::new()));
-    let mut vm = bang::vm::Vm::new(out.global_count as usize, output);
+    let mut vm = bang::vm::Vm::new(out.global_count as usize, bang::vm::Output::Stdout);
     if let Err(e) = vm.run(out.main_fn) {
         eprintln!("{}", format_with_context(&e.to_string(), e.span, source));
         process::exit(1);
@@ -346,7 +345,7 @@ fn cmd_repl() {
     // VM 기반 REPL: 전역(name→slot 맵 + 값 배열)을 스니펫 간 공유해 상태를 유지한다.
     // try/catch·import·타입힌트·JSON/정규식/tcp 등 VM 전용 기능이 REPL에서도 동작.
     let shared_globals: Arc<Mutex<Vec<bang::vm::VmValue>>> = Arc::new(Mutex::new(Vec::new()));
-    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let output = bang::vm::Output::Stdout;
     let mut globals_map: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
 
     let stdin = io::stdin();
@@ -776,8 +775,7 @@ fn cmd_test(args: &[String]) {
                 continue;
             }
         };
-        let output = Arc::new(Mutex::new(Vec::<String>::new()));
-        let mut vm = bang::vm::Vm::new(out.global_count as usize, output);
+        let mut vm = bang::vm::Vm::new(out.global_count as usize, bang::vm::Output::Stdout);
         if let Err(e) = vm.run(out.main_fn) {
             println!("  오류  최상위 실행 실패: {e}");
             broken_files += 1;

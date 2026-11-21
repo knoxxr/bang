@@ -360,7 +360,8 @@ pub struct Vm {
     /// 루트(메인) 모듈의 전역 배열. 실행 중 전역 접근은 현재 프레임
     /// 클로저의 globals를 쓰며, 이 필드는 루트 클로저 globals와 같은 Arc다.
     pub globals: Arc<Mutex<Vec<VmValue>>>,
-    pub output: Arc<Mutex<Vec<String>>>,
+    /// print의 출력 대상 (Phase 54). spawn한 작업은 부모의 대상을 물려받는다.
+    pub output: Output,
     /// 구조적 동시성: spawn 스코프 스택.
     /// 각 항목은 이 스코프 안에서 spawn된 Future 목록.
     /// parallel {} 진입 시 push, 종료 시 pop + join.
@@ -374,8 +375,49 @@ pub struct Vm {
     locals_pool: Vec<Arc<Mutex<Vec<VmValue>>>>,
 }
 
+/// print의 출력 대상 (Phase 54).
+///
+/// 이전에는 print가 화면에 쓰면서 같은 줄을 VM 안의 목록에도 쌓았다. 그 목록은 테스트만 읽으므로
+/// 실제 실행에서는 오래 도는 서버의 메모리가 끝없이 늘었고, 모든 스레드의 print가 한 잠금을 두고 경쟁했다.
+#[derive(Clone)]
+pub enum Output {
+    /// 표준 출력에 바로 쓴다 (쌓지 않음) — bang run / REPL / bang test
+    Stdout,
+    /// 줄을 목록에 모으고 화면에는 쓰지 않는다 — 테스트·내장용
+    Capture(Arc<Mutex<Vec<String>>>),
+}
+
+impl From<Arc<Mutex<Vec<String>>>> for Output {
+    fn from(buf: Arc<Mutex<Vec<String>>>) -> Self {
+        Output::Capture(buf)
+    }
+}
+
+impl Output {
+    /// 한 줄 출력. 잠금 실패(다른 스레드 패닉)는 출력 에러로 돌려준다.
+    pub fn write_line(&self, line: String) -> Result<(), String> {
+        match self {
+            Output::Stdout => {
+                use std::io::Write;
+                let mut out = std::io::stdout().lock();
+                match writeln!(out, "{line}") {
+                    Ok(()) => Ok(()),
+                    // 읽는 쪽이 파이프를 닫음(bang x | head): Unix 관례대로 조용히 끝낸다 (128 + SIGPIPE)
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(141),
+                    Err(e) => Err(format!("표준 출력 쓰기 실패: {e}")),
+                }
+            }
+            Output::Capture(buf) => {
+                buf.lock().map_err(|_| "출력 버퍼 잠금 실패".to_string())?.push(line);
+                Ok(())
+            }
+        }
+    }
+}
+
 impl Vm {
-    pub fn new(global_count: usize, output: Arc<Mutex<Vec<String>>>) -> Self {
+    pub fn new(global_count: usize, output: impl Into<Output>) -> Self {
+        let output = output.into();
         Self {
             stack: Vec::with_capacity(256),
             frames: Vec::with_capacity(64),
@@ -392,8 +434,9 @@ impl Vm {
     /// 호출자가 실행 전에 전역 배열 크기를 global_count 이상으로 맞춰야 한다.
     pub fn with_globals(
         globals: Arc<Mutex<Vec<VmValue>>>,
-        output: Arc<Mutex<Vec<String>>>,
+        output: impl Into<Output>,
     ) -> Self {
+        let output = output.into();
         Self {
             stack: Vec::with_capacity(256),
             frames: Vec::with_capacity(64),
@@ -459,7 +502,7 @@ impl Vm {
     /// spawned 클로저를 서브-VM에서 실행하고 결과 반환.
     /// std::thread::spawn 클로저 안에서 호출된다.
     pub fn run_spawned(
-        output: Arc<Mutex<Vec<String>>>,
+        output: Output,
         closure: Arc<VmClosure>,
         args: Vec<VmValue>,
     ) -> Result<VmValue, RuntimeError> {

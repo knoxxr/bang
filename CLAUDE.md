@@ -627,3 +627,11 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                미해결 비용: 끝나지 않은 Future가 많이 든 전역 리스트를 두고 spawn을 반복하면 매번 훑음
                (2000개 누적 시 90ms → 150ms). 끝났고 클로저 없는 Future는 재포장하지 않음.
              (tests: 416 green, clippy 0).
+✅ Phase 54 — print 출력 대상 분리 (메모리 누적 제거) — v0.40.0
+             vm::Output { Stdout, Capture(Arc<Mutex<Vec<String>>>) }. 이전: print가 println + VM 목록에 누적(테스트만 읽음)
+               → 서버 메모리 무한 증가, 모든 스레드 print가 한 잠금 경쟁, 잠금 unwrap(규약 위반).
+             CLI(run/REPL/test)는 Stdout(버퍼 없음), 테스트·내장은 Capture(화면에 안 씀). Vm::new/with_globals는
+               impl Into<Output>(Arc를 넘기던 기존 테스트 호환), run_spawned는 Output, spawn 작업은 부모 대상 상속.
+             실측: 100만 줄 출력 최대 메모리 72MB → 12MB (출력량과 무관해짐), 시간 동일.
+             파이프 닫힘(bang x | head): 이전 panic 메시지 → 조용히 exit 141(128+SIGPIPE). 그 밖 쓰기 실패는 io 에러.
+             문서: SPEC 10장. 회귀: vm_test +2, cli_test +1(unix 파이프). (tests: 419 green, clippy 0)

@@ -212,3 +212,26 @@ fn test_bang_fmt_check_and_write() {
     assert_eq!(fs::read_to_string(&bad).unwrap(), "let s = \"open\n");
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// 읽는 쪽이 파이프를 닫으면(bang x | head) 에러 메시지 없이 141(128+SIGPIPE)로 조용히 끝난다.
+#[cfg(unix)]
+#[test]
+fn test_broken_pipe_exits_quietly() {
+    use std::io::{BufRead, BufReader};
+    let script = temp_bang("for i in range(1000000) { print(i) }\n");
+    let mut child = Command::new(BANG)
+        .arg(&script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("실행 실패");
+    {
+        let stdout = child.stdout.take().unwrap();
+        let mut first = String::new();
+        BufReader::new(stdout).read_line(&mut first).unwrap();
+        assert_eq!(first, "0\n");
+    } // 여기서 파이프가 닫힘
+    let out = child.wait_with_output().expect("대기 실패");
+    assert_eq!(out.status.code(), Some(141));
+    assert!(out.stderr.is_empty(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
