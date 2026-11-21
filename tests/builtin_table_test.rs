@@ -143,6 +143,7 @@ const GOLDEN: &[(usize, &str, Option<usize>)] = &[
     (131, "csv_stringify", Some(1)),
     (132, "http_post", None),
     (133, "http_request", None),
+    (134, "idiv", Some(2)),
 ];
 
 #[test]

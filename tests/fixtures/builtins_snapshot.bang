@@ -64,3 +64,4 @@ print(format("{:>6.2f}|{:,}|{}", 3.14159, 1234567, [1]))
 // 경로·CSV (Phase 52) — 구분자에 의존하지 않는 것만
 print(path_basename("a/b.tar.gz"), path_ext("a/b.tar.gz"), path_dirname("x") == "")
 print(csv_parse("a,\"b,c\"\n1,2\n"), csv_stringify([["x", "y,z"], [1, nil]]))
+print(idiv(7, 2), idiv(-7, 2), idiv(7.5, 2), 7 / 2, 8 / 2)

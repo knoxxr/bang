@@ -186,6 +186,7 @@ pub static BUILTINS: &[Builtin] = &[
     Builtin { name: "csv_stringify", arity: Some(1), func: csv::b_csv_stringify }, // 131
     Builtin { name: "http_post", arity: None, func: net::b_http_post }, // 132
     Builtin { name: "http_request", arity: None, func: net::b_http_request }, // 133
+    Builtin { name: "idiv", arity: Some(2), func: math::b_idiv }, // 134
 ];
 
 /// 이름 → 번호.

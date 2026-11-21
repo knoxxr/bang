@@ -244,7 +244,7 @@ impl JsonParser<'_> {
             }
             self.pos += 1;
             let val = self.parse_value()?;
-            map.insert(key, val);
+            map.insert(encode_str_key(&key), val);
             self.skip_ws();
             match self.peek() {
                 Some(',') => {
@@ -272,7 +272,7 @@ pub(crate) fn json_stringify(
             out.push_str(&n.to_string());
         }
         VmValue::Float(n) => {
-            out.push_str(&n.to_string());
+            out.push_str(&fmt_float(*n));
         }
         VmValue::Bool(b) => {
             out.push_str(if *b { "true" } else { "false" });
@@ -298,7 +298,7 @@ pub(crate) fn json_stringify(
                 if i > 0 {
                     out.push(',');
                 }
-                json_escape(k, out);
+                json_escape(&key_display(k), out);
                 out.push(':');
                 json_stringify(val, out, span)?;
             }

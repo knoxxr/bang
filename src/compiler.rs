@@ -754,7 +754,11 @@ impl Compiler {
             ExprKind::Map(entries) => {
                 let count = entries.len() as u16;
                 for (key, val) in entries {
-                    self.emit_const(VmValue::Str(key.as_str().to_string()), sp);
+                    let k = match key {
+                        MapKey::Int(n) => VmValue::Int(*n),
+                        other => VmValue::Str(other.as_str()),
+                    };
+                    self.emit_const(k, sp);
                     self.compile_expr(val);
                 }
                 self.emit_u16(OP_MAKE_MAP, count, sp);
@@ -1332,12 +1336,8 @@ fn const_fold_value(op: &BinaryOp, l: VmValue, r: VmValue) -> Option<VmValue> {
         (BinaryOp::Mul, VmValue::Int(a),   VmValue::Float(b)) => Some(VmValue::Float(a as f64 * b)),
         (BinaryOp::Mul, VmValue::Float(a), VmValue::Int(b))   => Some(VmValue::Float(a * b as f64)),
         (BinaryOp::Div, VmValue::Int(a),   VmValue::Int(b)) if b != 0 => {
-            // i64::MIN % -1 / MIN / -1 도 오버플로 → checked, 실패 시 폴딩 포기
-            match a.checked_rem(b) {
-                Some(0) => a.checked_div(b).map(VmValue::Int),
-                Some(_) => Some(VmValue::Float(a as f64 / b as f64)),
-                None => None,
-            }
+            // `/`는 항상 float (Phase 57 — VM과 같게)
+            Some(VmValue::Float(a as f64 / b as f64))
         }
         (BinaryOp::Div, VmValue::Float(a), VmValue::Float(b)) => Some(VmValue::Float(a / b)),
         (BinaryOp::Div, VmValue::Int(a),   VmValue::Float(b)) => Some(VmValue::Float(a as f64 / b)),

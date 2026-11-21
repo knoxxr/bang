@@ -658,3 +658,15 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                run_spawned(call_span): 작업 시작 전 에러는 spawn/parallel_map 호출 지점.
                auto_resolve가 작업 에러의 위치를 "값을 쓴 줄"로 덮어쓰던 것 → 원래 난 줄 유지(위치 없을 때만 채움).
              문서: SPEC 8장. 회귀: import_test +1, vm_test +2. (tests: 427 green, clippy 0)
+✅ Phase 57 — 몰래 바뀌는 동작 제거 ("암묵 변환 금지" 위반 3건, 사용자 승인) — v0.43.0  [호환성 깨짐]
+             (1) 나눗셈: `/`는 항상 float (이전: 나누어떨어지면 int — 값에 따라 타입이 바뀜). 상수 폴딩도 동일.
+               정수 몫은 빌트인 idiv(a, b)(134, 내림 — Python //와 같음, int/int → int). `//`는 bang 주석이라 연산자 불가
+               → 추천안(//)을 함수로 대체. float 표시에 소수점 유지(4.0, 1e3 → 1000.0 — fmt_float, 출력·str·JSON 공통).
+             (2) 참거짓: Python 규칙 — false·nil·0·0.0·""·[]·{}·빈 bytes가 거짓 (이전: false·nil만).
+             (3) 맵 키: str 또는 int (1과 "1"은 다른 키). 그 밖의 키는 type 에러 (이전: 무엇이든 to_string).
+               저장소는 문자열 키 유지 — int 키는 표식(\u{1}i…)으로 인코딩, 표식으로 시작하는 문자열 키는 이스케이프
+               (map_key/encode_str_key/decode_key/key_display). keys()·for·출력·JSON에서 원래 타입으로 복원.
+               리터럴 정수 키 {1: "a"}, {-2: x} (MapKey::Int). 채널·spawn을 건너도 유지.
+             동작 스냅샷 갱신(float 표시 3줄, bool() 1줄) — 의도된 의미 변경. 기존 테스트 기대값 5곳 갱신.
+             문서: SPEC 3.1(나눗셈·float 표시·참거짓)·3.2(맵 키), llms.txt(134개), TUTORIAL 3·8장, README, VS Code.
+             회귀: vm_test +4, 스냅샷 +1줄. (tests: 431 green, clippy 0)

@@ -786,8 +786,16 @@ impl Parser {
             let key = match self.peek().clone() {
                 TokenKind::Str(s) => { self.advance(); MapKey::Str(s) }
                 TokenKind::Ident(name) => { self.advance(); MapKey::Ident(name) }
+                TokenKind::Int(n) => { self.advance(); MapKey::Int(n) }
+                TokenKind::Minus if matches!(self.peek_n(1), TokenKind::Int(_)) => {
+                    self.advance(); // -
+                    match self.advance().kind.clone() {
+                        TokenKind::Int(n) => MapKey::Int(-n),
+                        _ => return None,
+                    }
+                }
                 _ => {
-                    self.error_at(self.peek_span(), "맵 키는 문자열 리터럴 또는 식별자여야 합니다");
+                    self.error_at(self.peek_span(), "맵 키는 문자열·정수 리터럴 또는 식별자여야 합니다");
                     self.synchronize();
                     return None;
                 }

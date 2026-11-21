@@ -50,7 +50,7 @@ pub(crate) fn b_keys(
     match &args[0] {
         VmValue::Map(m) => {
             // 삽입 순서 (Phase 51 — 이전에는 정렬)
-            let keys: Vec<VmValue> = m.keys().map(|k| VmValue::Str(k.clone())).collect();
+            let keys: Vec<VmValue> = m.keys().map(|k| decode_key(k)).collect();
             Ok(VmValue::List(Arc::new(keys)))
         }
         other => Err(RuntimeError::new(
@@ -431,7 +431,7 @@ pub(crate) fn b_has(
 ) -> Result<VmValue, RuntimeError> {
     req_args("has", &args, 2, span)?;
     match &args[0] {
-        VmValue::Map(m) => Ok(VmValue::Bool(m.contains_key(&args[1].to_string()))),
+        VmValue::Map(m) => Ok(VmValue::Bool(m.contains_key(&map_key(&args[1], span)?))),
         other => Err(RuntimeError::new(
             format!("has: Map 필요, {} 발견", other.type_name()),
             span,
@@ -449,7 +449,7 @@ pub(crate) fn b_get(
     req_args("get", &args, 3, span)?;
     match &args[0] {
         VmValue::Map(m) => Ok(m
-            .get(&args[1].to_string())
+            .get(&map_key(&args[1], span)?)
             .cloned()
             .unwrap_or_else(|| args[2].clone())),
         other => Err(RuntimeError::new(

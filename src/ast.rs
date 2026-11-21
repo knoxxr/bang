@@ -160,12 +160,16 @@ pub struct Expr {
 pub enum MapKey {
     Str(String),
     Ident(String),
+    /// 정수 키 `{1: "a"}` (Phase 57)
+    Int(i64),
 }
 
 impl MapKey {
-    pub fn as_str(&self) -> &str {
+    /// 표시용 문자열 (정수 키는 숫자 표기).
+    pub fn as_str(&self) -> String {
         match self {
-            MapKey::Str(s) | MapKey::Ident(s) => s,
+            MapKey::Str(s) | MapKey::Ident(s) => s.clone(),
+            MapKey::Int(n) => n.to_string(),
         }
     }
 }

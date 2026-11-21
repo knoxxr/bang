@@ -178,8 +178,20 @@ impl VmValue {
         }
     }
 
+    /// 참거짓 (Phase 57: Python 규칙) — false·nil·0·0.0·빈 문자열·빈 리스트·빈 맵·빈 bytes는 거짓.
+    /// (이전에는 nil·false만 거짓이라 `if not items`가 빈 리스트를 참으로 봤다)
     pub fn is_truthy(&self) -> bool {
-        !matches!(self, VmValue::Bool(false) | VmValue::Nil)
+        match self {
+            VmValue::Bool(b) => *b,
+            VmValue::Nil => false,
+            VmValue::Int(n) => *n != 0,
+            VmValue::Float(x) => *x != 0.0,
+            VmValue::Str(s) => !s.is_empty(),
+            VmValue::List(l) => !l.is_empty(),
+            VmValue::Map(m) => !m.is_empty(),
+            VmValue::Bytes(b) => !b.is_empty(),
+            _ => true,
+        }
     }
 }
 
@@ -187,7 +199,7 @@ impl fmt::Display for VmValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             VmValue::Int(n)    => write!(f, "{n}"),
-            VmValue::Float(n)  => write!(f, "{n}"),
+            VmValue::Float(n)  => write!(f, "{}", fmt_float(*n)),
             VmValue::Bool(b)   => write!(f, "{b}"),
             VmValue::Str(s)    => write!(f, "{s}"),
             VmValue::Nil       => write!(f, "nil"),
@@ -204,7 +216,7 @@ impl fmt::Display for VmValue {
                 // 삽입 순서 (Phase 51 — 이전에는 키 정렬)
                 for (i, (k, v)) in m.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
-                    write!(f, "{k}: {v}")?;
+                    write!(f, "{}: {v}", key_display(k))?;
                 }
                 write!(f, "}}")
             }
@@ -1145,13 +1157,10 @@ impl Vm {
                     let pair_count = self.read_u16() as usize;
                     let start = self.stack.len() - pair_count * 2;
                     let flat: Vec<VmValue> = self.stack.drain(start..).collect();
+                    let span = self.current_span();
                     let mut map = crate::omap::OrderedMap::new();
                     for pair in flat.chunks(2) {
-                        let key = match &pair[0] {
-                            VmValue::Str(s) => s.clone(),
-                            other => other.to_string(),
-                        };
-                        map.insert(key, pair[1].clone());
+                        map.insert(map_key(&pair[0], span)?, pair[1].clone());
                     }
                     self.stack.push(VmValue::Map(Arc::new(map)));
                 }
@@ -1294,7 +1303,7 @@ impl Vm {
                     let target = auto_resolve(std::mem::replace(&mut self.stack[base], VmValue::Nil), span)?;
                     // 1) 맵 "객체"의 키가 우선 (맵 + 클로저 관용구)
                     let member = match &target {
-                        VmValue::Map(m) => m.get(&name).cloned(),
+                        VmValue::Map(m) => m.get(&encode_str_key(&name)).cloned(),
                         _ => None,
                     };
                     if let Some(member) = member {
@@ -1459,7 +1468,7 @@ impl Vm {
                         VmValue::Map(m) => {
                             // 삽입 순서 (Phase 51 — 이전에는 키 정렬)
                             let items = m.keys().map(|k| {
-                                let key = VmValue::Str(k.clone());
+                                let key = decode_key(k);
                                 if pairs {
                                     let v = m.get(k).cloned().unwrap_or(VmValue::Nil);
                                     VmValue::List(Arc::new(vec![key, v]))
@@ -1627,12 +1636,9 @@ fn vm_arith(l: VmValue, r: VmValue, span: Span, op: char) -> Result<VmValue, Run
             '/' => {
                 if *b == 0 { return Err(RuntimeError::new("0으로 나눌 수 없음", span).with_kind(crate::runtime::kind::ZERO_DIVISION)); }
                 // checked_rem: i64::MIN % -1 도 오버플로(debug panic) → checked로 방어
-                match a.checked_rem(*b) {
-                    Some(0) => a.checked_div(*b).map(VmValue::Int)
-                        .ok_or_else(|| overflow_err("/", span)),
-                    Some(_) => Ok(VmValue::Float(*a as f64 / *b as f64)),
-                    None => Err(overflow_err("/", span)), // i64::MIN / -1
-                }
+                // `/`는 항상 float (Phase 57). 이전: 나누어떨어지면 int, 아니면 float — 값에 따라 타입이 바뀌었다.
+                // 정수 나눗셈은 idiv(a, b).
+                Ok(VmValue::Float(*a as f64 / *b as f64))
             }
             '%' => {
                 if *b == 0 { return Err(RuntimeError::new("나머지: 0으로 나눌 수 없음", span).with_kind(crate::runtime::kind::ZERO_DIVISION)); }
@@ -1724,7 +1730,7 @@ fn vm_index_get(target: VmValue, idx: VmValue, span: Span) -> Result<VmValue, Ru
             Ok(VmValue::Int(b[i as usize] as i64))
         }
         (VmValue::Map(map), _) => {
-            let key = idx.to_string();
+            let key = map_key(&idx, span)?;
             map.get(&key).cloned().ok_or_else(|| missing_key(&key, span))
         }
         (target, idx) => Err(RuntimeError::new(
@@ -1745,7 +1751,7 @@ fn vm_index_set(container: VmValue, idx: VmValue, val: VmValue, span: Span) -> R
             Ok(VmValue::List(items))
         }
         (VmValue::Map(mut map), _) => {
-            Arc::make_mut(&mut map).insert(idx.to_string(), val);
+            Arc::make_mut(&mut map).insert(map_key(&idx, span)?, val);
             Ok(VmValue::Map(map))
         }
         (VmValue::Bytes(_), _) => Err(RuntimeError::new(
@@ -1798,8 +1804,7 @@ fn vm_slice(target: VmValue, start: &VmValue, end: &VmValue, span: Span) -> Resu
 fn vm_contains(container: &VmValue, needle: &VmValue, span: Span) -> Result<bool, RuntimeError> {
     match (container, needle) {
         (VmValue::List(items), _) => Ok(items.iter().any(|x| vm_eq(x, needle))),
-        (VmValue::Map(m), VmValue::Str(k)) => Ok(m.contains_key(k)),
-        (VmValue::Map(m), VmValue::Int(_)) => Ok(m.contains_key(&needle.to_string())),
+        (VmValue::Map(m), VmValue::Str(_) | VmValue::Int(_)) => Ok(m.contains_key(&map_key(needle, span)?)),
         (VmValue::Str(s), VmValue::Str(sub)) => Ok(s.contains(sub.as_str())),
         (VmValue::Bytes(b), VmValue::Int(x)) => Ok(*x >= 0 && *x <= 255 && b.contains(&(*x as u8))),
         (VmValue::Bytes(b), VmValue::Bytes(sub)) => Ok(sub.is_empty() || find_subseq(b, sub).is_some()),
@@ -1817,8 +1822,58 @@ fn arity_error(func: &CompiledFn, got: usize, span: Span) -> RuntimeError {
     RuntimeError::new(format!("인자 개수 불일치: {need} 기대, {got}개 전달"), span).with_kind(crate::runtime::kind::ARGUMENT)
 }
 
+// ── 맵 키 (Phase 57) ─────────────────────────────────────────────────────────
+// 맵 키는 str 또는 int다 (1과 "1"은 다른 키). 저장소(OrderedMap<String, _>)는 문자열 키라서 int 키는
+// 표식 문자 뒤에 숫자를 붙여 저장하고, 키를 꺼낼 때(keys·for·출력·JSON) 원래 타입으로 되돌린다.
+// 표식으로 시작하는 문자열 키는 따로 이스케이프해 int 키와 절대 섞이지 않는다.
+const KEY_TAG: char = '\u{1}';
+
+/// 값 → 저장용 키. str/int만 허용 (이전: 무엇이든 조용히 문자열로 바꿨다 — 암묵 변환 금지 위반).
+pub(crate) fn map_key(v: &VmValue, span: Span) -> Result<String, RuntimeError> {
+    match v {
+        VmValue::Str(s) => Ok(encode_str_key(s)),
+        VmValue::Int(n) => Ok(format!("{KEY_TAG}i{n}")),
+        other => Err(RuntimeError::new(
+            format!("맵 키는 str 또는 int여야 함, {} 발견", other.type_name()), span)
+            .with_kind(crate::runtime::kind::TYPE)),
+    }
+}
+
+/// 문자열 키 → 저장용 키 (대부분 그대로).
+pub(crate) fn encode_str_key(s: &str) -> String {
+    if s.starts_with(KEY_TAG) { format!("{KEY_TAG}s{s}") } else { s.to_string() }
+}
+
+/// 저장용 키 → 원래 값 (Int 또는 Str).
+pub(crate) fn decode_key(k: &str) -> VmValue {
+    if let Some(rest) = k.strip_prefix(KEY_TAG) {
+        if let Some(n) = rest.strip_prefix('i').and_then(|d| d.parse::<i64>().ok()) {
+            return VmValue::Int(n);
+        }
+        if let Some(s) = rest.strip_prefix('s') {
+            return VmValue::Str(s.to_string());
+        }
+    }
+    VmValue::Str(k.to_string())
+}
+
+/// 저장용 키 → 표시 문자열 (출력·JSON 키·에러 메시지).
+pub(crate) fn key_display(k: &str) -> String {
+    decode_key(k).to_string()
+}
+
+/// float 표시 (Phase 57): 정수 값이어도 소수점을 붙여 int와 구별한다 (4.0 → "4.0", Python과 같음).
+pub(crate) fn fmt_float(x: f64) -> String {
+    if x.is_finite() && x.fract() == 0.0 && x.abs() < 1e16 {
+        format!("{x:.1}")
+    } else {
+        format!("{x}")
+    }
+}
+
 /// 없는 맵 키 읽기 (Phase 48: 이전에는 조용히 nil).
 fn missing_key(key: &str, span: Span) -> RuntimeError {
+    let key = key_display(key);
     RuntimeError::new(
         format!("맵에 키 '{key}' 없음 (없을 수 있으면 get(m, k, 기본값) 또는 has(m, k))"),
         span,
@@ -1905,14 +1960,14 @@ fn set_path(target: &mut VmValue, keys: &[VmValue], val: VmValue, binop: u8, spa
             Ok(new)
         }
         (VmValue::Map(map), key) => {
-            let k = key.to_string();
+            let k = map_key(key, span)?;
             let new = if binop == 0 {
                 val
             } else {
                 match map.get(&k) {
                     Some(old) => combine(old, val)?,
                     None => return Err(RuntimeError::new(
-                        format!("복합 대입: 맵에 키 '{k}' 없음 (get(m, k, 기본값) 사용)"), span).with_kind(crate::runtime::kind::KEY)),
+                        format!("복합 대입: 맵에 키 '{}' 없음 (get(m, k, 기본값) 사용)", key_display(&k)), span).with_kind(crate::runtime::kind::KEY)),
                 }
             };
             Arc::make_mut(map).insert(k, new.clone());
@@ -1948,9 +2003,9 @@ fn child_mut<'a>(cur: &'a mut VmValue, key: &VmValue, span: Span) -> Result<&'a 
                 format!("인덱스 대입: List 인덱스는 Int여야 함, {} 발견", other.type_name()), span).with_kind(crate::runtime::kind::TYPE)),
         },
         VmValue::Map(map) => {
-            let k = key.to_string();
+            let k = map_key(key, span)?;
             if !map.contains_key(&k) {
-                return Err(RuntimeError::new(format!("인덱스 대입: 맵에 키 '{k}' 없음"), span).with_kind(crate::runtime::kind::KEY));
+                return Err(RuntimeError::new(format!("인덱스 대입: 맵에 키 '{}' 없음", key_display(&k)), span).with_kind(crate::runtime::kind::KEY));
             }
             Arc::make_mut(map).get_mut(&k).ok_or_else(|| bad_slot(span))
         }
@@ -1961,7 +2016,10 @@ fn child_mut<'a>(cur: &'a mut VmValue, key: &VmValue, span: Span) -> Result<&'a 
 
 fn vm_field_get(target: VmValue, name: &str, span: Span) -> Result<VmValue, RuntimeError> {
     match target {
-        VmValue::Map(map) => map.get(name).cloned().ok_or_else(|| missing_key(name, span)),
+        VmValue::Map(map) => {
+            let key = encode_str_key(name);
+            map.get(&key).cloned().ok_or_else(|| missing_key(&key, span))
+        }
         other => Err(RuntimeError::new(
             format!("필드 접근: {} 에 필드 '{}' 없음", other.type_name(), name), span).with_kind(crate::runtime::kind::TYPE)),
     }

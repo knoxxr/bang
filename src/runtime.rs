@@ -121,7 +121,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
-            Value::Float(n) => write!(f, "{n}"),
+            Value::Float(n) => write!(f, "{}", crate::vm::fmt_float(*n)),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Str(s) => write!(f, "{s}"),
             Value::Nil => write!(f, "nil"),
@@ -137,7 +137,7 @@ impl fmt::Display for Value {
                 write!(f, "{{")?;
                 for (i, (k, v)) in map.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
-                    write!(f, "{k}: {v}")?;
+                    write!(f, "{}: {v}", crate::vm::key_display(k))?;
                 }
                 write!(f, "}}")
             }

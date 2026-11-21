@@ -267,6 +267,7 @@ fn http_body_and_headers(
         None | Some(VmValue::Nil) => {}
         Some(VmValue::Map(m)) => {
             for (k, v) in m.iter() {
+                let k = &key_display(k);
                 let v = match v {
                     VmValue::Str(s) => s.clone(),
                     other => other.to_string(),

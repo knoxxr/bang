@@ -761,7 +761,7 @@ let min = -9223372036854775807 - 1
 try { print(max + 1) } catch e { print("add") }
 try { print(min - 1) } catch e { print("sub") }
 try { print(max * 2) } catch e { print("mul") }
-try { print(min / -1) } catch e { print("div") }
+try { print(idiv(min, -1)) } catch e { print("div") }
 try { print(min % -1) } catch e { print("mod") }
 try { print(-min) } catch e { print("neg") }
 try { print(abs(min)) } catch e { print("abs") }
@@ -903,7 +903,7 @@ fn test_vm_parallel_map_order_errors_and_builtins() {
 #[test]
 fn test_vm_compound_assign() {
     let src = "let x = 10\nx += 5\nx -= 1\nx *= 2\nx /= 4\nprint(x)\nlet n = 7\nn %= 4\nprint(n)\nlet s = \"a\"\ns += \"b\"\nprint(s)\nlet xs = [1]\nxs += [2]\nprint(xs)";
-    assert_eq!(run_vm(src), vec!["7", "3", "ab", "[1, 2]"]);
+    assert_eq!(run_vm(src), vec!["7.0", "3", "ab", "[1, 2]"]);
 }
 
 #[test]
@@ -946,7 +946,7 @@ fn test_vm_slice_syntax() {
 #[test]
 fn test_vm_literals_comments_unicode_idents() {
     let src = "/* 블록\n주석 */\nlet 이름 = \"방\"\nlet 합 = 1_000 + 0xff + 0b101 + 0o17 /* 인라인 */\nprint(이름 + str(합))\nprint(1e3)\nlet s = \"\"\"a\n\"b\" \"\"\"\nprint(s)";
-    assert_eq!(run_vm(src), vec!["방1275", "1000", "a\n\"b\" "]);
+    assert_eq!(run_vm(src), vec!["방1275", "1000.0", "a\n\"b\" "]);
 }
 
 // ============================================================================
@@ -1305,4 +1305,46 @@ fn test_vm_task_error_keeps_origin_line() {
     // 작업 안에서 난 에러는 값을 쓴 줄이 아니라 실제로 난 줄을 가리킨다
     let src = "fn risky() {\n    let a = 1\n    return a / 0\n}\nlet x = spawn risky()\ntry { print(x) } catch e { print(e.line, e.kind) }";
     assert_eq!(run_vm(src), vec!["3 zero_division"]);
+}
+
+// ============================================================================
+// Phase 57 — 몰래 바뀌는 동작 제거: / 는 항상 float, Python 참거짓, 정수 맵 키
+// ============================================================================
+
+#[test]
+fn test_vm_division_is_always_float_and_idiv() {
+    // 이전: 8 / 2 → int 4, 7 / 2 → float 3.5 (값에 따라 타입이 바뀜)
+    let src = "print(7 / 2, 8 / 2, type(8 / 2), 1e3, sqrt(16))\nprint(idiv(7, 2), idiv(-7, 2), idiv(7.5, 2), type(idiv(8, 2)))\ntry { idiv(1, 0) } catch e { print(e.kind) }\nlet x: int = idiv(9, 3)\nprint(x)";
+    assert_eq!(run_vm(src), vec!["3.5 4.0 Float 1000.0 4.0", "3 -4 3.0 Int", "zero_division", "3"]);
+}
+
+#[test]
+fn test_vm_python_truthiness() {
+    // 이전: nil·false만 거짓 → 빈 리스트·0·빈 문자열이 참
+    let src = "let out = []\nfor v in [0, 1, \"\", \"a\", [], [0], {}, {\"a\": 1}, nil, 0.0, false, true] {\n out += [if v { 1 } else { 0 }]\n}\nprint(out)\nlet items = []\nif not items { print(\"비었음\") }\nprint(0 or \"기본값\", [] and 1, bool(\"\"))\nlet n = 3\nwhile n { n -= 1 }\nprint(n)";
+    assert_eq!(run_vm(src), vec!["[0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1]", "비었음", "기본값 [] false", "0"]);
+}
+
+#[test]
+fn test_vm_int_map_keys() {
+    // 이전: m[1]이 조용히 문자열 키 "1"로 바뀌었다 (1과 "1"이 같은 키)
+    let src = "let m = {1: \"일\", \"1\": \"문자 일\", -2: \"마이너스\"}\nm[3] = \"삼\"\nprint(m[1], m[\"1\"], m[-2], len(m))\nprint(1 in m, \"1\" in m, 2 in m, has(m, 3), get(m, 9, \"없음\"))\nfor k, v in m { print(type(k), k) }\nlet counts = {}\nfor n in [3, 1, 3] { counts[n] = get(counts, n, 0) + 1 }\nprint(counts[3], keys(counts))\ntry { m[1.5] = 1 } catch e { print(e.kind, e.message) }\ntry { print(m[true]) } catch e { print(e.kind) }\nprint(json_stringify({1: \"a\", \"b\": 2.0}))";
+    assert_eq!(
+        run_vm(src),
+        vec![
+            "일 문자 일 마이너스 4",
+            "true true false true 없음",
+            "Int 1", "Str 1", "Int -2", "Int 3",
+            "2 [3, 1]",
+            "type 맵 키는 str 또는 int여야 함, Float 발견",
+            "type",
+            "{\"1\":\"a\",\"b\":2.0}",
+        ]
+    );
+}
+
+#[test]
+fn test_vm_int_keys_survive_channel_and_spawn() {
+    let src = "let ch = channel(1)\nsend(ch, {7: \"x\"})\nlet r = recv(ch)\nprint(r[7], keys(r))\nfn mk() { return {5: [1]} }\nlet f = spawn mk()\nprint(f[5])";
+    assert_eq!(run_vm(src), vec!["x [7]", "[1]"]);
 }

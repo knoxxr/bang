@@ -80,7 +80,7 @@ print(m.area(2))
 ";
     // square(5)=25, area(2)=pi*square(2)=3.0*4=12
     let out = run_with_module(module, main);
-    assert_eq!(out, "25\n12\n");
+    assert_eq!(out, "25\n12.0\n");
 }
 
 /// 모듈 상수 직접 접근.

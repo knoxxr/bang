@@ -85,7 +85,8 @@ print(b)              // [99, 2, 3]
 
 ```
 print(7 + 2 * 3)      // 13
-print(10 / 4)         // 2.5   (정수끼리도 나누면 float)
+print(10 / 4)         // 2.5   (/ 는 항상 float: 10 / 2 → 5.0)
+print(idiv(10, 4))    // 2     (정수 몫은 idiv)
 print(10 % 3)         // 1
 print("foo" + "bar")  // foobar  (+ 로 문자열 연결)
 print(1 < 2 and 3 >= 3)   // true
@@ -268,7 +269,7 @@ fn safe_div(x, y) {
         return -1
     }
 }
-print(safe_div(10, 2))    // 5
+print(safe_div(10, 2))    // 5.0
 print(safe_div(10, 0))    // -1   (0 나눗셈도 catch로 잡힘)
 ```
 
