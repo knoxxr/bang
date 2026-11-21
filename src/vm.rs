@@ -37,11 +37,23 @@ use crate::runtime::{BangChannel, RuntimeError};
 pub struct VmFuture {
     result: Mutex<Option<Result<VmValue, RuntimeError>>>,
     ready:  Condvar,
+    /// 작업 경계를 넘어온 Future (Phase 53): 원본의 결과를 처음 꺼낼 때 한 번 격리해 둔다.
+    source: Option<Arc<VmFuture>>,
 }
 
 impl VmFuture {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { result: Mutex::new(None), ready: Condvar::new() })
+        Arc::new(Self { result: Mutex::new(None), ready: Condvar::new(), source: None })
+    }
+
+    /// 기다리지 않고 결과 확인 (끝났으면 Some). derived Future는 자기 결과만 본다.
+    pub(crate) fn peek(&self) -> Option<Result<VmValue, RuntimeError>> {
+        self.result.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// 다른 작업으로 넘기는 Future. 결과 안의 클로저 상태가 작업 사이에 공유되지 않게 한다.
+    pub(crate) fn derived(src: &Arc<VmFuture>) -> Arc<Self> {
+        Arc::new(Self { result: Mutex::new(None), ready: Condvar::new(), source: Some(src.clone()) })
     }
 
     pub fn complete(&self, val: Result<VmValue, RuntimeError>) {
@@ -50,6 +62,21 @@ impl VmFuture {
     }
 
     pub fn resolve(&self) -> Result<VmValue, RuntimeError> {
+        if let Some(src) = &self.source {
+            let mut g = self.result.lock()
+                .map_err(|_| RuntimeError::no_span("내부 오류: Future 잠금 실패"))?;
+            if let Some(r) = &*g {
+                return r.clone();
+            }
+            let r = src.resolve().map(|v| {
+                let mut iso = Isolator::new();
+                let v = iso.isolate(v);
+                iso.finish();
+                v
+            });
+            *g = Some(r.clone());
+            return r;
+        }
         let mut g = self.result.lock().unwrap();
         loop {
             if let Some(r) = &*g { return r.clone(); }
@@ -1000,8 +1027,9 @@ impl Vm {
 
                 OP_INDEX_GET => {
                     let span = self.current_span();
-                    let idx = self.stack_pop();
-                    let target = self.stack_pop();
+                    // 인덱스/필드 대상은 값이 필요한 지점 — Future 자동 대기 (SPEC 6장)
+                    let idx = auto_resolve(self.stack_pop(), span)?;
+                    let target = auto_resolve(self.stack_pop(), span)?;
                     self.stack.push(vm_index_get(target, idx, span)?);
                 }
                 OP_INDEX_SET => {
@@ -1190,7 +1218,7 @@ impl Vm {
                         VmValue::Str(s) => s,
                         _ => return Err(RuntimeError::no_span("OP_FIELD_GET: non-string name")),
                     };
-                    let target = self.stack_pop();
+                    let target = auto_resolve(self.stack_pop(), span)?;
                     self.stack.push(vm_field_get(target, &name, span)?);
                 }
 
@@ -1205,8 +1233,11 @@ impl Vm {
                         VmValue::Closure(closure) => {
                             // 값 의미론: 인자·upvalue·모듈 전역을 spawn 경계에서 복제
                             // (deep_clone_closure가 클로저 전역을 깊은 복사한다)
-                            let args_copy = args; // VmValue::clone() 이 올바르게 deep-copy
-                            let closure_copy = deep_clone_closure(&closure);
+                            // 호출 대상과 인자를 한 격리기로 — 인자 안의 객체가 대상과 상태를 공유하면 복사본에서도 공유
+                            let mut iso = Isolator::new();
+                            let closure_copy = iso.closure(&closure);
+                            let args_copy: Vec<VmValue> = args.into_iter().map(|a| iso.isolate(a)).collect();
+                            iso.finish();
                             let output_copy  = self.output.clone();
                             let future = VmFuture::new();
                             let future2 = future.clone();
@@ -1901,8 +1932,6 @@ pub(crate) fn deep_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeErr
     }
 }
 
-/// spawn 경계에서 클로저의 upvalue를 독립 복사 (값 의미론).
-/// 각 upvalue의 현재 값을 읽어 새로운 독립적 Upvalue 슬롯에 저장.
 /// import 모듈 캐시 — 같은 파일은 한 번만 실행되고 결과(export 맵)를 공유한다.
 /// (모듈을 싱글톤으로 만드는 패키지 시스템 v1의 핵심.)
 pub(crate) fn module_cache() -> &'static Mutex<HashMap<String, VmValue>> {
@@ -1958,33 +1987,193 @@ fn value_matches_type(v: &VmValue, t: TypeAnn) -> bool {
     }
 }
 
-pub(crate) fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
-    let upvalues: Vec<UpvalueRef> = c.upvalues.iter().map(|uv| {
-        let val = uv.get(); // VmValue::clone() — 컨테이너 깊은 복사, 참조타입 Arc 클론
-        let new_locals = Arc::new(Mutex::new(vec![val]));
-        Arc::new(Upvalue { locals: new_locals, slot: 0 })
-    }).collect();
-    // 모듈 전역을 spawn 경계에서 **완전 독립 복사**한다.
-    // 단순히 Vec를 복사하면 그 안의 함수들이 원본 globals Arc를 그대로 공유해
-    // (함수=참조 의미론), 여러 스레드가 같은 globals Mutex를 잠가 심한 경합이 난다.
-    // 따라서 같은 모듈에 속한 형제 함수들의 globals를 새 복사본으로 재지정한다.
-    let snapshot = { c.globals.lock().unwrap().clone() };
-    let new_globals = Arc::new(Mutex::new(snapshot));
-    {
-        let mut g = new_globals.lock().unwrap();
-        for v in g.iter_mut() {
-            if let VmValue::Closure(inner) = v {
-                if Arc::ptr_eq(&inner.globals, &c.globals) {
-                    *v = VmValue::Closure(Arc::new(VmClosure {
-                        func: inner.func.clone(),
-                        upvalues: inner.upvalues.clone(),
-                        globals: new_globals.clone(), // Arc bump (재잠금 아님)
-                    }));
+/// 작업 경계 격리기 (Phase 53).
+///
+/// spawn·parallel_map·`bang test`가 새 작업으로 값을 넘길 때, 그 값에서 닿는 **모든 클로저**와
+/// 클로저가 붙잡은 상태(지역 변수 벡터·모듈 전역)를 새로 복사한다. 이전(deep_clone_closure)에는
+/// 호출 대상 클로저만 복사해서, 인자나 맵 안에 든 "객체"(맵 + 클로저)의 상태가 스레드 사이에
+/// 공유되어 경쟁 상태가 생겼다.
+///
+/// - 같은 격리 안에서 상태를 공유하던 클로저들은 복사본에서도 서로 공유한다 (객체의 메서드끼리).
+/// - 클로저가 들어 있지 않은 리스트·맵은 복사하지 않고 같은 Arc를 쓴다 (불변 공유 — COW로 안전).
+/// - 채널·Future·TCP 핸들은 원래 공유 대상이라 그대로 둔다.
+pub(crate) struct Isolator {
+    closures: HashMap<usize, Arc<VmClosure>>,
+    futures: HashMap<usize, Arc<VmFuture>>,
+    cells: HashMap<usize, StateCell>,
+    /// (원본, 복사본) — 아직 내용을 채우지 않은 상태 벡터
+    pending: Vec<(StateCell, StateCell)>,
+}
+
+/// 클로저가 붙잡는 상태 벡터 (프레임 지역 변수들 또는 모듈 전역).
+type StateCell = Arc<Mutex<Vec<VmValue>>>;
+
+impl Isolator {
+    pub(crate) fn new() -> Self {
+        Self { closures: HashMap::new(), futures: HashMap::new(), cells: HashMap::new(), pending: Vec::new() }
+    }
+
+    /// 상태 벡터(지역 변수들 또는 모듈 전역)의 복사본 자리를 만든다. 내용은 finish()에서 채운다.
+    fn cell(&mut self, old: &Arc<Mutex<Vec<VmValue>>>) -> Arc<Mutex<Vec<VmValue>>> {
+        let key = Arc::as_ptr(old) as usize;
+        if let Some(n) = self.cells.get(&key) {
+            return n.clone();
+        }
+        let n = Arc::new(Mutex::new(Vec::new()));
+        self.cells.insert(key, n.clone());
+        self.pending.push((old.clone(), n.clone()));
+        n
+    }
+
+    pub(crate) fn closure(&mut self, c: &Arc<VmClosure>) -> Arc<VmClosure> {
+        let key = Arc::as_ptr(c) as usize;
+        if let Some(n) = self.closures.get(&key) {
+            return n.clone();
+        }
+        let upvalues = c.upvalues.iter()
+            .map(|uv| Arc::new(Upvalue { locals: self.cell(&uv.locals), slot: uv.slot }))
+            .collect();
+        let globals = self.cell(&c.globals);
+        let n = Arc::new(VmClosure { func: c.func.clone(), upvalues, globals });
+        self.closures.insert(key, n.clone());
+        n
+    }
+
+    /// 값 안의 클로저를 격리한 새 값. 바뀔 것이 없으면 None (원래 값을 그대로 쓰면 됨).
+    fn value(&mut self, v: &VmValue) -> Option<VmValue> {
+        match v {
+            VmValue::Closure(c) => Some(VmValue::Closure(self.closure(c))),
+            VmValue::Future(f) => {
+                // 이미 끝났고 결과에 클로저가 없으면 결코 바뀌지 않으므로 그대로 공유 (재포장·재검사 없음)
+                if let Some(Ok(v)) = f.peek() {
+                    // 격리할 것이 없으면(None) 여기서 그대로 반환, 있으면 아래에서 derived로 감싼다
+                    self.value(&v)?;
                 }
+                let key = Arc::as_ptr(f) as usize;
+                let d = self.futures.entry(key).or_insert_with(|| VmFuture::derived(f)).clone();
+                Some(VmValue::Future(d))
+            }
+            VmValue::List(items) => {
+                if free_cache_hit(&free_cache().lists, items) {
+                    return None;
+                }
+                let mut changed: Option<Vec<VmValue>> = None;
+                for (i, x) in items.iter().enumerate() {
+                    if let Some(nx) = self.value(x) {
+                        changed.get_or_insert_with(|| items.to_vec())[i] = nx;
+                    }
+                }
+                match changed {
+                    Some(v) => Some(VmValue::List(Arc::new(v))),
+                    None => {
+                        free_cache_remember(&free_cache().lists, items);
+                        None
+                    }
+                }
+            }
+            VmValue::Map(m) => {
+                if free_cache_hit(&free_cache().maps, m) {
+                    return None;
+                }
+                let mut changed: Option<crate::omap::OrderedMap<VmValue>> = None;
+                for (k, x) in m.iter() {
+                    if let Some(nx) = self.value(x) {
+                        let nm = changed.get_or_insert_with(|| (**m).clone());
+                        if let Some(slot) = nm.get_mut(k) {
+                            *slot = nx;
+                        }
+                    }
+                }
+                match changed {
+                    Some(m) => Some(VmValue::Map(Arc::new(m))),
+                    None => {
+                        free_cache_remember(&free_cache().maps, m);
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn isolate(&mut self, v: VmValue) -> VmValue {
+        self.value(&v).unwrap_or(v)
+    }
+
+    /// 자리만 만들어 둔 상태 벡터들을 채운다 (채우는 중 새로 발견된 것도 반복 처리 — 순환 안전).
+    /// 이 격리기로 isolate/closure를 모두 부른 뒤 마지막에 한 번 호출한다.
+    pub(crate) fn finish(&mut self) {
+        while let Some((old, new)) = self.pending.pop() {
+            let snapshot = old.lock().map(|g| g.clone()).unwrap_or_default();
+            let filled: Vec<VmValue> = snapshot.iter()
+                .map(|x| self.value(x).unwrap_or_else(|| x.clone()))
+                .collect();
+            if let Ok(mut g) = new.lock() {
+                *g = filled;
             }
         }
     }
-    Arc::new(VmClosure { func: c.func.clone(), upvalues, globals: new_globals })
+}
+
+/// "클로저가 없다"고 확인된 큰 컨테이너 캐시 — spawn마다 같은 큰 리스트를 다시 훑지 않게 한다.
+///
+/// 약한 참조(Weak)만 보관한다. 약한 참조가 있으면 `Arc::make_mut`은 제자리 변경 대신 새 할당으로
+/// 옮기므로(그리고 `Arc::get_mut`은 실패하므로), 내용이 바뀐 컨테이너는 다른 포인터가 되어
+/// 캐시에 절대 맞지 않는다 — 낡은 판정이 쓰일 수 없다. 약한 참조가 할당을 붙잡고 있어 주소 재사용도 없다.
+struct FreeCache {
+    lists: Mutex<HashMap<usize, std::sync::Weak<Vec<VmValue>>>>,
+    maps: Mutex<HashMap<usize, std::sync::Weak<crate::omap::OrderedMap<VmValue>>>>,
+}
+
+fn free_cache() -> &'static FreeCache {
+    static CACHE: OnceLock<FreeCache> = OnceLock::new();
+    CACHE.get_or_init(|| FreeCache { lists: Mutex::new(HashMap::new()), maps: Mutex::new(HashMap::new()) })
+}
+
+/// 이 크기 미만은 훑는 비용이 캐시 비용보다 싸서 캐시하지 않는다.
+const FREE_CACHE_MIN_LEN: usize = 64;
+const FREE_CACHE_CAP: usize = 4096;
+
+trait HasLen {
+    fn size(&self) -> usize;
+}
+impl HasLen for Vec<VmValue> {
+    fn size(&self) -> usize { self.len() }
+}
+impl HasLen for crate::omap::OrderedMap<VmValue> {
+    fn size(&self) -> usize { self.len() }
+}
+
+fn free_cache_hit<T: HasLen>(cache: &Mutex<HashMap<usize, std::sync::Weak<T>>>, a: &Arc<T>) -> bool {
+    if a.size() < FREE_CACHE_MIN_LEN {
+        return false;
+    }
+    let Ok(g) = cache.lock() else { return false };
+    g.get(&(Arc::as_ptr(a) as usize))
+        .and_then(|w| w.upgrade())
+        .is_some_and(|b| Arc::ptr_eq(&b, a))
+}
+
+fn free_cache_remember<T: HasLen>(cache: &Mutex<HashMap<usize, std::sync::Weak<T>>>, a: &Arc<T>) {
+    if a.size() < FREE_CACHE_MIN_LEN {
+        return;
+    }
+    let Ok(mut g) = cache.lock() else { return };
+    if g.len() >= FREE_CACHE_CAP {
+        g.retain(|_, w| w.strong_count() > 0);
+        if g.len() >= FREE_CACHE_CAP {
+            g.clear();
+        }
+    }
+    g.insert(Arc::as_ptr(a) as usize, Arc::downgrade(a));
+}
+
+/// 클로저 하나를 새 작업용으로 격리 (Isolator 한 번 쓰기).
+pub(crate) fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
+    let mut iso = Isolator::new();
+    let n = iso.closure(c);
+    iso.finish();
+    n
 }
 
 /// 바이트 슬라이스에서 부분열의 시작 위치를 찾는다 (HTTP 헤더 끝 감지용).

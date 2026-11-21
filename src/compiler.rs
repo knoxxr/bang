@@ -419,6 +419,23 @@ impl Compiler {
         let sp = stmt.span;
         match &stmt.kind.clone() {
             StmtKind::Let { name, ty, value } => {
+                // 지역 이름 있는 함수(fn f() { ... f() ... })는 본문이 자기 이름을 보도록 슬롯을 먼저
+                // 선언한다 (최상위는 전역 prescan이 이미 처리). 이전에는 중첩 재귀가 컴파일 에러였다.
+                let fn_idx = self.fn_stack.len() - 1;
+                let is_global = fn_idx == 0 && self.globals.contains_key(name.as_str());
+                if !is_global {
+                    if let ExprKind::Function { name: Some(fname), .. } = &value.kind {
+                        if fname == name {
+                            let slot = self.cur_mut().declare_local(name);
+                            self.compile_expr(value);
+                            if let Some(t) = ty {
+                                self.emit_u8(OP_CHECK_TYPE, t.as_u8(), sp);
+                            }
+                            self.emit_u8(OP_STORE_LOCAL, slot, sp);
+                            return;
+                        }
+                    }
+                }
                 self.compile_expr(value);
                 // 선택적 타입 힌트: 값이 스택 top에 있을 때 런타임 검증 (peek)
                 if let Some(t) = ty {

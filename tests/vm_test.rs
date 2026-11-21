@@ -1171,3 +1171,49 @@ fn test_vm_csv_roundtrip() {
     let src = "let rows = csv_parse(\"name,note\\r\\n방,\\\"a, \\\"\\\"b\\\"\\\"\\nc\\\"\\n\")\nprint(len(rows), rows[1][0], rows[1][1] == \"a, \\\"b\\\"\\nc\")\nprint(csv_stringify([[\"id\", \"text\"], [1, \"쉼표, 포함\"], [2, nil]]))\nprint(csv_parse(csv_stringify(rows)) == rows)\ntry { csv_parse(\"a,\\\"open\") } catch e { print(e.kind) }\ntry { csv_stringify([1]) } catch e { print(e.kind) }";
     assert_eq!(run_vm(src), vec!["2 방 true", "id,text\n1,\"쉼표, 포함\"\n2,\n", "true", "value", "argument"]);
 }
+
+// ============================================================================
+// Phase 53 — 클로저 상태: 한 작업 안에서는 공유, 작업 경계(spawn)에서는 격리
+// ============================================================================
+
+const OBJ: &str = "fn make() {\n let n = 0\n return {\"inc\": fn() { n += 1 }, \"get\": fn() { return n }}\n}\n";
+
+#[test]
+fn test_vm_closures_share_variables_within_task() {
+    // Python과 같은 늦은 바인딩: 클로저는 값이 아니라 변수를 붙잡는다
+    let src = "let fs = []\nfor i in range(3) { fs += [fn() { return i }] }\nprint([fs[0](), fs[1](), fs[2]()])\nfn outer() {\n let n = 1\n let get = fn() { return n }\n n = 99\n return get()\n}\nprint(outer())\n".to_string()
+        + OBJ + "let s = make()\nlet t = s\nt.inc()\nprint(s.get(), t.get())";
+    assert_eq!(run_vm(&src), vec!["[2, 2, 2]", "99", "1 1"]);
+}
+
+#[test]
+fn test_vm_spawn_isolates_objects_in_args_and_captures() {
+    // 이전: 인자·맵 안의 객체 상태가 스레드 사이에 공유되어 경쟁(결과가 매번 다름)
+    let src = OBJ.to_string()
+        + "let o = make()\no.inc()\nfn work(obj) {\n for _ in range(2000) { obj.inc() }\n return obj.get()\n}\nlet a = spawn work(o)\nlet b = spawn work(o)\nprint(a, b, o.get())\nparallel {\n spawn (fn() { o.inc() })()\n}\nprint(o.get())\nlet r = parallel_map([o, o], fn(x) {\n x.inc()\n return x.get()\n})\nprint(r, o.get())";
+    // 자식마다 부모 상태(1)에서 시작한 독립 복사본, 같은 객체의 메서드끼리는 자식 안에서 공유
+    assert_eq!(run_vm(&src), vec!["2001 2001 1", "1", "[2, 2] 1"]);
+}
+
+#[test]
+fn test_vm_isolation_sees_closures_added_after_caching() {
+    // 큰 리스트를 "클로저 없음"으로 캐시한 뒤 클로저를 넣어도 다음 spawn에서 격리된다
+    let src = OBJ.to_string()
+        + "let big = range(1000)\nfn touch(xs) { return len(xs) }\nprint(wait(spawn touch(big)))\nlet o = make()\nbig[0] = o\nfn use(xs) {\n for _ in range(100) { xs[0].inc() }\n return xs[0].get()\n}\nprint(wait(spawn use(big)), o.get())";
+    assert_eq!(run_vm(&src), vec!["1000", "100 0"]);
+}
+
+#[test]
+fn test_vm_nested_named_function_recursion() {
+    // 이전: 함수 안의 이름 있는 함수가 자기 자신을 부르면 컴파일 에러
+    let src = "fn outer() {\n fn fact(k) { return if k <= 1 { 1 } else { k * fact(k - 1) } }\n return fact\n}\nlet f = outer()\nprint(f(5), wait(spawn f(10)))";
+    assert_eq!(run_vm(src), vec!["120 3628800"]);
+}
+
+#[test]
+fn test_vm_future_result_isolated_per_task_and_field_autowait() {
+    // Future로 받은 객체를 여러 작업에 넘겨도 상태가 공유되지 않는다. 필드 접근도 Future를 자동 대기.
+    let src = OBJ.to_string()
+        + "let f = spawn make()\nfn work(obj) {\n for _ in range(500) { obj.inc() }\n return obj.get()\n}\nlet a = spawn work(f)\nlet b = spawn work(f)\nprint(a, b, f.get())\nlet g = spawn (fn() { return {\"k\": [7]} })()\nprint(g.k[0], g[\"k\"])";
+    assert_eq!(run_vm(&src), vec!["500 500 0", "7 [7]"]);
+}

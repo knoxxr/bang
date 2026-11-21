@@ -127,7 +127,14 @@ pub(crate) fn b_parallel_map(
         // 값 의미론: 원소마다 독립된 클로저 복사본 (spawn과 동일한 격리)
         let jobs: Vec<(Arc<VmClosure>, VmValue)> = list[lo..hi]
             .iter()
-            .map(|item| (deep_clone_closure(&closure), item.clone()))
+            .map(|item| {
+                // 원소마다 독립 격리 (원소 안의 객체도 복사 — Phase 53)
+                let mut iso = Isolator::new();
+                let c = iso.closure(&closure);
+                let it = iso.isolate(item.clone());
+                iso.finish();
+                (c, it)
+            })
             .collect();
         let output = vm.output.clone();
         let future = VmFuture::new();
