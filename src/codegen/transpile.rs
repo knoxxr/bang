@@ -276,7 +276,10 @@ impl Transpiler {
     fn emit_fn_defs(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             if let StmtKind::Let { name, value, .. } = &stmt.kind {
-                if let ExprKind::Function { params, body, param_types, ret_type, .. } = &value.kind {
+                if let ExprKind::Function { params, body, param_types, param_defaults, ret_type, .. } = &value.kind {
+                    if param_defaults.iter().any(Option::is_some) {
+                        self.err("AOT: 매개변수 기본값 미지원", stmt.span);
+                    }
                     // VM은 타입 힌트를 런타임 검증한다. AOT가 무시하면 같은 프로그램의 결과가
                     // 달라지므로(조용한 불일치) 명확한 에러로 거절한다.
                     if param_types.iter().any(Option::is_some) || ret_type.is_some() {
@@ -321,6 +324,9 @@ impl Transpiler {
     fn emit_stmt(&mut self, stmt: &Stmt) {
         let sp = stmt.span;
         match &stmt.kind {
+            StmtKind::LetUnpack { .. } => {
+                self.err("AOT: 분해 선언(let [a, b] = ...) 미지원", sp);
+            }
             StmtKind::Let { name, value, ty } => {
                 if ty.is_some() {
                     self.err("AOT: 타입 힌트 미지원 (VM은 런타임 검증 — 힌트를 지우거나 bang run 사용)", sp);
@@ -526,6 +532,11 @@ impl Transpiler {
 
             ExprKind::Slice { .. } => {
                 self.err("AOT: 슬라이스 미지원", sp);
+                "BNIL".into()
+            }
+
+            ExprKind::IfExpr { .. } => {
+                self.err("AOT: if 식 미지원 (if 문 사용)", sp);
                 "BNIL".into()
             }
 

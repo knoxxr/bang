@@ -941,3 +941,67 @@ fn test_vm_literals_comments_unicode_idents() {
     let src = "/* 블록\n주석 */\nlet 이름 = \"방\"\nlet 합 = 1_000 + 0xff + 0b101 + 0o17 /* 인라인 */\nprint(이름 + str(합))\nprint(1e3)\nlet s = \"\"\"a\n\"b\" \"\"\"\nprint(s)";
     assert_eq!(run_vm(src), vec!["방1275", "1000", "a\n\"b\" "]);
 }
+
+// ============================================================================
+// Phase 47 — 메서드 문법(UFCS)·기본값 매개변수·분해 선언·if 식
+// ============================================================================
+
+#[test]
+fn test_vm_default_params() {
+    let src = "fn greet(name, g = \"안녕\", p = \"!\") {\n return g + \", \" + name + p\n}\nprint(greet(\"방\"))\nprint(greet(\"방\", \"hi\"))\nprint(greet(\"방\", \"hi\", \"?\"))\nfn acc(x, xs = []) {\n xs += [x]\n return xs\n}\nprint(acc(1))\nprint(acc(2))\nfn scale(v, k = v * 2) { return k }\nprint(scale(5))\nprint(scale(5, nil))\nlet h = fn(a, b = 10) { return a + b }\nprint(parallel_map([1, 2], h))";
+    // 기본값은 호출마다 새로 평가(Python의 가변 기본값 함정 없음), 명시적 nil은 기본값으로 바뀌지 않음
+    assert_eq!(run_vm(src), vec!["안녕, 방!", "hi, 방!", "hi, 방?", "[1]", "[2]", "10", "nil", "[11, 12]"]);
+}
+
+#[test]
+fn test_vm_default_params_runtime_arity_error() {
+    // 정적 검사를 피하는 간접 호출 → 런타임 에러 메시지에 범위 표시
+    let src = "let fs = [fn(a, b = 1) { return a + b }]\ntry { fs[0]() } catch e { print(e) }\ntry { fs[0](1, 2, 3) } catch e { print(e) }";
+    assert_eq!(run_vm(src), vec!["인자 개수 불일치: 1~2개 기대, 0개 전달", "인자 개수 불일치: 1~2개 기대, 3개 전달"]);
+}
+
+#[test]
+fn test_vm_let_unpack() {
+    let src = "let [a, b] = [1, 2]\nprint(a + b)\nfn pair() { return [\"x\", 3] }\nfn use_pair() {\n let [name, n] = pair()\n return name + str(n)\n}\nprint(use_pair())\ntry {\n let [p, q] = [1, 2, 3]\n print(p + q)\n} catch e { print(e) }\ntry {\n let [p] = \"ab\"\n print(p)\n} catch e { print(e) }";
+    assert_eq!(run_vm(src), vec!["3", "x3", "분해: 값 2개 기대, 3개 발견", "분해: List 필요, Str 발견"]);
+}
+
+#[test]
+fn test_vm_if_expression() {
+    let src = "let a = 3\nprint(if a > 0 { \"양\" } else { \"음\" })\nlet w = if a > 5 { \"big\" } else if a > 0 { \"small\" } else { \"neg\" }\nprint(w)\nlet z = if true {\n let t = 40\n t + 2\n} else { 0 }\nprint(z)\nfn sign_of(n) { return if n < 0 { -1 } else if n == 0 { 0 } else { 1 } }\nprint([sign_of(-5), sign_of(0), sign_of(9)])";
+    assert_eq!(run_vm(src), vec!["양", "small", "42", "[-1, 0, 1]"]);
+}
+
+#[test]
+fn test_vm_if_expression_requires_else_and_value() {
+    for src in ["let x = if true { 1 }", "let x = if true { let y = 1 } else { 2 }"] {
+        let tokens = Lexer::new(src).tokenize().expect("tokenize");
+        let parsed = Parser::new(tokens).parse();
+        let failed = match parsed {
+            Err(_) => true,
+            Ok(prog) => compile(&prog).is_err(),
+        };
+        assert!(failed, "{src} 는 에러여야 함");
+    }
+}
+
+#[test]
+fn test_vm_method_call_syntax() {
+    let src = "let s = \"Hello\"\nprint(s.upper())\nprint(s.lower().replace(\"l\", \"L\"))\nlet xs = [3, 1, 2]\nprint(xs.sort())\nprint(xs)\nprint(xs.len())\nprint({\"a\": 1}.keys())\nprint(\"a,b\".split(\",\"))\nprint([1, 2, 3].map(fn(x) { return x * 2 }).filter(fn(x) { return x > 2 }))\nxs = xs.push(9)\nprint(xs)";
+    assert_eq!(run_vm(src), vec!["HELLO", "heLLo", "[1, 2, 3]", "[3, 1, 2]", "3", "[a]", "[a, b]", "[4, 6]", "[3, 1, 2, 9]"]);
+}
+
+#[test]
+fn test_vm_method_call_map_member_wins_and_errors() {
+    let src = "let obj = {\"push\": fn(x) { return x * 100 }, \"n\": 1}\nprint(obj.push(2))\nobj.push(3)\nlet xs = [1]\ntry { xs.push(2) } catch e { print(e) }\nprint(xs)\ntry { print([1].frob()) } catch e { print(e) }\nlet f = spawn \"future\".upper()\nprint(f)";
+    assert_eq!(
+        run_vm(src),
+        vec![
+            "200",
+            "x.push(...)의 결과가 버려짐 — push은(는) 새 값을 돌려줄 뿐 x를 바꾸지 않습니다. x = x.push(...)처럼 대입하세요 (리스트 추가는 xs += [v])",
+            "[1]",
+            "필드 접근: List 에 필드 'frob' 없음",
+            "FUTURE",
+        ]
+    );
+}

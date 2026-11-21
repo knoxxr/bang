@@ -80,6 +80,12 @@ pub const OP_MAKE_ITER_PAIRS: u8 = 82;
 pub const OP_IN:              u8 = 83;
 /// 분해 (Phase 46). operand: u8 n. 스택: [list(길이 n)] → [e0, .., e(n-1)].
 pub const OP_UNPACK:          u8 = 84;
+/// 기본값 매개변수 (Phase 47). operand: u8 매개변수 인덱스, i16 오프셋.
+/// 호출 시 그 인자가 전달됐으면 점프(기본값 계산 건너뜀).
+pub const OP_JUMP_IF_ARG:     u8 = 85;
+/// 메서드 호출 `x.f(args)` (Phase 47). operand: u16 이름 상수, u8 argc, u8 discarded(문장 위치면 1).
+/// 스택: [x, args..] → [결과]. x가 맵이고 키 f가 있으면 그 값을 호출, 아니면 빌트인 f(x, args..).
+pub const OP_METHOD_CALL:     u8 = 86;
 
 // ============================================================================
 // Compile error
@@ -131,6 +137,8 @@ struct FnCompiler {
     chunk: Chunk,
     name: Option<String>,
     arity: usize,
+    /// 기본값 없는(필수) 매개변수 수 (Phase 47)
+    min_arity: usize,
     locals: Vec<Local>,
     upvalues: Vec<UpvalueDesc>,
     loops: Vec<LoopInfo>,
@@ -146,6 +154,7 @@ impl FnCompiler {
             chunk: Chunk::new(),
             name,
             arity,
+            min_arity: arity,
             locals: Vec::new(),
             upvalues: Vec::new(),
             loops: Vec::new(),
@@ -212,6 +221,7 @@ impl FnCompiler {
         Arc::new(CompiledFn {
             name: self.name,
             arity: self.arity,
+            min_arity: self.min_arity,
             chunk: self.chunk,
             upvalue_count: self.upvalues.len(),
             local_count: self.local_peak,
@@ -378,7 +388,12 @@ impl Compiler {
 
     fn prescan_globals(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
-            if let StmtKind::Let { name, .. } = &stmt.kind {
+            let names: Vec<&String> = match &stmt.kind {
+                StmtKind::Let { name, .. } => vec![name],
+                StmtKind::LetUnpack { names, .. } => names.iter().collect(),
+                _ => continue,
+            };
+            for name in names {
                 if !self.globals.contains_key(name.as_str()) {
                     let slot = self.global_count;
                     self.globals.insert(name.clone(), slot);
@@ -417,7 +432,36 @@ impl Compiler {
                 }
             }
 
+            StmtKind::LetUnpack { names, value } => {
+                self.compile_expr(value);
+                self.emit_u8(OP_UNPACK, names.len().min(255) as u8, sp);
+                if names.len() > 255 {
+                    self.error("분해 선언의 이름이 너무 많습니다", sp);
+                }
+                // UNPACK은 원소를 순서대로 push → 마지막 이름부터 저장
+                let fn_idx = self.fn_stack.len() - 1;
+                let slots: Vec<VarLocation> = names.iter().map(|name| {
+                    match self.globals.get(name.as_str()) {
+                        Some(&slot) if fn_idx == 0 => VarLocation::Global(slot),
+                        _ => VarLocation::Local(self.cur_mut().declare_local(name)),
+                    }
+                }).collect();
+                for loc in slots.into_iter().rev() {
+                    self.emit_store(loc, sp);
+                }
+            }
+
             StmtKind::Expr(expr) => {
+                // 문장 위치의 메서드 호출은 "결과 버림" 표시 (순수 빌트인이면 VM이 에러)
+                if let ExprKind::Call { callee, args } = &expr.kind {
+                    if let ExprKind::Field { target, name } = &callee.kind {
+                        if builtin_index(name).is_some() {
+                            self.compile_method_call(target, name, args, true, sp);
+                            self.emit(OP_POP, sp);
+                            return;
+                        }
+                    }
+                }
                 self.compile_expr(expr);
                 // Every expression statement discards the result.
                 // Assign leaves the value on stack (via DUP+STORE), so we POP it too.
@@ -736,10 +780,27 @@ impl Compiler {
             }
 
             ExprKind::Call { callee, args } => {
+                // x.f(args) — f가 빌트인 이름이면 메서드 호출(UFCS). 맵의 키 f가 우선.
+                if let ExprKind::Field { target, name } = &callee.kind {
+                    if builtin_index(name).is_some() {
+                        self.compile_method_call(target, name, args, false, sp);
+                        return;
+                    }
+                }
                 self.compile_expr(callee);
                 let argc = args.len() as u8;
                 for arg in args { self.compile_expr(arg); }
                 self.emit_u8(OP_CALL, argc, sp);
+            }
+
+            ExprKind::IfExpr { cond, then, else_ } => {
+                self.compile_expr(cond);
+                let else_jump = self.emit_jump(OP_JUMP_FALSE, sp);
+                self.compile_block_value(then, sp);
+                let end_jump = self.emit_jump(OP_JUMP, sp);
+                self.patch_jump(else_jump);
+                self.compile_block_value(else_, sp);
+                self.patch_jump(end_jump);
             }
 
             ExprKind::Index { target, index } => {
@@ -754,13 +815,16 @@ impl Compiler {
                 self.emit_u16(OP_FIELD_GET, name_idx, sp);
             }
 
-            ExprKind::Function { name, params, param_types, ret_type, body } => {
-                self.compile_fn(name.clone(), params, param_types, *ret_type, body, sp);
+            ExprKind::Function { name, params, param_types, param_defaults, ret_type, body } => {
+                self.compile_fn(name.clone(), params, param_types, param_defaults, *ret_type, body, sp);
             }
 
             ExprKind::Spawn(inner) => {
                 // Part B: 진짜 spawn — OS 스레드로 실행
-                if let ExprKind::Call { callee, args } = &inner.kind {
+                // 메서드 호출(spawn x.f())은 아래 thunk 경로로 (OP_SPAWN은 클로저 callee만 받음)
+                let is_method = matches!(&inner.kind, ExprKind::Call { callee, .. }
+                    if matches!(&callee.kind, ExprKind::Field { name, .. } if builtin_index(name).is_some()));
+                if let (ExprKind::Call { callee, args }, false) = (&inner.kind, is_method) {
                     // spawn foo(a, b) → callee + args + OP_SPAWN(argc)
                     self.compile_expr(callee);
                     let argc = args.len() as u8;
@@ -777,7 +841,7 @@ impl Compiler {
                         }],
                         span: sp,
                     };
-                    self.compile_fn(None, &[], &[], None, &body, sp);
+                    self.compile_fn(None, &[], &[], &[], None, &body, sp);
                     self.emit_u8(OP_SPAWN, 0, sp);
                 }
             }
@@ -823,6 +887,38 @@ impl Compiler {
             }
             _ => None,
         }
+    }
+
+    /// 메서드 호출 `target.name(args)` → OP_METHOD_CALL (빌트인 이름일 때만).
+    fn compile_method_call(&mut self, target: &Expr, name: &str, args: &[Expr], discarded: bool, sp: Span) {
+        self.compile_expr(target);
+        for arg in args { self.compile_expr(arg); }
+        let name_idx = self.add_const(VmValue::Str(name.to_string()));
+        self.emit_u16(OP_METHOD_CALL, name_idx, sp);
+        self.emit(args.len() as u8, sp);
+        self.emit(discarded as u8, sp);
+    }
+
+    /// 블록을 값으로 컴파일: 마지막 문장은 식이어야 하며 그 값이 스택에 남는다 (if 식용).
+    fn compile_block_value(&mut self, block: &Block, sp: Span) {
+        self.cur_mut().begin_scope();
+        match block.stmts.split_last() {
+            Some((last, init)) => {
+                self.compile_stmts(init);
+                match &last.kind {
+                    StmtKind::Expr(e) => self.compile_expr(e),
+                    _ => {
+                        self.error("if 식의 각 갈래는 값(식)으로 끝나야 합니다", last.span);
+                        self.emit(OP_NIL, sp);
+                    }
+                }
+            }
+            None => {
+                self.error("if 식의 갈래가 비어 있습니다 — 값이 필요합니다", sp);
+                self.emit(OP_NIL, sp);
+            }
+        }
+        self.cur_mut().end_scope();
     }
 
     /// `x op= e` → `x = x op e` (변수: 갱신 패턴 재사용), 경로는 OP_SET_PATH의 binop로 (키 1회 평가).
@@ -936,17 +1032,20 @@ impl Compiler {
     // Function / closure compilation
     // ============================================================
 
+    #[allow(clippy::too_many_arguments)]
     fn compile_fn(
         &mut self,
         name: Option<String>,
         params: &[String],
         param_types: &[Option<TypeAnn>],
+        param_defaults: &[Option<Expr>],
         ret_type: Option<TypeAnn>,
         body: &Block,
         sp: Span,
     ) {
         // Push a new FnCompiler
         let mut fn_comp = FnCompiler::new(name.clone(), params.len());
+        fn_comp.min_arity = param_defaults.iter().take_while(|d| d.is_none()).count().min(params.len());
         fn_comp.ret_type = ret_type;
 
         // Parameters are locals at scope_depth=1
@@ -967,6 +1066,23 @@ impl Compiler {
 
         self.fn_stack.push(fn_comp);
         self.cur_mut().begin_scope(); // body block scope
+
+        // 기본값: 인자가 생략된 매개변수만 호출 시점에 계산해 채운다 (Phase 47)
+        for (i, d) in param_defaults.iter().enumerate() {
+            if let Some(d) = d {
+                self.emit_u8(OP_JUMP_IF_ARG, i as u8, sp);
+                let patch = self.cur_mut().chunk.code.len();
+                self.cur_mut().chunk.emit(0xff, sp);
+                self.cur_mut().chunk.emit(0xff, sp);
+                self.compile_expr(d);
+                self.emit_u8(OP_STORE_LOCAL, i as u8, sp);
+                let target = self.current_pos();
+                let off = (target as isize - patch as isize - 2) as i16;
+                let chunk = &mut self.cur_mut().chunk;
+                chunk.code[patch] = (off as u16 & 0xff) as u8;
+                chunk.code[patch + 1] = (off as u16 >> 8) as u8;
+            }
+        }
 
         // 파라미터 타입 힌트 런타임 검증 (본문 시작 시)
         for (i, pt) in param_types.iter().enumerate() {

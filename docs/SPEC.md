@@ -116,6 +116,33 @@ Bang은 동적 타입 언어이다. 변수에 타입 선언이 없고,
 함수는 일급 값(first-class value)이다. 변수에 대입, 인자로 전달,
 반환값으로 사용할 수 있다. 클로저를 지원한다.
 
+**기본값 매개변수** (Phase 47): `fn greet(name, g = "안녕", p = "!") { ... }`
+
+- 기본값은 뒤쪽 매개변수에만 둘 수 있다 (기본값 있는 매개변수 뒤에 없는 것은 파스 에러).
+- 인자를 생략하면 **호출할 때마다** 기본값 식을 새로 평가한다 — Python의 "가변 기본값 공유"
+  함정이 없다(`fn acc(x, xs = [])`는 매번 빈 리스트). 앞쪽 매개변수를 참조할 수 있다(`fn f(v, k = v * 2)`).
+- 명시적으로 `nil`을 넘기면 기본값으로 바뀌지 않는다(생략과 구별).
+- 인자 수는 범위로 검사한다: 정적(리졸버) `인자 수 불일치: 함수는 1~3개를 ...`, 런타임
+  `인자 개수 불일치: 1~3개 기대, 0개 전달`. spawn·parallel_map 호출에도 같은 규칙.
+- 키워드 인자(`f(b=1)`)·가변 인자는 없다.
+
+**메서드 문법** (Phase 47): `x.f(a, b)`에서 `f`가 빌트인 이름이면
+
+1. `x`가 맵이고 키 `f`가 있으면 그 값을 호출한다 (맵 + 클로저 "객체" 관용구가 우선).
+2. 그 외에는 빌트인 `f(x, a, b)`를 호출한다: `"Hi".upper()`, `xs.sort()`, `m.keys()`,
+   `xs.map(fn(x) { ... }).filter(...)` 체이닝.
+
+`f`가 빌트인 이름이 아니면 기존대로 필드 값을 꺼내 호출한다. 메서드 문법은 **새 기능이 아니라
+표기법**이다 — 값 의미론이 그대로라 `xs.sort()`는 정렬된 **새 리스트**를 돌려주고 `xs`는 바뀌지
+않는다. 그래서 결과를 버리는 문장은 실수로 보고 막는다:
+
+- 문장 위치의 `xs.push(v)`, `xs.sort()` 등(값을 새로 만들 뿐인 빌트인: push, pop, sort, sort_by,
+  reverse, unique, merge, replace, upper, lower, trim, trim_start, trim_end, slice, map, filter,
+  flat, repeat, union, intersect, difference)은 **런타임 에러** (`x.push(...)의 결과가 버려짐 ...`).
+  `xs = xs.push(v)` 또는 `xs += [v]`로 쓴다. (맵 객체의 키를 호출한 경우는 해당 없음.)
+- 함수 표기 `push(xs, v)` 단독 문장은 기존 코드 호환을 위해 **경고**만 낸다.
+- `pop(xs)`/`xs.pop()`은 마지막 원소를 돌려줄 뿐 제거하지 않는다 — 제거는 `xs = xs[:-1]`.
+
 ### 3.4 Future 타입
 
 `spawn` 표현식의 결과. 값이 사용되는 시점에 자동으로 대기(await)한다.
@@ -141,8 +168,9 @@ statement      = let_stmt
                | continue_stmt
                | expr_stmt ;
 
-let_stmt       = "let" IDENT "=" expression NL ;
-fn_decl        = "fn" IDENT "(" [ params ] ")" block ;
+let_stmt       = "let" IDENT [ ":" type ] "=" expression NL
+               | "let" "[" IDENT { "," IDENT } "]" "=" expression NL ;   (* 분해 선언 *)
+fn_decl        = "fn" IDENT "(" [ params ] ")" [ "->" type ] block ;
 if_stmt        = "if" expression block
                  { "else" "if" expression block }
                  [ "else" block ] ;
@@ -154,7 +182,8 @@ continue_stmt  = "continue" NL ;
 expr_stmt      = expression NL ;
 
 block          = "{" { statement } "}" ;
-params         = IDENT { "," IDENT } ;
+params         = param { "," param } ;
+param          = IDENT [ ":" type ] [ "=" expression ] ;   (* 기본값은 뒤쪽에만 *)
 
 (* === 식(Expression) — 우선순위 낮은 순 === *)
 expression     = assignment ;
@@ -183,13 +212,15 @@ primary        = INT_LIT | FLOAT_LIT | STRING_LIT
                | map_literal
                | spawn_expr
                | lambda
+               | if_expr
                | parallel_block ;
 
 list_literal   = "[" [ expression { "," expression } ] "]" ;
 map_literal    = "{" [ map_entry { "," map_entry } ] "}" ;
 map_entry      = expression ":" expression ;
 spawn_expr     = "spawn" expression ;
-lambda         = "fn" "(" [ params ] ")" block ;
+lambda         = "fn" "(" [ params ] ")" [ "->" type ] block ;
+if_expr        = "if" expression block "else" ( block | if_expr ) ;   (* 각 블록은 식으로 끝남 *)
 parallel_block = "parallel" block ;
 
 arguments      = expression { "," expression } ;
@@ -213,6 +244,18 @@ map["key"] = v   // 맵 키 대입
 ```
 
 > **주의**: `let`은 선언, `=`은 재대입. 선언되지 않은 변수에 `=`은 에러.
+
+**분해 선언** (Phase 47): `let [a, b] = expr`는 expr이 길이 2인 리스트일 때 a, b를 선언한다.
+길이가 다르거나 리스트가 아니면 런타임 에러(`분해: 값 2개 기대, 3개 발견`, `분해: List 필요, ...`).
+함수가 여러 값을 돌려줄 때 쓴다: `let [q, r] = divmod(a, b)`.
+
+**if 식** (Phase 47): 표현식 자리의 `if c { a } else { b }`는 값을 낸다. 각 갈래의 **마지막 문장이
+식**이어야 하며 그 값이 결과다(앞 문장은 자유). `else`는 필수이고 `else if` 체인을 쓸 수 있다.
+문장 자리의 `if`는 기존 if 문이다.
+
+```bang
+let label = if score >= 90 { "A" } else if score >= 80 { "B" } else { "C" }
+```
 
 **복합 대입** (Phase 46): `x += e`는 `x = x + e`와 같다 (`-=`, `*=`, `/=`, `%=`도 같은 방식).
 대상이 경로(`m[k] += 1`, `cfg.n *= 2`)여도 되며, 이때 **경로의 키 식은 한 번만 평가**된다.

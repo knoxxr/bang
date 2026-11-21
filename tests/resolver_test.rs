@@ -337,3 +337,27 @@ fn test_duplicate_top_level_function_still_errors() {
     // prescan이 정상 중복 선언 검출을 무력화하지 않아야 한다
     expect_error("fn f() { return 1 }\nfn f() { return 2 }\n", "이미 선언");
 }
+
+// ---- Phase 47: 기본값 매개변수 인자 수 범위 / 결과 버림 경고 / 분해 선언 ----
+
+#[test]
+fn test_default_params_arity_range() {
+    expect_ok("fn f(a, b = 2, c = 3) { return a + b + c }\nf(1)\nf(1, 2)\nf(1, 2, 3)");
+    expect_error("fn f(a, b = 2) { return a + b }\nf()", "1~2개");
+    expect_error("fn f(a, b = 2) { return a + b }\nf(1, 2, 3)", "1~2개");
+}
+
+#[test]
+fn test_discarded_pure_builtin_warns() {
+    expect_warning("let xs = [1]\npush(xs, 2)\nprint(xs)", "'push'의 결과가 버려짐");
+    // 사용자가 같은 이름을 정의했으면 경고하지 않는다
+    let r = resolve_source("fn push(a, b) { print(b) }\npush(1, 2)");
+    assert!(r.warnings.iter().all(|w| !w.message.contains("결과가 버려짐")));
+}
+
+#[test]
+fn test_let_unpack_declares_names() {
+    expect_ok("let [a, b] = [1, 2]\nprint(a + b)");
+    expect_ok("fn f() {\n let [x, y] = [1, 2]\n return x + y\n}\nprint(f())");
+    expect_error("let [a, b] = [1, 2]\nprint(c)", "정의되지 않은 변수");
+}

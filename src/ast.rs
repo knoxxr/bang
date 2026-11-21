@@ -128,6 +128,8 @@ pub enum StmtKind {
     If { cond: Expr, then: Block, else_: Option<Block> },
     /// `while cond { body }`
     While { cond: Expr, body: Block },
+    /// `let [a, b] = expr` — 리스트 분해 선언 (Phase 47). 길이가 다르면 런타임 에러.
+    LetUnpack { names: Vec<String>, value: Expr },
     /// `for var in iter { body }` / `for a, b in iter { body }` (vars ≥ 1; 2개 이상이면 원소 분해,
     /// 맵은 [키, 값] 쌍으로 순회 — Phase 46)
     For { vars: Vec<String>, iter: Expr, body: Block },
@@ -235,6 +237,8 @@ pub enum ExprKind {
     Call { callee: Box<Expr>, args: Vec<Expr> },
     Index { target: Box<Expr>, index: Box<Expr> },
     Field { target: Box<Expr>, name: String },
+    /// `if c { a } else { b }` 식 (Phase 47). 각 갈래의 마지막 문장(식)이 값. else 필수.
+    IfExpr { cond: Box<Expr>, then: Block, else_: Block },
     /// `target[start:end]` — 생략된 경계는 None (Phase 46)
     Slice { target: Box<Expr>, start: Option<Box<Expr>>, end: Option<Box<Expr>> },
     // 함수 / 클로저
@@ -245,6 +249,9 @@ pub enum ExprKind {
         name: Option<String>,
         params: Vec<String>,
         param_types: Vec<Option<TypeAnn>>,
+        /// 기본값 (Phase 47). params와 길이가 같고, 기본값은 뒤쪽 매개변수에만 있다.
+        /// 호출 시 인자가 생략되면 그때 평가한다 (호출마다 새 값).
+        param_defaults: Vec<Option<Expr>>,
         ret_type: Option<TypeAnn>,
         body: Block,
     },
@@ -278,6 +285,10 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
         StmtKind::Let { name, ty, value } => {
             let tystr = ty.map(|t| format!(": {}", t.name())).unwrap_or_default();
             out.push_str(&format!("{pad}Let {name}{tystr} [{}:{}]\n", stmt.span.line, stmt.span.col));
+            dump_expr(out, value, depth + 1);
+        }
+        StmtKind::LetUnpack { names, value } => {
+            out.push_str(&format!("{pad}LetUnpack [{}] [{}:{}]\n", names.join(", "), stmt.span.line, stmt.span.col));
             dump_expr(out, value, depth + 1);
         }
         StmtKind::Expr(expr) => {
@@ -394,6 +405,14 @@ fn dump_expr(out: &mut String, expr: &Expr, depth: usize) {
         ExprKind::Field { target, name } => {
             out.push_str(&format!("{pad}Field(.{name})\n"));
             dump_expr(out, target, depth + 1);
+        }
+        ExprKind::IfExpr { cond, then, else_ } => {
+            out.push_str(&format!("{pad}IfExpr\n"));
+            dump_expr(out, cond, depth + 1);
+            out.push_str(&format!("{pad}  then:\n"));
+            dump_block(out, then, depth + 2);
+            out.push_str(&format!("{pad}  else:\n"));
+            dump_block(out, else_, depth + 2);
         }
         ExprKind::Slice { target, start, end } => {
             out.push_str(&format!("{pad}Slice\n"));

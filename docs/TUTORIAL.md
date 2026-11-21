@@ -420,6 +420,63 @@ sleep(500)                        // 0.5초 대기 (spawn된 작업 안에서도
 
 ---
 
+## 11.5 Python에서 왔다면
+
+Python 손버릇 대부분이 그대로 통한다 — 복합 대입, 슬라이스, `in`, `for k, v`, 메서드 문법,
+기본값 매개변수, if 식, 한글 이름까지:
+
+```bang
+let words = "the cat and the hat".split(" ")
+let counts = {}
+for w in words {
+    counts[w] = get(counts, w, 0) + 1
+}
+for k, v in counts {
+    print(k + ": " + str(v))
+}
+
+let xs = [5, 3, 8, 1]
+xs += [9]
+print(xs.sort()[:3])
+print(xs[-2:])
+print(3 in xs, "z" not in counts)
+
+fn describe(n, unit = "개") {
+    let size = if n > 3 { "많음" } else { "적음" }
+    return str(n) + unit + " (" + size + ")"
+}
+print(describe(5))
+print(describe(2, "명"))
+
+let [lo, hi] = [xs.sort()[0], xs.sort()[-1]]
+print(lo, hi)
+let 합계 = 1_000 + 0xff
+print(합계)
+```
+
+출력:
+
+```
+and: 1
+cat: 1
+hat: 1
+the: 2
+[1, 3, 5]
+[1, 9]
+true true
+5개 (많음)
+2명 (적음)
+1 9
+1255
+```
+
+다른 점 세 가지만 기억하자 (모두 **값 의미론** 때문이다 — 7장의 동시성이 안전한 이유):
+
+- `xs.sort()`·`xs.push(v)`는 **새 값**을 돌려준다. `xs`는 그대로다. 그래서 `xs.push(v)`를
+  단독 문장으로 쓰면 에러로 알려 준다 — `xs = xs.push(v)` 또는 `xs += [v]`로 쓴다.
+- `pop`은 마지막 원소를 돌려줄 뿐 지우지 않는다. 지우려면 `xs = xs[:-1]`.
+- 기본값 매개변수는 호출마다 새로 계산된다 (`fn f(xs = [])`가 호출 간에 공유되지 않는다).
+
 ## 12. 다음 단계
 
 - 예제 모음: [../examples/](../examples/) — 각 파일 상단 주석이 기대 출력입니다.

@@ -525,3 +525,20 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              문서: SPEC 2.1/2.2/2.5/3.1/4.1/4.2/5/7/11, llms.txt(세미콜론 쓰던 잘못된 관용구도 수정),
                VS Code 문법(블록 주석·삼중 문자열·숫자 리터럴).
              회귀: lexer +5, vm_test +6. (tests: 364 green, clippy 0)
+✅ Phase 47 — 표현력 (Python 체감 2차): 메서드 문법·기본값 매개변수·분해 선언·if 식 — v0.33.0
+             메서드 문법(UFCS): x.f(args)에서 f가 빌트인 이름이면 OP_METHOD_CALL(86) — 맵에 키 f가 있으면
+               그 값 호출(맵+클로저 객체 관용구 우선), 아니면 빌트인 f(x, args). 빌트인 이름이 아니면 기존 필드 호출.
+               값 의미론 유지(xs.sort()는 새 리스트). 문장 위치에서 순수 빌트인(resolver::PURE_BUILTINS) 메서드의
+               결과를 버리면 런타임 에러(xs.push(v) 습관 차단), 함수 표기 push(xs, v) 단독 문장은 리졸버 경고(호환).
+               spawn x.f()는 thunk 경로로 컴파일.
+             기본값 매개변수: fn f(a, b = 2). 뒤쪽에만, 호출마다 평가(가변 기본값 공유 함정 없음), 명시적 nil은
+               유지. CompiledFn.min_arity + CallFrame.argc + OP_JUMP_IF_ARG(85). 리졸버 arity가 (최소, 최대) 범위,
+               do_call/run_spawned 범위 검사. typeck는 기본값 타입이 표기와 충돌하면 보고.
+             분해 선언 let [a, b] = expr (StmtKind::LetUnpack, OP_UNPACK 재사용, 전역/지역 모두).
+             if 식: 표현식 자리 if c { a } else { b } (ExprKind::IfExpr, else 필수, 각 갈래 마지막 문장=값).
+             파서 깊이 가드 회귀(디버그 빌드 스택 오버플로) 발견·수정: 슬라이스/not in/복합 대입/if 식 파싱을
+               #[inline(never)] 보조 함수로 분리해 parse_expr_bp 재귀 프레임을 작게 유지.
+             AOT: 기본값·분해·if 식은 명확한 에러.
+             문서: SPEC 3.3/4.1/4.2, llms.txt, TUTORIAL 11.5 "Python에서 왔다면"(스니펫 실행 검증).
+             보류(사용자 결정 대기): 문자열 보간 문법.
+             회귀: resolver +3, vm_test +7. (tests: 374 green, clippy 0)

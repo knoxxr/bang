@@ -24,6 +24,7 @@ use crate::compiler::{
     OP_SPAWN, OP_PARALLEL_ENTER, OP_PARALLEL_EXIT,
     OP_SETUP_TRY, OP_POP_TRY, OP_THROW, OP_CHECK_TYPE,
     OP_SET_PATH, OP_UPDATE_VAR, OP_SLICE, OP_MAKE_ITER_PAIRS, OP_IN, OP_UNPACK,
+    OP_JUMP_IF_ARG, OP_METHOD_CALL,
 };
 use crate::ast::TypeAnn;
 use crate::lexer::token::Span;
@@ -246,6 +247,8 @@ impl Chunk {
 pub struct CompiledFn {
     pub name: Option<String>,
     pub arity: usize,
+    /// 필수 인자 수 (기본값 매개변수가 있으면 arity보다 작다 — Phase 47)
+    pub min_arity: usize,
     pub chunk: Chunk,
     pub upvalue_count: usize,
     pub local_count: usize,
@@ -305,6 +308,8 @@ pub struct CallFrame {
     pub closure: Arc<VmClosure>,
     pub ip: usize,
     pub locals: Arc<Mutex<Vec<VmValue>>>,
+    /// 실제로 전달된 인자 수 (기본값 매개변수 판정용 — OP_JUMP_IF_ARG)
+    pub argc: usize,
 }
 
 /// try/catch 예외 핸들러. OP_SETUP_TRY 시점의 상태를 기록해 두었다가
@@ -405,7 +410,7 @@ impl Vm {
             globals: self.globals.clone(),
         });
         let locals = Arc::new(Mutex::new(vec![VmValue::Nil; main_fn.local_count]));
-        self.frames.push(CallFrame { closure, ip: 0, locals });
+        self.frames.push(CallFrame { closure, ip: 0, locals, argc: 0 });
         self.exec_until(0)?;
 
         // 프로그램 종료 시 모든 잔여 spawn 조인 (누수 방지)
@@ -434,13 +439,17 @@ impl Vm {
             pending_exception: None,
             locals_pool: Vec::new(),
         };
+        let argc = args.len();
+        if argc < closure.func.min_arity || argc > closure.func.arity {
+            return Err(arity_error(&closure.func, argc, Span::new(0, 0)));
+        }
         let local_count = closure.func.local_count;
         let mut locals_vec = vec![VmValue::Nil; local_count];
         for (i, arg) in args.into_iter().enumerate() {
             if i < locals_vec.len() { locals_vec[i] = arg; }
         }
         let locals = Arc::new(Mutex::new(locals_vec));
-        vm.frames.push(CallFrame { closure, ip: 0, locals });
+        vm.frames.push(CallFrame { closure, ip: 0, locals, argc });
         vm.exec_until(0)?;
 
         // 서브-VM 내 잔여 spawn 조인
@@ -1059,6 +1068,50 @@ impl Vm {
                     drop(guard);
                     self.stack.push(new_val);
                 }
+                OP_JUMP_IF_ARG => {
+                    let idx = self.read_byte() as usize;
+                    let offset = self.read_i16();
+                    let fi = self.frames.len() - 1;
+                    if self.frames[fi].argc > idx {
+                        self.jump_by(offset);
+                    }
+                }
+                OP_METHOD_CALL => {
+                    // stack: [x, args..]
+                    let span = self.current_span();
+                    let name_idx = self.read_u16();
+                    let argc = self.read_byte() as usize;
+                    let discarded = self.read_byte() != 0;
+                    let name = match self.get_constant(name_idx) {
+                        VmValue::Str(s) => s,
+                        _ => return Err(RuntimeError::no_span("OP_METHOD_CALL: non-string name")),
+                    };
+                    let base = self.stack.len() - argc - 1;
+                    let target = auto_resolve(std::mem::replace(&mut self.stack[base], VmValue::Nil), span)?;
+                    // 1) 맵 "객체"의 키가 우선 (맵 + 클로저 관용구)
+                    let member = match &target {
+                        VmValue::Map(m) => m.get(&name).cloned(),
+                        _ => None,
+                    };
+                    if let Some(member) = member {
+                        self.stack[base] = member;
+                        self.do_call(argc, span, stop_depth)?;
+                    } else {
+                    // 2) 빌트인 name(x, args..) — UFCS
+                    let Some(idx) = builtin_index(&name) else {
+                        return Err(RuntimeError::new(
+                            format!("메서드 없음: {} 에 '{name}' 없음", target.type_name()), span));
+                    };
+                    if discarded && crate::resolver::PURE_BUILTINS.contains(&name.as_str()) {
+                        return Err(RuntimeError::new(format!(
+                            "x.{name}(...)의 결과가 버려짐 — {name}은(는) 새 값을 돌려줄 뿐 x를 바꾸지 않습니다. \
+                             x = x.{name}(...)처럼 대입하세요 (리스트 추가는 xs += [v])"), span));
+                    }
+                    self.stack[base] = target;
+                    self.stack.insert(base, VmValue::Builtin(idx));
+                    self.do_call(argc + 1, span, stop_depth)?;
+                    }
+                }
                 OP_SLICE => {
                     let span = self.current_span();
                     let end = auto_resolve(self.stack_pop(), span)?;
@@ -1266,11 +1319,8 @@ impl Vm {
 
         match callee {
             VmValue::Closure(closure) => {
-                if arg_count != closure.func.arity {
-                    return Err(RuntimeError::new(
-                        format!("인자 개수 불일치: {}개 기대, {}개 전달",
-                            closure.func.arity, arg_count),
-                        span));
+                if arg_count < closure.func.min_arity || arg_count > closure.func.arity {
+                    return Err(arity_error(&closure.func, arg_count, span));
                 }
                 let callee_idx = self.stack.len() - arg_count - 1;
                 let base = callee_idx + 1; // 첫 인자 위치
@@ -1284,7 +1334,7 @@ impl Vm {
                     }
                 }
                 self.stack.truncate(callee_idx); // 인자 + callee 제거
-                self.frames.push(CallFrame { closure, ip: 0, locals });
+                self.frames.push(CallFrame { closure, ip: 0, locals, argc: arg_count });
                 // Execution continues in exec_until loop
             }
 
@@ -1531,6 +1581,15 @@ fn vm_contains(container: &VmValue, needle: &VmValue, span: Span) -> Result<bool
         (c, n) => Err(RuntimeError::new(
             format!("in: {} 안에서 {} 찾기 지원 안 됨", c.type_name(), n.type_name()), span)),
     }
+}
+
+fn arity_error(func: &CompiledFn, got: usize, span: Span) -> RuntimeError {
+    let need = if func.min_arity == func.arity {
+        format!("{}개", func.arity)
+    } else {
+        format!("{}~{}개", func.min_arity, func.arity)
+    };
+    RuntimeError::new(format!("인자 개수 불일치: {need} 기대, {got}개 전달"), span)
 }
 
 fn lock_err(span: Span) -> RuntimeError {

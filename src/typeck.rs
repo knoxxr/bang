@@ -150,6 +150,12 @@ impl Checker {
                     self.define(name, vty);
                 }
             }
+            StmtKind::LetUnpack { names, value } => {
+                self.infer(value);
+                for n in names {
+                    self.define(n, Ty::Unknown);
+                }
+            }
             StmtKind::Expr(e) => { self.infer(e); }
             StmtKind::Return(opt) => {
                 let rt = self.ret_stack.last().copied().unwrap_or(Ty::Unknown);
@@ -267,6 +273,12 @@ impl Checker {
                 self.infer(value);
                 Ty::Unknown
             }
+            ExprKind::IfExpr { cond, then, else_ } => {
+                self.infer(cond);
+                self.push_scope(); self.check_stmts(&then.stmts); self.pop_scope();
+                self.push_scope(); self.check_stmts(&else_.stmts); self.pop_scope();
+                Ty::Unknown
+            }
             ExprKind::Slice { target, start, end } => {
                 let t = self.infer(target);
                 for e in [start, end].into_iter().flatten() {
@@ -280,7 +292,7 @@ impl Checker {
                 // 알려진 함수면 인자 타입 검사 + 반환 타입
                 if let ExprKind::Ident(name) = &callee.kind {
                     if let Some(sig) = self.sigs.get(name).cloned() {
-                        if sig.params.len() == arg_tys.len() {
+                        if arg_tys.len() <= sig.params.len() {
                             for (i, (pt, at)) in sig.params.iter().zip(&arg_tys).enumerate() {
                                 if pt.conflicts(*at) {
                                     self.err(format!("'{name}' 인자 {}: {} 기대, {} 전달",
@@ -299,7 +311,20 @@ impl Checker {
                 self.infer(target); self.infer(index); Ty::Unknown
             }
             ExprKind::Field { target, .. } => { self.infer(target); Ty::Unknown }
-            ExprKind::Function { name, params, param_types, ret_type, body } => {
+            ExprKind::Function { name, params, param_types, param_defaults, ret_type, body } => {
+                // 기본값 식의 타입이 표기와 확실히 충돌하면 보고
+                for (i, d) in param_defaults.iter().enumerate() {
+                    if let Some(d) = d {
+                        let dt = self.infer(d);
+                        if let Some(Some(t)) = param_types.get(i) {
+                            let pt = Ty::from_ann(*t);
+                            if pt.conflicts(dt) {
+                                self.err(format!("기본값 타입 불일치: '{}'은 {} 인데 {} 기본값",
+                                    params[i], pt.name(), dt.name()), d.span);
+                            }
+                        }
+                    }
+                }
                 // 지역 함수 시그니처도 등록(이름 있으면)
                 if let Some(n) = name {
                     self.sigs.insert(n.clone(), Self::sig_of(params.len(), param_types, *ret_type));

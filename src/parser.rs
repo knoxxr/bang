@@ -307,6 +307,28 @@ impl Parser {
 
     fn parse_let(&mut self, span: Span) -> Option<Stmt> {
         self.advance(); // let
+        // 분해 선언: let [a, b] = expr
+        if matches!(self.peek(), TokenKind::LBracket) {
+            self.advance(); // [
+            let mut names = Vec::new();
+            while !matches!(self.peek(), TokenKind::RBracket | TokenKind::Eof) {
+                names.push(self.expect_ident()?);
+                if matches!(self.peek(), TokenKind::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::RBracket)?;
+            if names.is_empty() {
+                self.error_at(span, "분해 선언에는 이름이 하나 이상 필요합니다");
+                return None;
+            }
+            self.expect(&TokenKind::Eq)?;
+            let value = self.parse_expr()?;
+            self.consume_stmt_end();
+            return Some(Stmt { kind: StmtKind::LetUnpack { names, value }, span });
+        }
         let name = self.expect_ident()?;
         // 선택적 타입 힌트: `: type`
         let ty = if matches!(self.peek(), TokenKind::Colon) {
@@ -326,14 +348,14 @@ impl Parser {
         self.advance(); // fn
         let name = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
-        let (params, param_types) = self.parse_params()?;
+        let (params, param_types, param_defaults) = self.parse_params()?;
         self.expect(&TokenKind::RParen)?;
         let ret_type = self.parse_ret_type()?;
         let body = self.parse_block()?;
         self.consume_stmt_end();
         let func = Expr {
             kind: ExprKind::Function {
-                name: Some(name.clone()), params, param_types, ret_type, body,
+                name: Some(name.clone()), params, param_types, param_defaults, ret_type, body,
             },
             span,
         };
@@ -456,11 +478,15 @@ impl Parser {
     // 파라미터 목록
     // =========================================================================
 
-    /// 파라미터 목록 — 각 파라미터는 선택적 `: type` 힌트를 가질 수 있다.
-    fn parse_params(&mut self) -> Option<(Vec<String>, Vec<Option<TypeAnn>>)> {
+    /// 파라미터 목록 — 각 파라미터는 선택적 `: type` 힌트와 `= 기본값`을 가질 수 있다.
+    /// 기본값이 있는 매개변수 뒤에는 기본값 없는 매개변수가 올 수 없다.
+    #[allow(clippy::type_complexity)]
+    fn parse_params(&mut self) -> Option<(Vec<String>, Vec<Option<TypeAnn>>, Vec<Option<Expr>>)> {
         let mut params = Vec::new();
         let mut types = Vec::new();
+        let mut defaults = Vec::new();
         while !matches!(self.peek(), TokenKind::RParen | TokenKind::Eof) {
+            let name_span = self.peek_span();
             let name = self.expect_ident()?;
             params.push(name);
             // 선택적 타입 힌트: `: type`
@@ -470,13 +496,23 @@ impl Parser {
             } else {
                 types.push(None);
             }
+            // 선택적 기본값: `= expr`
+            if matches!(self.peek(), TokenKind::Eq) {
+                self.advance(); // =
+                defaults.push(Some(self.parse_expr()?));
+            } else {
+                if defaults.iter().any(|d: &Option<Expr>| d.is_some()) {
+                    self.error_at(name_span, "기본값이 있는 매개변수 뒤에는 기본값 없는 매개변수를 둘 수 없습니다");
+                }
+                defaults.push(None);
+            }
             if matches!(self.peek(), TokenKind::Comma) {
                 self.advance();
             } else {
                 break;
             }
         }
-        Some((params, types))
+        Some((params, types, defaults))
     }
 
     /// 타입 이름 파싱 (int/float/bool/str/nil/list/map/fn/any).
@@ -533,34 +569,7 @@ impl Parser {
                         continue;
                     }
                     TokenKind::LBracket => {
-                        let span = lhs.span;
-                        self.advance(); // [
-                        // 슬라이스 `a[s:e]` / `a[:e]` / `a[s:]` / `a[:]` 또는 인덱스 `a[i]`
-                        let start = if matches!(self.peek(), TokenKind::Colon) {
-                            None
-                        } else {
-                            Some(Box::new(self.parse_expr()?))
-                        };
-                        if matches!(self.peek(), TokenKind::Colon) {
-                            self.advance(); // :
-                            let end = if matches!(self.peek(), TokenKind::RBracket) {
-                                None
-                            } else {
-                                Some(Box::new(self.parse_expr()?))
-                            };
-                            self.expect(&TokenKind::RBracket)?;
-                            lhs = Expr {
-                                kind: ExprKind::Slice { target: Box::new(lhs), start, end },
-                                span,
-                            };
-                            continue;
-                        }
-                        self.expect(&TokenKind::RBracket)?;
-                        let index = start?;
-                        lhs = Expr {
-                            kind: ExprKind::Index { target: Box::new(lhs), index },
-                            span,
-                        };
+                        lhs = self.parse_index_or_slice(lhs)?;
                         continue;
                     }
                     TokenKind::Dot => {
@@ -579,14 +588,7 @@ impl Parser {
                 if 9 < min_bp {
                     break;
                 }
-                self.advance(); // not
-                self.advance(); // in
-                let rhs = self.parse_expr_bp(10)?;
-                let span = lhs.span;
-                lhs = Expr {
-                    kind: ExprKind::Binary { op: BinaryOp::NotIn, left: Box::new(lhs), right: Box::new(rhs) },
-                    span,
-                };
+                lhs = self.parse_not_in(lhs)?;
                 continue;
             }
 
@@ -600,15 +602,7 @@ impl Parser {
             let op_tok = self.advance().kind.clone();
 
             if let Some(op) = compound_assign_op(&op_tok) {
-                // 복합 대입: x += e, v[i] -= e, m.f *= e
-                if !is_assign_target(&lhs) {
-                    self.error_at(op_span, "대입 대상은 변수·인덱스·필드만 허용됩니다");
-                }
-                let value = self.parse_expr_bp(r_bp)?;
-                lhs = Expr {
-                    kind: ExprKind::CompoundAssign { op, target: Box::new(lhs), value: Box::new(value) },
-                    span: op_span,
-                };
+                lhs = self.parse_compound_assign(lhs, op, op_span, r_bp)?;
             } else if op_tok == TokenKind::Eq {
                 // 대입: 좌변 유효성 검사
                 if !is_assign_target(&lhs) {
@@ -633,6 +627,59 @@ impl Parser {
         Some(lhs)
     }
 
+    // 아래 보조 함수들은 parse_expr_bp(깊이 재귀)의 스택 프레임을 작게 유지하려고 분리한다.
+
+    /// `[` 다음: 인덱스 `a[i]` 또는 슬라이스 `a[s:e]` / `a[:e]` / `a[s:]` / `a[:]`
+    #[inline(never)]
+    fn parse_index_or_slice(&mut self, lhs: Expr) -> Option<Expr> {
+        let span = lhs.span;
+        self.advance(); // [
+        let start = if matches!(self.peek(), TokenKind::Colon) {
+            None
+        } else {
+            Some(Box::new(self.parse_expr()?))
+        };
+        if matches!(self.peek(), TokenKind::Colon) {
+            self.advance(); // :
+            let end = if matches!(self.peek(), TokenKind::RBracket) {
+                None
+            } else {
+                Some(Box::new(self.parse_expr()?))
+            };
+            self.expect(&TokenKind::RBracket)?;
+            return Some(Expr { kind: ExprKind::Slice { target: Box::new(lhs), start, end }, span });
+        }
+        self.expect(&TokenKind::RBracket)?;
+        let index = start?;
+        Some(Expr { kind: ExprKind::Index { target: Box::new(lhs), index }, span })
+    }
+
+    /// `lhs not in rhs`
+    #[inline(never)]
+    fn parse_not_in(&mut self, lhs: Expr) -> Option<Expr> {
+        self.advance(); // not
+        self.advance(); // in
+        let rhs = self.parse_expr_bp(10)?;
+        let span = lhs.span;
+        Some(Expr {
+            kind: ExprKind::Binary { op: BinaryOp::NotIn, left: Box::new(lhs), right: Box::new(rhs) },
+            span,
+        })
+    }
+
+    /// 복합 대입: x += e, v[i] -= e, m.f *= e
+    #[inline(never)]
+    fn parse_compound_assign(&mut self, lhs: Expr, op: BinaryOp, op_span: Span, r_bp: u8) -> Option<Expr> {
+        if !is_assign_target(&lhs) {
+            self.error_at(op_span, "대입 대상은 변수·인덱스·필드만 허용됩니다");
+        }
+        let value = self.parse_expr_bp(r_bp)?;
+        Some(Expr {
+            kind: ExprKind::CompoundAssign { op, target: Box::new(lhs), value: Box::new(value) },
+            span: op_span,
+        })
+    }
+
     fn parse_prefix(&mut self) -> Option<Expr> {
         let span = self.peek_span();
         match self.peek().clone() {
@@ -646,6 +693,7 @@ impl Parser {
                 let expr = self.parse_expr_bp(15)?;
                 Some(Expr { kind: ExprKind::Unary { op: UnaryOp::Not, expr: Box::new(expr) }, span })
             }
+            TokenKind::If => self.parse_if_expr(span),
             TokenKind::Spawn => {
                 self.advance();
                 let expr = self.parse_expr_bp(15)?;
@@ -757,15 +805,36 @@ impl Parser {
         Some(Expr { kind: ExprKind::Map(entries), span })
     }
 
+    /// `if c { a } else { b }` 식 (Phase 47). else-if 체인 허용, else 필수.
+    #[inline(never)]
+    fn parse_if_expr(&mut self, span: Span) -> Option<Expr> {
+        self.advance(); // if
+        let cond = self.parse_expr()?;
+        let then = self.parse_block()?;
+        if !matches!(self.peek(), TokenKind::Else) {
+            self.error_at(span, "if 식에는 else 갈래가 필요합니다 (값을 내야 하므로)");
+            return None;
+        }
+        self.advance(); // else
+        let else_ = if matches!(self.peek(), TokenKind::If) {
+            let inner_span = self.peek_span();
+            let inner = self.parse_if_expr(inner_span)?;
+            Block { stmts: vec![Stmt { kind: StmtKind::Expr(inner), span: inner_span }], span: inner_span }
+        } else {
+            self.parse_block()?
+        };
+        Some(Expr { kind: ExprKind::IfExpr { cond: Box::new(cond), then, else_ }, span })
+    }
+
     fn parse_lambda(&mut self, span: Span) -> Option<Expr> {
         self.advance(); // fn
         self.expect(&TokenKind::LParen)?;
-        let (params, param_types) = self.parse_params()?;
+        let (params, param_types, param_defaults) = self.parse_params()?;
         self.expect(&TokenKind::RParen)?;
         let ret_type = self.parse_ret_type()?;
         let body = self.parse_block()?;
         Some(Expr { kind: ExprKind::Function {
-            name: None, params, param_types, ret_type, body,
+            name: None, params, param_types, param_defaults, ret_type, body,
         }, span })
     }
 
