@@ -61,6 +61,8 @@ pub struct Lexer {
 
 impl Lexer {
     pub fn new(source: &str) -> Self {
+        // UTF-8 BOM(U+FEFF)은 무시한다 — Windows 편집기/PowerShell 5.1이 파일 앞에 붙인다.
+        let source = source.strip_prefix('\u{FEFF}').unwrap_or(source);
         Self {
             source: source.chars().collect(),
             pos: 0,
@@ -698,6 +700,16 @@ mod tests {
             kinds_no_eof("10 / 2"),
             vec![TokenKind::Int(10), TokenKind::Slash, TokenKind::Int(2)]
         );
+    }
+
+    #[test]
+    fn test_utf8_bom_skipped() {
+        assert_eq!(kinds_no_eof("\u{FEFF}42"), kinds_no_eof("42"));
+        // BOM + shebang 조합도 허용, 열 번호는 BOM을 세지 않는다
+        let mut lexer = Lexer::new("\u{FEFF}#!/usr/bin/env bang\nx");
+        let toks = lexer.tokenize().unwrap();
+        let x = toks.iter().find(|t| matches!(t.kind, TokenKind::Ident(_))).unwrap();
+        assert_eq!((x.span.line, x.span.col), (2, 1));
     }
 
     #[test]

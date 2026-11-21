@@ -493,3 +493,19 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                cc 없을 때 transpile_test 스킵을 stderr에 표시. SPEC 1장 "VM이 정본" 명시.
                CLAUDE.md 변경 금지 결정의 백엔드 전략 문구 갱신(사용자 승인).
                vm.rs 3,234 → 약 1,600줄. (tests: 343 green 양쪽 feature, clippy 0)
+✅ Phase 45 — 기초 결함 수정: COW 실효화 + 중첩 경로 대입 + parallel_map 병렬 + BOM — v0.31.0
+             (1) COW 무력화 버그: 대입이 변수를 스택에 로드(Arc 참조 2)한 뒤 make_mut → 매번 전체 복사.
+               a[i]=v 2만 회 1.9s, 맵 2만 삽입 9.9s, 20만 삽입 >120s, xs=push(xs,v) 4만 회 38s (O(n²)).
+               수정: OP_SET_PATH(79)·OP_UPDATE_VAR(80). 변수 슬롯이 로드한 복사본과 같은 Arc면 복사본을
+               버리고 슬롯을 제자리 변경(make_mut이 공유 중일 때만 복사 — 관찰 의미 불변).
+               키·값 평가 중 변수가 재대입되면 원래 의미대로 복사본을 고쳐 저장, 에러 시 원값 복원.
+               x = push(x, e) / x = x + e 패턴도 제자리(push가 빌트인일 때만).
+               결과: 위 작업 모두 수십 ms (맵 20만 삽입 0.17s).
+             (2) 중첩 경로 대입 m["a"][0]=9, g[i][j]=v, cfg.db.port=1 (이전: "복잡한 인덱스 대입 미지원").
+               중간 맵 키 없음/범위 초과는 catch 가능 에러, 루트가 변수가 아니면 컴파일 에러.
+               대입식의 값 = 대입한 값(이전엔 컨테이너).
+             (3) parallel_map 진짜 병렬화 (Phase 42 발견 결함): 원소마다 deep_clone_closure 격리,
+               작업 최대 256개(초과 시 연속 구간 분할), 전부 조인 후 순서상 첫 에러. 빌트인 함수는 순차.
+               검증: 8 × sleep(300) = 0.3s (이전 2.4s).
+             (4) 렉서가 UTF-8 BOM 무시 (Phase 43 발견 결함).
+             SPEC 2.1/4.2/6.5 갱신. 회귀: lexer +1, vm_test +9. (tests: 353 green, clippy 0)

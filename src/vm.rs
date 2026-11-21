@@ -23,6 +23,7 @@ use crate::compiler::{
     OP_MAKE_ITER, OP_FOR_ITER,
     OP_SPAWN, OP_PARALLEL_ENTER, OP_PARALLEL_EXIT,
     OP_SETUP_TRY, OP_POP_TRY, OP_THROW, OP_CHECK_TYPE,
+    OP_SET_PATH, OP_UPDATE_VAR,
 };
 use crate::ast::TypeAnn;
 use crate::lexer::token::Span;
@@ -612,6 +613,19 @@ impl Vm {
         self.stack.last().expect("VM: empty stack on peek")
     }
 
+    /// 변수 위치(kind, slot) → (그 값을 담은 벡터, 벡터 내 인덱스). OP_SET_PATH/OP_UPDATE_VAR용.
+    fn var_cell(&self, kind: u8, slot: usize) -> (Arc<Mutex<Vec<VmValue>>>, usize) {
+        let fi = self.frames.len() - 1;
+        match kind {
+            0 => (self.frames[fi].locals.clone(), slot),
+            1 => {
+                let uv = &self.frames[fi].closure.upvalues[slot];
+                (uv.locals.clone(), uv.slot)
+            }
+            _ => (self.frames[fi].closure.globals.clone(), slot),
+        }
+    }
+
     fn locals_get(&self, slot: usize) -> VmValue {
         let fi = self.frames.len() - 1;
         self.frames[fi].locals.lock().unwrap()[slot].clone()
@@ -971,6 +985,76 @@ impl Vm {
                     let idx = self.stack_pop();
                     let container = self.stack_pop();
                     self.stack.push(vm_index_set(container, idx, val, span)?);
+                }
+                OP_SET_PATH => {
+                    // stack: [root 복사본, k1..kN, val]
+                    let span = self.current_span();
+                    let slot = self.read_u16() as usize;
+                    let kind = self.read_byte();
+                    let depth = self.read_byte() as usize;
+                    let val = self.stack_pop();
+                    let mut keys = self.stack.split_off(self.stack.len() - depth);
+                    for k in keys.iter_mut() {
+                        *k = auto_resolve(std::mem::replace(k, VmValue::Nil), span)?;
+                    }
+                    let root_copy = self.stack_pop();
+                    let (cell, idx) = self.var_cell(kind, slot);
+                    let mut guard = cell.lock().map_err(|_| lock_err(span))?;
+                    let slot_ref = guard.get_mut(idx).ok_or_else(|| bad_slot(span))?;
+                    // 슬롯이 아직 같은 값이면 복사본을 버려 참조 수를 1로 → 제자리 변경.
+                    // (키·값 평가 중 변수가 재대입됐다면 원래 의미대로 복사본을 고쳐 저장)
+                    let prev = std::mem::replace(slot_ref, root_copy);
+                    let restore = if same_container(&prev, slot_ref) { drop(prev); None } else { Some(prev) };
+                    let result = val.clone();
+                    if let Err(e) = set_path(slot_ref, &keys, val, span) {
+                        if let Some(p) = restore { *slot_ref = p; }
+                        return Err(e);
+                    }
+                    drop(guard);
+                    self.stack.push(result);
+                }
+                OP_UPDATE_VAR => {
+                    // stack: [x 복사본, e]
+                    let span = self.current_span();
+                    let slot = self.read_u16() as usize;
+                    let kind = self.read_byte();
+                    let op = self.read_byte();
+                    let rhs = self.stack_pop();
+                    let cur_copy = auto_resolve(self.stack_pop(), span)?;
+                    let (cell, idx) = self.var_cell(kind, slot);
+                    let mut guard = cell.lock().map_err(|_| lock_err(span))?;
+                    let slot_ref = guard.get_mut(idx).ok_or_else(|| bad_slot(span))?;
+                    let in_place = matches!((&cur_copy, slot_ref as &VmValue),
+                        (VmValue::List(a), VmValue::List(b)) if Arc::ptr_eq(a, b));
+                    let new_val = if in_place {
+                        drop(cur_copy); // 슬롯만 남김 → make_mut이 복사하지 않는다
+                        match (op, &mut *slot_ref) {
+                            (0, VmValue::List(items)) => Arc::make_mut(items).push(rhs),
+                            (_, VmValue::List(items)) => match auto_resolve(rhs, span)? {
+                                VmValue::List(r) => Arc::make_mut(items).extend(r.iter().cloned()),
+                                other => {
+                                    let l = VmValue::List(items.clone());
+                                    *slot_ref = vm_add(l, other, span)?;
+                                }
+                            },
+                            _ => {}
+                        }
+                        slot_ref.clone()
+                    } else {
+                        let v = if op == 0 {
+                            match cur_copy {
+                                VmValue::List(mut items) => { Arc::make_mut(&mut items).push(rhs); VmValue::List(items) }
+                                other => return Err(RuntimeError::new(
+                                    format!("push(): List 필요, {} 발견", other.type_name()), span)),
+                            }
+                        } else {
+                            vm_add(cur_copy, auto_resolve(rhs, span)?, span)?
+                        };
+                        *slot_ref = v.clone();
+                        v
+                    };
+                    drop(guard);
+                    self.stack.push(new_val);
                 }
                 OP_FIELD_GET => {
                     let span = self.current_span();
@@ -1343,6 +1427,91 @@ fn vm_index_set(container: VmValue, idx: VmValue, val: VmValue, span: Span) -> R
     }
 }
 
+fn lock_err(span: Span) -> RuntimeError {
+    RuntimeError::new("내부 오류: 변수 잠금 실패", span)
+}
+
+fn bad_slot(span: Span) -> RuntimeError {
+    RuntimeError::new("내부 오류: 잘못된 변수 슬롯", span)
+}
+
+/// 두 값이 같은 컨테이너(Arc)를 가리키는가 — 제자리 변경 가능 판정용.
+fn same_container(a: &VmValue, b: &VmValue) -> bool {
+    match (a, b) {
+        (VmValue::List(x), VmValue::List(y)) => Arc::ptr_eq(x, y),
+        (VmValue::Map(x), VmValue::Map(y)) => Arc::ptr_eq(x, y),
+        (VmValue::Future(x), VmValue::Future(y)) => Arc::ptr_eq(x, y),
+        _ => false,
+    }
+}
+
+/// target[k1][k2]...[kN] = val 을 제자리에서 수행한다 (Arc::make_mut — 공유 중일 때만 복사).
+/// 실패는 마지막 대입 전에 검출되므로 관찰 가능한 부분 변경이 없다.
+fn set_path(target: &mut VmValue, keys: &[VmValue], val: VmValue, span: Span) -> Result<(), RuntimeError> {
+    let Some((last, init)) = keys.split_last() else {
+        return Err(RuntimeError::new("내부 오류: 빈 대입 경로", span));
+    };
+    let mut cur = target;
+    for key in init {
+        if let VmValue::Future(_) = cur {
+            *cur = auto_resolve(cur.clone(), span)?;
+        }
+        cur = child_mut(cur, key, span)?;
+    }
+    if let VmValue::Future(_) = cur {
+        *cur = auto_resolve(cur.clone(), span)?;
+    }
+    match (cur, last) {
+        (VmValue::List(items), VmValue::Int(i)) => {
+            let i = list_pos(items.len(), *i, span)?;
+            Arc::make_mut(items)[i] = val;
+            Ok(())
+        }
+        (VmValue::Map(map), key) => {
+            Arc::make_mut(map).insert(key.to_string(), val);
+            Ok(())
+        }
+        (VmValue::Bytes(_), _) => Err(RuntimeError::new(
+            "인덱스 대입: Bytes는 불변 — slice와 +로 새 Bytes를 만드세요", span)),
+        (VmValue::List(_), key) => Err(RuntimeError::new(
+            format!("인덱스 대입: List 인덱스는 Int여야 함, {} 발견", key.type_name()), span)),
+        (container, _) => Err(RuntimeError::new(
+            format!("인덱스 대입: {} 지원 안 됨", container.type_name()), span)),
+    }
+}
+
+fn list_pos(len: usize, i: i64, span: Span) -> Result<usize, RuntimeError> {
+    let len = len as i64;
+    let j = if i < 0 { len + i } else { i };
+    if j < 0 || j >= len {
+        return Err(RuntimeError::new(format!("인덱스 범위 초과: {j} (길이 {len})"), span));
+    }
+    Ok(j as usize)
+}
+
+/// 경로 중간 단계: 컨테이너의 자식에 대한 가변 참조 (없는 맵 키는 에러).
+fn child_mut<'a>(cur: &'a mut VmValue, key: &VmValue, span: Span) -> Result<&'a mut VmValue, RuntimeError> {
+    match cur {
+        VmValue::List(items) => match key {
+            VmValue::Int(i) => {
+                let i = list_pos(items.len(), *i, span)?;
+                Ok(&mut Arc::make_mut(items)[i])
+            }
+            other => Err(RuntimeError::new(
+                format!("인덱스 대입: List 인덱스는 Int여야 함, {} 발견", other.type_name()), span)),
+        },
+        VmValue::Map(map) => {
+            let k = key.to_string();
+            if !map.contains_key(&k) {
+                return Err(RuntimeError::new(format!("인덱스 대입: 맵에 키 '{k}' 없음"), span));
+            }
+            Arc::make_mut(map).get_mut(&k).ok_or_else(|| bad_slot(span))
+        }
+        other => Err(RuntimeError::new(
+            format!("인덱스 대입: {} 안쪽은 대입할 수 없음", other.type_name()), span)),
+    }
+}
+
 fn vm_field_get(target: VmValue, name: &str, span: Span) -> Result<VmValue, RuntimeError> {
     match target {
         VmValue::Map(map) => Ok(map.get(name).cloned().unwrap_or(VmValue::Nil)),
@@ -1512,7 +1681,7 @@ fn value_matches_type(v: &VmValue, t: TypeAnn) -> bool {
     }
 }
 
-fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
+pub(crate) fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
     let upvalues: Vec<UpvalueRef> = c.upvalues.iter().map(|uv| {
         let val = uv.get(); // VmValue::clone() — 컨테이너 깊은 복사, 참조타입 Arc 클론
         let new_locals = Arc::new(Mutex::new(vec![val]));

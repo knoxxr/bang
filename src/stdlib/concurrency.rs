@@ -77,7 +77,14 @@ pub(crate) fn b_close(
     }
 }
 
-/// 11: parallel_map(list, fn) — sequential in Part A
+/// parallel_map이 한 번에 만드는 작업 수 상한. 원소가 더 많으면 연속 구간으로 나눠
+/// 작업 하나가 여러 원소를 순서대로 처리한다 (작업 생성 비용 억제).
+const PAR_MAP_MAX_TASKS: usize = 256;
+
+/// 11: parallel_map(list, fn) — 원소마다 fn을 병렬 실행하고 결과를 원래 순서로 모은다.
+/// 각 호출은 spawn과 같은 격리(클로저·전역 깊은 복사)로 실행되며, 반환 전에 모든 작업을
+/// 조인한다(구조적 동시성). 에러가 나면 전부 조인한 뒤 원래 순서상 첫 에러를 던진다.
+/// 사용자 클로저가 아닌 함수(빌트인)는 순차 실행한다.
 pub(crate) fn b_parallel_map(
     vm: &mut Vm,
     args: Vec<VmValue>,
@@ -86,7 +93,7 @@ pub(crate) fn b_parallel_map(
 ) -> Result<VmValue, RuntimeError> {
     req_args("parallel_map", &args, 2, span)?;
     let list = match &args[0] {
-        VmValue::List(v) => (**v).clone(),
+        VmValue::List(v) => v.clone(),
         other => {
             return Err(RuntimeError::new(
                 format!("parallel_map(): List 필요, {} 발견", other.type_name()),
@@ -95,20 +102,68 @@ pub(crate) fn b_parallel_map(
         }
     };
     let func = args[1].clone();
-    let mut results = Vec::with_capacity(list.len());
-    for item in list {
-        let depth_before = vm.frames.len();
-        vm.stack.push(func.clone());
-        vm.stack.push(item);
-        vm.do_call(1, span, stop_depth)?;
-        if vm.frames.len() > depth_before {
-            // User function: run until it returns
-            vm.exec_until(depth_before)?;
+    let closure = match &func {
+        VmValue::Closure(c) => c.clone(),
+        _ => {
+            let mut results = Vec::with_capacity(list.len());
+            for item in list.iter() {
+                let depth_before = vm.frames.len();
+                vm.stack.push(func.clone());
+                vm.stack.push(item.clone());
+                vm.do_call(1, span, stop_depth)?;
+                if vm.frames.len() > depth_before {
+                    vm.exec_until(depth_before)?;
+                }
+                results.push(vm.stack_pop());
+            }
+            return Ok(VmValue::List(Arc::new(results)));
         }
-        // Return value is on top of stack
-        results.push(vm.stack_pop());
+    };
+    let n = list.len();
+    let tasks = n.min(PAR_MAP_MAX_TASKS);
+    let mut futures = Vec::with_capacity(tasks);
+    for t in 0..tasks {
+        let (lo, hi) = (t * n / tasks, (t + 1) * n / tasks);
+        // 값 의미론: 원소마다 독립된 클로저 복사본 (spawn과 동일한 격리)
+        let jobs: Vec<(Arc<VmClosure>, VmValue)> = list[lo..hi]
+            .iter()
+            .map(|item| (deep_clone_closure(&closure), item.clone()))
+            .collect();
+        let output = vm.output.clone();
+        let future = VmFuture::new();
+        let done = future.clone();
+        crate::scheduler::global().spawn_task(move || {
+            let mut out = Vec::with_capacity(jobs.len());
+            for (c, item) in jobs {
+                match Vm::run_spawned(output.clone(), c, vec![item]) {
+                    Ok(v) => out.push(v),
+                    Err(e) => {
+                        done.complete(Err(e));
+                        return;
+                    }
+                }
+            }
+            done.complete(Ok(VmValue::List(Arc::new(out))));
+        });
+        futures.push(future);
     }
-    Ok(VmValue::List(Arc::new(results)))
+    let mut results = Vec::with_capacity(n);
+    let mut first_err = None;
+    for f in futures {
+        match f.resolve() {
+            Ok(VmValue::List(part)) => results.extend(part.iter().cloned()),
+            Ok(_) => {}
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(VmValue::List(Arc::new(results))),
+    }
 }
 
 /// 12: wait(f) — Part A: value is already resolved

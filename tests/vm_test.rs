@@ -817,3 +817,74 @@ fn test_vm_reasonable_nesting_still_works() {
     let src = format!("print({}1{})", "(".repeat(100), ")".repeat(100));
     assert_eq!(run_vm(&src), vec!["1"]);
 }
+
+// ============================================================================
+// Phase 45 — 제자리 대입(COW 실효화) · 중첩 경로 대입 · parallel_map 병렬
+// ============================================================================
+
+#[test]
+fn test_vm_nested_path_assign() {
+    let src = "let m = {\"a\": [1, 2], \"b\": {\"c\": 1}}\nm[\"a\"][0] = 9\nm.b.c = 5\nm.b[\"d\"] = 6\nprint(m)\nlet g = [[0, 0], [0, 0]]\ng[1][0] = 3\ng[-1][-1] = 4\nprint(g)";
+    assert_eq!(run_vm(src), vec!["{a: [9, 2], b: {c: 5, d: 6}}", "[[0, 0], [3, 4]]"]);
+}
+
+#[test]
+fn test_vm_path_assign_keeps_value_semantics() {
+    // 별칭·인자·클로저 캡처는 여전히 격리 (제자리 변경은 관찰 불가능해야 함)
+    let src = "let a = {\"k\": [1]}\nlet b = a\na.k[0] = 2\nprint(b)\nfn f(v) {\n v.k[0] = 100\n return v\n}\nprint(f(a))\nprint(a)\nlet xs = [1]\nlet ys = xs\nxs = push(xs, 2)\nprint(ys)";
+    assert_eq!(run_vm(src), vec!["{k: [1]}", "{k: [100]}", "{k: [2]}", "[1]"]);
+}
+
+#[test]
+fn test_vm_path_assign_errors_leave_value_intact() {
+    let src = "let m = {\"a\": [1]}\ntry { m[\"zz\"][0] = 1 } catch e { print(e) }\ntry { m.a[5] = 1 } catch e { print(e) }\ntry { m.a[\"x\"] = 1 } catch e { print(e) }\nprint(m)";
+    assert_eq!(
+        run_vm(src),
+        vec![
+            "인덱스 대입: 맵에 키 'zz' 없음",
+            "인덱스 범위 초과: 5 (길이 1)",
+            "인덱스 대입: List 인덱스는 Int여야 함, Str 발견",
+            "{a: [1]}",
+        ]
+    );
+}
+
+#[test]
+fn test_vm_path_assign_root_must_be_variable() {
+    let prog = lex_parse("f()[0] = 1");
+    assert!(compile(&prog).is_err());
+}
+
+#[test]
+fn test_vm_assign_expression_value_is_rhs() {
+    assert_eq!(run_vm("let a = [1, 2]\nprint(a[0] = 7)\nprint(a)"), vec!["7", "[7, 2]"]);
+}
+
+#[test]
+fn test_vm_in_place_updates_are_linear() {
+    // 이전: 원소 대입·맵 삽입·push 누적이 매번 전체 복사(O(n²)) — 2만 회에 수 초.
+    // 수정 후 선형이어야 한다. 넉넉한 상한으로 회귀만 잡는다 (debug 빌드 기준).
+    let src = "let n = 20000\nlet a = range(n)\nfor i in range(n) { a[i] = i * 2 }\nlet m = {}\nfor i in range(n) { m[str(i)] = i }\nlet xs = []\nfor i in range(n) { xs = push(xs, i) }\nlet ys = []\nfor i in range(n) { ys = ys + [i] }\nprint(a[n - 1] + len(m) + len(xs) + len(ys))";
+    let t = std::time::Instant::now();
+    assert_eq!(run_vm(src), vec!["99998"]);
+    assert!(t.elapsed().as_secs_f64() < 10.0, "제자리 갱신이 선형이 아님: {:?}", t.elapsed());
+}
+
+#[test]
+fn test_vm_update_var_reassigned_during_rhs() {
+    // x = push(x, e)에서 e 평가 중 x가 재대입되면 원래 의미(먼저 읽은 x 기준)를 따른다
+    let src = "let xs = [1]\nfn g() {\n xs = [9]\n return 2\n}\nxs = push(xs, g())\nprint(xs)\nlet n = 1\nn = n + 1\nlet s = \"a\"\ns = s + \"b\"\nprint(n)\nprint(s)";
+    assert_eq!(run_vm(src), vec!["[1, 2]", "2", "ab"]);
+}
+
+#[test]
+fn test_vm_parallel_map_is_parallel() {
+    let src = "let t = now_ms()\nlet r = parallel_map([1, 2, 3, 4, 5, 6, 7, 8], fn(x) {\n sleep(200)\n return x * 10\n})\nprint(r)\nprint(now_ms() - t < 1200)";
+    assert_eq!(run_vm(src), vec!["[10, 20, 30, 40, 50, 60, 70, 80]", "true"]);
+}
+
+#[test]
+fn test_vm_parallel_map_order_errors_and_builtins() {
+    let src = "print(parallel_map(range(1000), fn(x) { return x * 2 })[999])\nprint(parallel_map([1, 2], str))\nprint(parallel_map([], fn(x) { return x }))\ntry {\n parallel_map([1, 0, 2], fn(x) { return 10 / x })\n} catch e {\n print(e)\n}";
+    assert_eq!(run_vm(src), vec!["1998", "[1, 2]", "[]", "0으로 나눌 수 없음"]);
+}

@@ -65,6 +65,12 @@ pub const OP_SETUP_TRY:       u8 = 75; // operand: u16 절대 catch ip
 pub const OP_POP_TRY:         u8 = 76; // try 본문 정상 종료 시 핸들러 제거
 pub const OP_THROW:           u8 = 77; // 스택 top 값을 예외로 던짐
 pub const OP_CHECK_TYPE:      u8 = 78; // operand: u8 타입 태그. 스택 top 타입 검증(peek)
+/// 경로 대입 `v[k1][k2].f = val` (Phase 45). operand: u16 slot, u8 kind(0=local,1=upval,2=global), u8 depth.
+/// 스택: [root 복사본, k1..kN, val] → [val]. 변수 슬롯을 제자리 변경해 COW 복사를 피한다.
+pub const OP_SET_PATH:        u8 = 79;
+/// 갱신 대입 `x = push(x, e)` / `x = x + e` (Phase 45). operand: u16 slot, u8 kind, u8 op(0=push,1=add).
+/// 스택: [x 복사본, e] → [새 x]. 슬롯이 같은 값이면 제자리 변경.
+pub const OP_UPDATE_VAR:      u8 = 80;
 
 // ============================================================================
 // Compile error
@@ -751,11 +757,44 @@ impl Compiler {
         }
     }
 
+    /// `x = push(x, e)` → (0, e), `x = x + e` → (1, e). push가 빌트인일 때만.
+    fn update_pattern<'a>(&mut self, name: &str, value: &'a Expr) -> Option<(u8, &'a Expr)> {
+        match &value.kind {
+            ExprKind::Call { callee, args } if args.len() == 2 => {
+                let is_push = matches!(&callee.kind, ExprKind::Ident(c) if c == "push")
+                    && matches!(&args[0].kind, ExprKind::Ident(a) if a == name);
+                if is_push && builtin_index("push").map(|i| VarLocation::Builtin(i as u8))
+                    == Some(self.resolve_name("push"))
+                {
+                    return Some((0, &args[1]));
+                }
+                None
+            }
+            ExprKind::Binary { op: BinaryOp::Add, left, right }
+                if matches!(&left.kind, ExprKind::Ident(a) if a == name) =>
+            {
+                Some((1, right))
+            }
+            _ => None,
+        }
+    }
+
     fn compile_assign(&mut self, target: &Expr, value: &Expr, sp: Span) {
         match &target.kind.clone() {
             ExprKind::Ident(name) => {
-                self.compile_expr(value);
+                // 갱신 패턴(x = push(x, e) / x = x + e)은 제자리 변경 opcode로 (Phase 45)
                 let loc = self.resolve_name(name);
+                if let Some((kind, slot)) = var_operand(&loc) {
+                    if let Some((op, rhs)) = self.update_pattern(name, value) {
+                        self.emit_load(loc, sp);
+                        self.compile_expr(rhs);
+                        self.emit_u16(OP_UPDATE_VAR, slot, sp);
+                        self.emit(kind, sp);
+                        self.emit(op, sp);
+                        return;
+                    }
+                }
+                self.compile_expr(value);
                 if loc == VarLocation::Unknown {
                     self.error(format!("정의되지 않은 변수: '{name}'"), sp);
                     self.emit(OP_POP, sp);
@@ -765,34 +804,42 @@ impl Compiler {
                     self.emit_store(loc, sp);
                 }
             }
-            ExprKind::Index { target: container, index } => {
-                if let ExprKind::Ident(name) = &container.kind {
-                    let loc = self.resolve_name(name);
-                    self.emit_load(loc.clone(), sp);
-                    self.compile_expr(index);
-                    self.compile_expr(value);
-                    self.emit(OP_INDEX_SET, sp);
-                    self.emit(OP_DUP, sp);
-                    self.emit_store(loc, sp);
-                } else {
-                    self.error("복잡한 인덱스 대입 미지원", sp);
+            ExprKind::Index { .. } | ExprKind::Field { .. } => {
+                // 경로 대입: 루트는 반드시 변수. v[a][b].c = val
+                let mut keys: Vec<PathKey> = Vec::new();
+                let root = match collect_assign_path(target, &mut keys) {
+                    Some(r) => r.to_string(),
+                    None => {
+                        self.error("대입 대상은 변수에서 시작해야 합니다 (예: v[i], v.f, v[i][j])", sp);
+                        self.emit(OP_NIL, sp);
+                        return;
+                    }
+                };
+                let loc = self.resolve_name(&root);
+                let Some((kind, slot)) = var_operand(&loc) else {
+                    self.error(format!("정의되지 않은 변수: '{root}'"), sp);
                     self.emit(OP_NIL, sp);
-                }
-            }
-            ExprKind::Field { target: container, name: field } => {
-                if let ExprKind::Ident(var_name) = &container.kind {
-                    let loc = self.resolve_name(var_name);
-                    self.emit_load(loc.clone(), sp);
-                    let key_idx = self.add_const(VmValue::Str(field.clone()));
-                    self.emit_u16(OP_CONST, key_idx, sp);
-                    self.compile_expr(value);
-                    self.emit(OP_INDEX_SET, sp);
-                    self.emit(OP_DUP, sp);
-                    self.emit_store(loc, sp);
-                } else {
-                    self.error("복잡한 필드 대입 미지원", sp);
+                    return;
+                };
+                if keys.len() > u8::MAX as usize {
+                    self.error("대입 경로가 너무 깊습니다", sp);
                     self.emit(OP_NIL, sp);
+                    return;
                 }
+                self.emit_load(loc, sp);
+                for key in &keys {
+                    match key {
+                        PathKey::Expr(e) => self.compile_expr(e),
+                        PathKey::Name(n) => {
+                            let idx = self.add_const(VmValue::Str(n.to_string()));
+                            self.emit_u16(OP_CONST, idx, sp);
+                        }
+                    }
+                }
+                self.compile_expr(value);
+                self.emit_u16(OP_SET_PATH, slot, sp);
+                self.emit(kind, sp);
+                self.emit(keys.len() as u8, sp);
             }
             _ => {
                 self.error("유효하지 않은 대입 대상", sp);
@@ -900,6 +947,40 @@ impl Compiler {
 // ============================================================================
 // VarLocation
 // ============================================================================
+
+/// 경로 대입의 한 단계: `[식]` 또는 `.이름`.
+enum PathKey<'a> {
+    Expr(&'a Expr),
+    Name(&'a str),
+}
+
+/// `v[a].b[c]` → 루트 변수 이름을 반환하고 keys에 [a, "b", c]를 채운다.
+fn collect_assign_path<'a>(e: &'a Expr, keys: &mut Vec<PathKey<'a>>) -> Option<&'a str> {
+    match &e.kind {
+        ExprKind::Ident(n) => Some(n.as_str()),
+        ExprKind::Index { target, index } => {
+            let root = collect_assign_path(target, keys)?;
+            keys.push(PathKey::Expr(index));
+            Some(root)
+        }
+        ExprKind::Field { target, name } => {
+            let root = collect_assign_path(target, keys)?;
+            keys.push(PathKey::Name(name));
+            Some(root)
+        }
+        _ => None,
+    }
+}
+
+/// 변수 위치 → (kind, slot) operand. kind: 0=local, 1=upval, 2=global.
+fn var_operand(loc: &VarLocation) -> Option<(u8, u16)> {
+    match loc {
+        VarLocation::Local(s) => Some((0, *s as u16)),
+        VarLocation::Upval(i) => Some((1, *i as u16)),
+        VarLocation::Global(s) => Some((2, *s)),
+        _ => None,
+    }
+}
 
 #[derive(Clone, PartialEq, Debug)]
 enum VarLocation {
