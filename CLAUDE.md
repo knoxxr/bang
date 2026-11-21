@@ -635,3 +635,17 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              실측: 100만 줄 출력 최대 메모리 72MB → 12MB (출력량과 무관해짐), 시간 동일.
              파이프 닫힘(bang x | head): 이전 panic 메시지 → 조용히 exit 141(128+SIGPIPE). 그 밖 쓰기 실패는 io 에러.
              문서: SPEC 10장. 회귀: vm_test +2, cli_test +1(unix 파이프). (tests: 419 green, clippy 0)
+✅ Phase 55 — 구조적 동시성 완성: 함수 본문 조인 + spawn 에러 전파 (헌법 3조 위반 수정) — v0.41.0
+             (발견, 헌법 점검) 3조·불변 규칙은 "가장 가까운 함수 본문 또는 parallel 블록에 뿌리내려 스코프 종료 시
+               조인"인데, 함수 본문 조인이 없었음 — 함수가 자식을 기다리지 않고 반환, 프로그램 끝에서만 조인.
+               자식 에러는 경고만 내고 exit 0 → 실패 감지 불가.
+             (수정) CallFrame.spawned: parallel 블록 밖 spawn은 실행 중인 프레임에 등록, OP_RETURN/암묵 반환 시 조인.
+               SpawnScope{frame_depth}: 같은 프레임의 parallel 블록이면 블록에 등록(블록 안에서 호출한 함수의 spawn은
+               그 함수 본문에). 프로그램 레벨 스코프 제거 — 최상위 spawn은 메인 프레임에 뿌리내림.
+               에러: VmFuture.observed(값으로 받아 본 에러 표시) + join_unobserved — 아무도 받지 않은 첫 에러를 스코프
+               종료 시 던짐(catch 가능, 미처리 시 exit 1). 이미 처리한 에러는 다시 던지지 않음.
+               되감기(unwind_to)·에러 종료(drain_pending_tasks)도 남은 작업을 모두 조인(에러는 경고).
+             (함께 수정한 결함) parallel 블록이 첫 에러에서 나머지 작업을 기다리지 않고 빠져나감 → 전부 조인 후 첫 에러.
+               try 안 parallel에서 throw하면 spawn 스코프가 스택에 남던 문제 → TryHandler.spawn_depth로 정리.
+             성능: fib_seq/fib_par 변화 없음(측정 잡음 범위).
+             문서: SPEC 6.3·6.3-1(신설)·6.4-2. 회귀: vm_test +5. (tests: 424 green, clippy 0)

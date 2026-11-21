@@ -39,11 +39,18 @@ pub struct VmFuture {
     ready:  Condvar,
     /// 작업 경계를 넘어온 Future (Phase 53): 원본의 결과를 처음 꺼낼 때 한 번 격리해 둔다.
     source: Option<Arc<VmFuture>>,
+    /// 에러 결과를 누군가 이미 받아 봤는가 (Phase 55) — 스코프 조인이 같은 에러를 두 번 던지지 않게.
+    observed: std::sync::atomic::AtomicBool,
 }
 
 impl VmFuture {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { result: Mutex::new(None), ready: Condvar::new(), source: None })
+        Arc::new(Self {
+            result: Mutex::new(None),
+            ready: Condvar::new(),
+            source: None,
+            observed: std::sync::atomic::AtomicBool::new(false),
+        })
     }
 
     /// 기다리지 않고 결과 확인 (끝났으면 Some). derived Future는 자기 결과만 본다.
@@ -53,7 +60,20 @@ impl VmFuture {
 
     /// 다른 작업으로 넘기는 Future. 결과 안의 클로저 상태가 작업 사이에 공유되지 않게 한다.
     pub(crate) fn derived(src: &Arc<VmFuture>) -> Arc<Self> {
-        Arc::new(Self { result: Mutex::new(None), ready: Condvar::new(), source: Some(src.clone()) })
+        Arc::new(Self {
+            result: Mutex::new(None),
+            ready: Condvar::new(),
+            source: Some(src.clone()),
+            observed: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// 스코프 종료 시 조인 (Phase 55): 끝날 때까지 기다리고, 아직 아무도 받아 보지 않은 에러만 돌려준다.
+    pub(crate) fn join_unobserved(&self) -> Result<(), RuntimeError> {
+        match self.wait_result() {
+            Err(e) if !self.observed.swap(true, std::sync::atomic::Ordering::SeqCst) => Err(e),
+            _ => Ok(()),
+        }
     }
 
     pub fn complete(&self, val: Result<VmValue, RuntimeError>) {
@@ -61,7 +81,16 @@ impl VmFuture {
         self.ready.notify_all();
     }
 
+    /// 값으로 꺼내기 (자동 대기·wait). 에러를 받으면 "받아 봤음"으로 표시한다.
     pub fn resolve(&self) -> Result<VmValue, RuntimeError> {
+        let r = self.wait_result();
+        if r.is_err() {
+            self.observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        r
+    }
+
+    fn wait_result(&self) -> Result<VmValue, RuntimeError> {
         if let Some(src) = &self.source {
             let mut g = self.result.lock()
                 .map_err(|_| RuntimeError::no_span("내부 오류: Future 잠금 실패"))?;
@@ -336,6 +365,15 @@ pub struct CallFrame {
     pub locals: Arc<Mutex<Vec<VmValue>>>,
     /// 실제로 전달된 인자 수 (기본값 매개변수 판정용 — OP_JUMP_IF_ARG)
     pub argc: usize,
+    /// 이 함수 본문에 뿌리내린 spawn 작업들 (Phase 55) — 함수가 끝날 때 모두 조인한다.
+    pub spawned: Vec<Arc<VmFuture>>,
+}
+
+/// `parallel {}` 블록의 spawn 스코프. 그 블록이 있는 프레임 깊이를 기억해, 블록 안에서 호출한
+/// 다른 함수의 spawn은 그 함수 본문에 뿌리내리게 한다.
+pub struct SpawnScope {
+    pub frame_depth: usize,
+    pub futures: Vec<Arc<VmFuture>>,
 }
 
 /// try/catch 예외 핸들러. OP_SETUP_TRY 시점의 상태를 기록해 두었다가
@@ -348,6 +386,8 @@ pub struct TryHandler {
     pub stack_len: usize,
     /// catch 블록의 절대 코드 위치.
     pub catch_ip: usize,
+    /// 핸들러 설정 시점의 parallel 스코프 수 (되감을 때 그 위의 스코프를 조인·정리).
+    pub spawn_depth: usize,
 }
 
 // ============================================================================
@@ -365,7 +405,7 @@ pub struct Vm {
     /// 구조적 동시성: spawn 스코프 스택.
     /// 각 항목은 이 스코프 안에서 spawn된 Future 목록.
     /// parallel {} 진입 시 push, 종료 시 pop + join.
-    pub spawn_scopes: Vec<Vec<Arc<VmFuture>>>,
+    pub spawn_scopes: Vec<SpawnScope>,
     /// 활성 try/catch 핸들러 스택 (innermost = top).
     pub handlers: Vec<TryHandler>,
     /// throw로 던져진 값(있으면). 빌트인/런타임 오류는 None → 메시지 문자열로 변환.
@@ -470,23 +510,42 @@ impl Vm {
     }
 
     pub fn run(&mut self, main_fn: Arc<CompiledFn>) -> Result<(), RuntimeError> {
-        // 프로그램 레벨 spawn 스코프
-        self.spawn_scopes.push(Vec::new());
-
         let closure = Arc::new(VmClosure {
             func: main_fn.clone(),
             upvalues: Vec::new(),
             globals: self.globals.clone(),
         });
         let locals = Arc::new(Mutex::new(vec![VmValue::Nil; main_fn.local_count]));
-        self.frames.push(CallFrame { closure, ip: 0, locals, argc: 0 });
-        self.exec_until(0)?;
+        self.frames.push(CallFrame { closure, ip: 0, locals, argc: 0, spawned: Vec::new() });
+        // 최상위 spawn은 메인 프레임에 뿌리내려 프로그램 끝(메인 반환)에 조인된다.
+        // 에러로 빠져나가도 남은 작업을 모두 기다린다 (누수 방지).
+        let r = self.exec_until(0);
+        if r.is_err() {
+            self.drain_pending_tasks();
+        }
+        r
+    }
 
-        // 프로그램 종료 시 모든 잔여 spawn 조인 (누수 방지)
-        let scope = self.spawn_scopes.pop().unwrap_or_default();
-        for f in scope { warn_if_spawn_err(f.resolve()); }
+    /// 에러로 실행을 끝낼 때: 남은 프레임·parallel 스코프의 작업을 모두 기다린다(누수 방지).
+    /// 이미 다른 에러가 전파 중이므로 작업의 에러는 경고로만 알린다.
+    fn drain_pending_tasks(&mut self) {
+        while let Some(f) = self.frames.pop() {
+            for t in f.spawned { warn_if_spawn_err(t.join_unobserved()); }
+        }
+        while let Some(s) = self.spawn_scopes.pop() {
+            for t in s.futures { warn_if_spawn_err(t.join_unobserved()); }
+        }
+    }
 
-        Ok(())
+    /// 작업 목록을 모두 조인한 뒤, 아직 아무도 받아 보지 않은 첫 에러를 돌려준다.
+    fn join_tasks(tasks: Vec<Arc<VmFuture>>) -> Result<(), RuntimeError> {
+        let mut first = None;
+        for t in tasks {
+            if let Err(e) = t.join_unobserved() {
+                if first.is_none() { first = Some(e); }
+            }
+        }
+        match first { Some(e) => Err(e), None => Ok(()) }
     }
 
     /// `bang test`용: 전역 슬롯의 값이 클로저면 인자 없이 **격리 실행**한다 (spawn과 같은 격리 —
@@ -513,7 +572,7 @@ impl Vm {
             frames: Vec::with_capacity(16),
             globals: closure.globals.clone(),
             output,
-            spawn_scopes: vec![Vec::new()],
+            spawn_scopes: Vec::new(),
             handlers: Vec::new(),
             pending_exception: None,
             locals_pool: Vec::new(),
@@ -528,12 +587,12 @@ impl Vm {
             if i < locals_vec.len() { locals_vec[i] = arg; }
         }
         let locals = Arc::new(Mutex::new(locals_vec));
-        vm.frames.push(CallFrame { closure, ip: 0, locals, argc });
-        vm.exec_until(0)?;
-
-        // 서브-VM 내 잔여 spawn 조인
-        let scope = vm.spawn_scopes.pop().unwrap_or_default();
-        for f in scope { warn_if_spawn_err(f.resolve()); }
+        vm.frames.push(CallFrame { closure, ip: 0, locals, argc, spawned: Vec::new() });
+        // 작업의 자식들은 작업 함수 본문에 뿌리내려 반환 시 조인된다 (에러는 이 작업의 에러가 됨)
+        if let Err(e) = vm.exec_until(0) {
+            vm.drain_pending_tasks();
+            return Err(e);
+        }
 
         Ok(vm.stack.pop().unwrap_or(VmValue::Nil))
     }
@@ -777,8 +836,17 @@ impl Vm {
 
     /// 핸들러 지점으로 되감기: 프레임/스택 정리 후 예외값을 스택에 올리고 catch로 점프.
     fn unwind_to(&mut self, h: &TryHandler, exc: VmValue) {
+        // 되감기는 프레임·parallel 스코프의 작업도 모두 기다린다 (작업 누수 불가 — 헌법 3조).
+        // 예외가 이미 전파 중이므로 그 작업들의 에러는 경고로만 알린다.
         while self.frames.len() > h.frame_depth {
-            self.frames.pop();
+            if let Some(f) = self.frames.pop() {
+                for t in f.spawned { warn_if_spawn_err(t.join_unobserved()); }
+            }
+        }
+        while self.spawn_scopes.len() > h.spawn_depth {
+            if let Some(s) = self.spawn_scopes.pop() {
+                for t in s.futures { warn_if_spawn_err(t.join_unobserved()); }
+            }
         }
         // 되감긴 프레임들에 남아있던 더 깊은 핸들러 제거
         self.handlers.retain(|x| x.frame_depth <= self.frames.len());
@@ -800,9 +868,12 @@ impl Vm {
                 let frame = &self.frames[fi];
                 let ip = frame.ip;
                 if ip >= frame.closure.func.chunk.code.len() {
-                    // Implicit nil return
+                    // Implicit nil return — 함수 본문에 뿌리내린 작업을 조인 (Phase 55)
                     if let Some(f) = self.frames.pop() {
                         self.release_locals(f.locals);
+                        if !f.spawned.is_empty() {
+                            Self::join_tasks(f.spawned)?;
+                        }
                     }
                     // 빠져나간 프레임에 남은 try 핸들러 정리 (try 안에서의 암묵 반환)
                     self.handlers.retain(|h| h.frame_depth <= self.frames.len());
@@ -1039,6 +1110,10 @@ impl Vm {
                     let retval = auto_resolve(self.stack_pop(), span)?;
                     if let Some(f) = self.frames.pop() {
                         self.release_locals(f.locals);
+                        // 함수 본문에 뿌리내린 작업을 모두 조인 — 받아 보지 않은 에러는 호출자에게 전파 (Phase 55)
+                        if !f.spawned.is_empty() {
+                            Self::join_tasks(f.spawned)?;
+                        }
                     }
                     // 빠져나간 프레임에 남은 try 핸들러 정리 (try 안에서의 return)
                     self.handlers.retain(|h| h.frame_depth <= self.frames.len());
@@ -1290,9 +1365,15 @@ impl Vm {
                                     output_copy, closure_copy, args_copy);
                                 future2.complete(result);
                             });
-                            // 현재 스코프에 등록
-                            if let Some(scope) = self.spawn_scopes.last_mut() {
-                                scope.push(future.clone());
+                            // 가장 가까운 스코프에 등록: 같은 프레임의 parallel 블록이면 그 블록, 아니면 함수 본문
+                            let depth = self.frames.len();
+                            match self.spawn_scopes.last_mut() {
+                                Some(scope) if scope.frame_depth == depth => scope.futures.push(future.clone()),
+                                _ => {
+                                    if let Some(frame) = self.frames.last_mut() {
+                                        frame.spawned.push(future.clone());
+                                    }
+                                }
                             }
                             self.stack.push(VmValue::Future(future));
                         }
@@ -1303,12 +1384,13 @@ impl Vm {
                     }
                 }
                 OP_PARALLEL_ENTER => {
-                    self.spawn_scopes.push(Vec::new());
+                    self.spawn_scopes.push(SpawnScope { frame_depth: self.frames.len(), futures: Vec::new() });
                 }
                 OP_PARALLEL_EXIT => {
-                    let scope = self.spawn_scopes.pop().unwrap_or_default();
-                    // 모든 spawn 조인 (구조적 동시성)
-                    for f in scope { f.resolve()?; }
+                    // 모든 spawn을 끝까지 조인한 뒤 첫 에러 전파 (이전: 첫 에러에서 멈춰 나머지를 기다리지 않음)
+                    if let Some(scope) = self.spawn_scopes.pop() {
+                        Self::join_tasks(scope.futures)?;
+                    }
                 }
 
                 // --- try / catch / throw ---
@@ -1318,6 +1400,7 @@ impl Vm {
                         frame_depth: self.frames.len(),
                         stack_len: self.stack.len(),
                         catch_ip,
+                        spawn_depth: self.spawn_scopes.len(),
                     });
                 }
                 OP_POP_TRY => {
@@ -1452,7 +1535,7 @@ impl Vm {
                     }
                 }
                 self.stack.truncate(callee_idx); // 인자 + callee 제거
-                self.frames.push(CallFrame { closure, ip: 0, locals, argc: arg_count });
+                self.frames.push(CallFrame { closure, ip: 0, locals, argc: arg_count, spawned: Vec::new() });
                 // Execution continues in exec_until loop
             }
 
@@ -2240,7 +2323,7 @@ fn const_eq(a: &VmValue, b: &VmValue) -> bool {
 
 /// spawn된 작업이 에러로 끝나면 stderr에 경고를 출력한다(제어 흐름은 유지).
 /// 구조적 동시성상 부모를 중단시키진 않지만, 에러가 조용히 사라지지 않게 한다.
-fn warn_if_spawn_err(result: Result<VmValue, RuntimeError>) {
+fn warn_if_spawn_err(result: Result<(), RuntimeError>) {
     if let Err(e) = result {
         eprintln!("경고: spawn된 작업에서 처리되지 않은 에러: {e}");
     }

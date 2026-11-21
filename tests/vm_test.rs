@@ -1238,3 +1238,44 @@ fn test_vm_stdout_mode_keeps_no_buffer() {
     cap.write_line("x".into()).unwrap();
     assert_eq!(*buf.lock().unwrap(), vec!["x".to_string()]);
 }
+
+// ============================================================================
+// Phase 55 — 구조적 동시성: spawn은 함수 본문에 뿌리내려 함수 반환 시 조인된다
+// ============================================================================
+
+#[test]
+fn test_vm_function_body_joins_spawned_tasks() {
+    // 이전: f가 자식을 기다리지 않고 먼저 반환 → "f 반환"이 "자식 끝"보다 먼저 출력
+    let src = "fn slow() {\n sleep(100)\n print(\"자식 끝\")\n}\nfn f() {\n spawn slow()\n return \"f 반환\"\n}\nprint(f())\nprint(\"다음 줄\")";
+    assert_eq!(run_vm(src), vec!["자식 끝", "f 반환", "다음 줄"]);
+}
+
+#[test]
+fn test_vm_child_error_propagates_to_caller_unless_observed() {
+    let src = "fn bad() { return 1 / 0 }\nfn f() {\n spawn bad()\n return \"ok\"\n}\ntry { print(f()) } catch e { print(\"잡음\", e.kind) }\nfn g() {\n let x = spawn bad()\n try { print(x + 1) } catch e { print(\"처리함\") }\n return \"정상 반환\"\n}\nprint(g())";
+    assert_eq!(run_vm(src), vec!["잡음 zero_division", "처리함", "정상 반환"]);
+}
+
+#[test]
+fn test_vm_unhandled_child_error_fails_program() {
+    // 이전: 경고만 내고 정상 종료(exit 0) — 실패를 감지할 수 없었다
+    let prog = lex_parse("fn bad() { return 1 / 0 }\nspawn bad()\nprint(\"끝\")");
+    let out = compile(&prog).expect("컴파일");
+    let mut vm = Vm::new(out.global_count as usize, Arc::new(Mutex::new(Vec::new())));
+    let err = vm.run(out.main_fn).expect_err("자식 에러가 프로그램 에러가 되어야 함");
+    assert_eq!(err.kind, "zero_division");
+}
+
+#[test]
+fn test_vm_parallel_joins_all_before_error_and_scopes_survive_throw() {
+    // parallel: 첫 에러 뒤에도 나머지 작업을 끝까지 기다린다. try 안 parallel에서 throw해도 스코프가 정리된다.
+    let src = "fn bad() { return 1 / 0 }\nfn slow() {\n sleep(100)\n print(\"느린 작업 끝\")\n}\ntry {\n parallel {\n  spawn bad()\n  spawn slow()\n }\n} catch e { print(\"잡음\") }\ntry {\n parallel {\n  spawn sleep(10)\n  throw \"x\"\n }\n} catch e { print(\"잡음\", e) }\nparallel { spawn sleep(10) }\nprint(\"스코프 정상\")";
+    assert_eq!(run_vm(src), vec!["느린 작업 끝", "잡음", "잡음 x", "스코프 정상"]);
+}
+
+#[test]
+fn test_vm_returned_future_is_complete() {
+    // 함수가 spawn 결과를 돌려주면, 그 작업은 함수 반환 전에 이미 끝나 있다 (뿌리내림)
+    let src = "fn slow() {\n sleep(50)\n return 7\n}\nfn f() { return spawn slow() }\nlet t = now_ms()\nlet x = f()\nprint(now_ms() - t >= 40, x + 1)";
+    assert_eq!(run_vm(src), vec!["true 8"]);
+}
