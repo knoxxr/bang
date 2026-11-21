@@ -471,10 +471,10 @@ print(합계)
 출력:
 
 ```
-and: 1
-cat: 1
-hat: 1
 the: 2
+cat: 1
+and: 1
+hat: 1
 [1, 3, 5]
 [1, 9]
 true true

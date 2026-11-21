@@ -465,7 +465,7 @@ pub(crate) fn http_get(url: &str, span: Span) -> Result<VmValue, RuntimeError> {
         .ok_or_else(|| err(format!("상태줄 파싱 실패: '{status_line}'")))?;
 
     // 헤더 (소문자 키 — bang-web 관례와 일치)
-    let mut headers = HashMap::new();
+    let mut headers = crate::omap::OrderedMap::new();
     let mut chunked = false;
     let mut content_length: Option<usize> = None;
     for line in lines {
@@ -520,7 +520,7 @@ pub(crate) fn http_get(url: &str, span: Span) -> Result<VmValue, RuntimeError> {
         body_buf
     };
 
-    let mut map = HashMap::new();
+    let mut map = crate::omap::OrderedMap::new();
     map.insert("status".to_string(), VmValue::Int(status));
     map.insert("headers".to_string(), VmValue::Map(Arc::new(headers)));
     map.insert(

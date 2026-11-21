@@ -584,3 +584,11 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              fmt: f-문자열 안 따옴표 인식, 토큰 비교 시 f-문자열 조각 위치는 무시(들여쓰기로 바뀌는 게 정상).
              문서: SPEC 7장, llms.txt(124개), README, TUTORIAL 11.5, VS Code(f-문자열 하이라이팅·빌트인 목록).
              회귀: lexer +1, fmt +1, vm_test +4, 스냅샷 +1줄. (tests: 401 green, clippy 0)
+✅ Phase 51 — 맵 삽입 순서 유지 (Python dict와 같음) — v0.37.0  [출력 순서 바뀜]
+             src/omap.rs OrderedMap<V>(엔트리 Vec + 키→위치 HashMap, 의존성 없음). VmValue::Map·runtime::Value::Map
+               저장소 교체. 출력·keys()·values()·for k in m·json_stringify가 삽입 순서(이전: 키 정렬 5곳 제거).
+               json_parse는 문서 순서 보존, merge(a, b)는 a 순서 뒤에 b의 새 키. ==는 순서 무관.
+               채널·spawn을 건너도 순서 유지. import 모듈 export 맵은 선언(슬롯) 순서(이전: 해시 순서 — 비결정적).
+             동작 스냅샷 2줄 갱신(keys 순서, json_stringify 순서) — 의도된 의미 변경(사용자 승인).
+             문서: SPEC 3.2(맵의 순서)·5장, llms.txt, TUTORIAL 11.5 출력(실행 결과로 재생성).
+             회귀: omap 단위 +2, vm_test +2. (tests: 405 green, clippy 0)

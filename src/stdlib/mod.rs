@@ -33,7 +33,6 @@ mod prelude {
     pub(crate) use crate::runtime::{BangChannel, RuntimeError};
     pub(crate) use crate::vm::*;
     pub(crate) use std::cmp::Ordering;
-    pub(crate) use std::collections::HashMap;
     pub(crate) use std::sync::{Arc, Mutex, OnceLock};
 }
 

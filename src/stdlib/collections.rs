@@ -49,8 +49,8 @@ pub(crate) fn b_keys(
     req_args("keys", &args, 1, span)?;
     match &args[0] {
         VmValue::Map(m) => {
-            let mut keys: Vec<VmValue> = m.keys().map(|k| VmValue::Str(k.clone())).collect();
-            keys.sort_by_key(|a| a.to_string());
+            // 삽입 순서 (Phase 51 — 이전에는 정렬)
+            let keys: Vec<VmValue> = m.keys().map(|k| VmValue::Str(k.clone())).collect();
             Ok(VmValue::List(Arc::new(keys)))
         }
         other => Err(RuntimeError::new(
@@ -70,11 +70,8 @@ pub(crate) fn b_values(
     req_args("values", &args, 1, span)?;
     match &args[0] {
         VmValue::Map(m) => {
-            let mut pairs: Vec<_> = m.iter().collect();
-            pairs.sort_by_key(|(k, _)| k.as_str());
-            Ok(VmValue::List(Arc::new(
-                pairs.into_iter().map(|(_, v)| v.clone()).collect(),
-            )))
+            // 삽입 순서 (keys()와 같은 순서)
+            Ok(VmValue::List(Arc::new(m.values().cloned().collect())))
         }
         other => Err(RuntimeError::new(
             format!("values(): Map 필요, {} 발견", other.type_name()),

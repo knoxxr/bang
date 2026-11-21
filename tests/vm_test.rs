@@ -487,8 +487,8 @@ fn test_vm_json_parse_primitives() {
 
 #[test]
 fn test_vm_json_stringify() {
-    // 맵 키는 정렬되어 안정적 출력
-    assert_eq!(run_vm("print(json_stringify({\"b\": 2, \"a\": 1}))"), vec!["{\"a\":1,\"b\":2}"]);
+    // 맵 키는 삽입 순서 그대로 (Phase 51 — 이전에는 정렬)
+    assert_eq!(run_vm("print(json_stringify({\"b\": 2, \"a\": 1}))"), vec!["{\"b\":2,\"a\":1}"]);
     assert_eq!(run_vm("print(json_stringify([1, \"x\", true, nil]))"), vec!["[1,\"x\",true,null]"]);
 }
 
@@ -929,7 +929,7 @@ fn test_vm_for_over_map_str_bytes_and_pairs() {
     let src = "for k in {\"b\": 2, \"a\": 1} { print(k) }\nfor k, v in {\"b\": 2, \"a\": 1} { print(k + str(v)) }\nfor c in \"한글\" { print(c) }\nfor x in bytes_from_hex(\"0aff\") { print(x) }\nfor i, v in enumerate([\"x\", \"y\"]) { print(str(i) + v) }\ntry {\n for p, q in [[1, 2, 3]] { print(p + q) }\n} catch e { print(e.message) }";
     assert_eq!(
         run_vm(src),
-        vec!["a", "b", "a1", "b2", "한", "글", "10", "255", "0x", "1y", "분해: 값 2개 기대, 3개 발견"]
+        vec!["b", "a", "b2", "a1", "한", "글", "10", "255", "0x", "1y", "분해: 값 2개 기대, 3개 발견"]
     );
 }
 
@@ -1125,4 +1125,32 @@ fn test_vm_fstring_errors_have_positions() {
 fn test_vm_format_builtin() {
     let src = "print(format(\"{} + {} = {:.1f}\", 1, 2, 3))\nprint(format(\"{:*^9}\", \"가운데\"))\nprint(format(\"{{}} 없음\"))\ntry { format(\"{} {}\", 1) } catch e { print(e.kind) }\ntry { format(\"{}\", 1, 2) } catch e { print(e.kind) }\ntry { format(\"{x}\", 1) } catch e { print(e.kind) }";
     assert_eq!(run_vm(src), vec!["1 + 2 = 3.0", "***가운데***", "{} 없음", "argument", "argument", "value"]);
+}
+
+// ============================================================================
+// Phase 51 — 맵은 삽입 순서를 지킨다 (Python dict와 같음)
+// ============================================================================
+
+#[test]
+fn test_vm_map_insertion_order() {
+    let src = "let m = {\"z\": 1, \"a\": 2}\nm[\"m\"] = 3\nm[\"z\"] = 10\nprint(m)\nprint(keys(m), values(m))\nfor k, v in m { print(k, v) }\nprint(merge(m, {\"b\": 0, \"a\": 99}))\nprint(json_stringify(json_parse(\"{\\\"y\\\": 1, \\\"x\\\": [2]}\")))\nprint({\"b\": 1, \"a\": 2} == {\"a\": 2, \"b\": 1})";
+    assert_eq!(
+        run_vm(src),
+        vec![
+            "{z: 10, a: 2, m: 3}",
+            "[z, a, m] [10, 2, 3]",
+            "z 10",
+            "a 2",
+            "m 3",
+            "{z: 10, a: 99, m: 3, b: 0}",
+            "{\"y\":1,\"x\":[2]}",
+            "true",
+        ]
+    );
+}
+
+#[test]
+fn test_vm_map_order_survives_channel_and_spawn() {
+    let src = "let ch = channel(1)\nsend(ch, {\"c\": 1, \"b\": 2, \"a\": 3})\nprint(recv(ch))\nfn mk() { return {\"q\": 1, \"p\": 2} }\nlet f = spawn mk()\nprint(f)";
+    assert_eq!(run_vm(src), vec!["{c: 1, b: 2, a: 3}", "{q: 1, p: 2}"]);
 }

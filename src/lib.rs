@@ -15,3 +15,4 @@ pub mod reactor;
 pub mod scheduler;
 pub mod codegen;
 pub mod fmt;
+pub mod omap;

@@ -76,7 +76,7 @@ pub enum VmValue {
     // 값 의미론 + copy-on-write: clone은 Arc 공유(O(1)), 변경은 Arc::make_mut로
     // 공유 중일 때만 실제 복사. 관찰되는 의미는 깊은 복사와 동일.
     List(Arc<Vec<VmValue>>),
-    Map(Arc<HashMap<String, VmValue>>),
+    Map(Arc<crate::omap::OrderedMap<VmValue>>),
     // 불변 바이트 열. 변경 연산이 없으므로 Arc 공유가 관찰상 깊은 복사와 동일(값 의미론 유지).
     Bytes(Arc<Vec<u8>>),
     Closure(Arc<VmClosure>),
@@ -145,9 +145,8 @@ impl fmt::Display for VmValue {
             }
             VmValue::Map(m) => {
                 write!(f, "{{")?;
-                let mut pairs: Vec<_> = m.iter().collect();
-                pairs.sort_by_key(|(k, _)| k.as_str());
-                for (i, (k, v)) in pairs.iter().enumerate() {
+                // 삽입 순서 (Phase 51 — 이전에는 키 정렬)
+                for (i, (k, v)) in m.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
                     write!(f, "{k}: {v}")?;
                 }
@@ -494,10 +493,13 @@ impl Vm {
         // 모듈의 export(최상위 바인딩)를 Map으로. 함수 값은 sub_vm의
         // 모듈 전역 Arc를 그대로 들고 있어, 메인 VM에서 호출돼도
         // 자기 모듈 전역을 참조한다(sub_vm 드롭 후에도 Arc로 유지).
-        let mut map = HashMap::new();
+        let mut map = crate::omap::OrderedMap::new();
         {
             let g = sub_vm.globals.lock().unwrap();
-            for (name, slot) in &out.global_names {
+            // 모듈 export 맵은 선언 순서(전역 슬롯 순)
+            let mut names: Vec<(&String, &u16)> = out.global_names.iter().collect();
+            names.sort_by_key(|(_, s)| **s);
+            for (name, slot) in names {
                 map.insert(name.clone(), g[*slot as usize].clone());
             }
         }
@@ -985,7 +987,7 @@ impl Vm {
                     let pair_count = self.read_u16() as usize;
                     let start = self.stack.len() - pair_count * 2;
                     let flat: Vec<VmValue> = self.stack.drain(start..).collect();
-                    let mut map = HashMap::new();
+                    let mut map = crate::omap::OrderedMap::new();
                     for pair in flat.chunks(2) {
                         let key = match &pair[0] {
                             VmValue::Str(s) => s.clone(),
@@ -1285,9 +1287,8 @@ impl Vm {
                         VmValue::Channel(ch) => VmIter::Channel(ch),
                         // 맵: 키 정렬 순서(keys()와 동일). 변수 2개면 [키, 값] 쌍.
                         VmValue::Map(m) => {
-                            let mut ks: Vec<&String> = m.keys().collect();
-                            ks.sort();
-                            let items = ks.into_iter().map(|k| {
+                            // 삽입 순서 (Phase 51 — 이전에는 키 정렬)
+                            let items = m.keys().map(|k| {
                                 let key = VmValue::Str(k.clone());
                                 if pairs {
                                     let v = m.get(k).cloned().unwrap_or(VmValue::Nil);
@@ -1657,7 +1658,7 @@ fn missing_key(key: &str, span: Span) -> RuntimeError {
 
 /// 내장 런타임 에러 → `catch e`에 바인딩되는 맵 `{kind, message, line, col}` (Phase 48).
 pub(crate) fn error_to_value(e: &RuntimeError) -> VmValue {
-    let mut m = HashMap::new();
+    let mut m = crate::omap::OrderedMap::new();
     m.insert("kind".to_string(), VmValue::Str(e.kind.to_string()));
     m.insert("message".to_string(), VmValue::Str(e.message.clone()));
     m.insert("line".to_string(), VmValue::Int(e.span.line as i64));
@@ -1892,7 +1893,7 @@ pub(crate) fn deep_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeErr
             Ok(VmValue::List(Arc::new(resolved)))
         }
         VmValue::Map(map) => {
-            let mut resolved = HashMap::new();
+            let mut resolved = crate::omap::OrderedMap::new();
             for (k, val) in map.iter() { resolved.insert(k.clone(), deep_resolve(val.clone(), span)?); }
             Ok(VmValue::Map(Arc::new(resolved)))
         }

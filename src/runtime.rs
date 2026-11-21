@@ -1,6 +1,5 @@
 // Bang — 런타임 공용 타입: RuntimeError, 채널 전송용 Value(데이터 전용), BangChannel
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -91,7 +90,7 @@ pub enum Value {
     Str(String),
     Nil,
     List(Vec<Value>),
-    Map(HashMap<String, Value>),
+    Map(crate::omap::OrderedMap<Value>),
     /// 불변 바이트 열 (값 의미론 — 불변이라 Arc 공유가 관찰상 깊은 복사와 동일)
     Bytes(Arc<Vec<u8>>),
 }
@@ -133,9 +132,7 @@ impl fmt::Display for Value {
             }
             Value::Map(map) => {
                 write!(f, "{{")?;
-                let mut pairs: Vec<_> = map.iter().collect();
-                pairs.sort_by_key(|(k, _)| k.as_str());
-                for (i, (k, v)) in pairs.iter().enumerate() {
+                for (i, (k, v)) in map.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
                     write!(f, "{k}: {v}")?;
                 }
