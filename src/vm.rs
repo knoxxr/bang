@@ -304,6 +304,8 @@ pub struct CompiledFn {
     pub arity: usize,
     /// 필수 인자 수 (기본값 매개변수가 있으면 arity보다 작다 — Phase 47)
     pub min_arity: usize,
+    /// 이 함수의 소스 파일 (import 모듈이면 그 경로, 메인이면 None) — 에러 위치 표시용 (Phase 56)
+    pub file: Option<Arc<str>>,
     pub chunk: Chunk,
     pub upvalue_count: usize,
     pub local_count: usize,
@@ -553,17 +555,19 @@ impl Vm {
     pub fn run_global_fn_isolated(&self, slot: usize) -> Option<Result<VmValue, RuntimeError>> {
         let value = self.globals.lock().ok()?.get(slot)?.clone();
         match value {
-            VmValue::Closure(c) => Some(Vm::run_spawned(self.output.clone(), deep_clone_closure(&c), Vec::new())),
+            VmValue::Closure(c) => Some(Vm::run_spawned(self.output.clone(), deep_clone_closure(&c), Vec::new(), Span::new(0, 0))),
             _ => None,
         }
     }
 
     /// spawned 클로저를 서브-VM에서 실행하고 결과 반환.
     /// std::thread::spawn 클로저 안에서 호출된다.
+    /// `call_span`: 작업을 시작한 지점 (인자 수 에러 등 작업 시작 전 에러의 위치).
     pub fn run_spawned(
         output: Output,
         closure: Arc<VmClosure>,
         args: Vec<VmValue>,
+        call_span: Span,
     ) -> Result<VmValue, RuntimeError> {
         // spawned 클로저는 이미 자기 모듈 전역의 독립 복사본을 들고 있다
         // (deep_clone_closure에서 깊은 복사). 그 Arc를 루트 전역으로 쓴다.
@@ -579,7 +583,9 @@ impl Vm {
         };
         let argc = args.len();
         if argc < closure.func.min_arity || argc > closure.func.arity {
-            return Err(arity_error(&closure.func, argc, Span::new(0, 0)));
+            let mut e = arity_error(&closure.func, argc, call_span);
+            e.file = closure.func.file.clone();
+            return Err(e);
         }
         let local_count = closure.func.local_count;
         let mut locals_vec = vec![VmValue::Nil; local_count];
@@ -612,7 +618,7 @@ impl Vm {
             .parse()
             .map_err(|e| RuntimeError::new(
                 format!("import(): 파서 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span).with_kind(crate::runtime::kind::IMPORT))?;
-        let out = crate::compiler::compile(&prog)
+        let out = crate::compiler::compile_with_file(&prog, Some(path))
             .map_err(|e| RuntimeError::new(
                 format!("import(): 컴파일 오류 in '{path}': {}", e.first().map(|x| x.to_string()).unwrap_or_default()), span).with_kind(crate::runtime::kind::IMPORT))?;
         // 모듈의 top-level print는 메인 프로그램 출력으로 보낸다.
@@ -695,7 +701,7 @@ impl Vm {
                                 let req = String::from_utf8_lossy(buf).into_owned();
                                 buf.clear();
                                 let h = deep_clone_closure(&handler);
-                                match Vm::run_spawned(self.output.clone(), h, vec![VmValue::Str(req)]) {
+                                match Vm::run_spawned(self.output.clone(), h, vec![VmValue::Str(req)], span) {
                                     Ok(VmValue::Str(s)) => response = Some(s.into_bytes()),
                                     Ok(other) => response = Some(format!("{other}").into_bytes()),
                                     Err(e) => {
@@ -803,7 +809,14 @@ impl Vm {
         loop {
             match self.exec_dispatch(stop_depth) {
                 Ok(()) => return Ok(()),
-                Err(e) => {
+                Err(mut e) => {
+                    // 위치가 없는 에러에는 실행 중이던 지점을, 파일은 그 함수의 소스 파일을 붙인다 (헌법 7조, Phase 56)
+                    if e.span.line == 0 && !self.frames.is_empty() {
+                        e.span = self.current_span();
+                    }
+                    if e.file.is_none() {
+                        e.file = self.frames.last().and_then(|f| f.closure.func.file.clone());
+                    }
                     if let Some(h) = self.take_handler_above(stop_depth) {
                         // 사용자 throw는 던진 값 그대로, 내장 에러는 {kind, message, line, col} 맵
                         let exc = self.pending_exception.take()
@@ -1362,7 +1375,7 @@ impl Vm {
                             // M:N 스케줄러에 태스크 제출 (Phase 9 Part A)
                             crate::scheduler::global().spawn_task(move || {
                                 let result = Vm::run_spawned(
-                                    output_copy, closure_copy, args_copy);
+                                    output_copy, closure_copy, args_copy, span);
                                 future2.complete(result);
                             });
                             // 가장 가까운 스코프에 등록: 같은 프레임의 parallel 블록이면 그 블록, 아니면 함수 본문
@@ -2035,7 +2048,14 @@ pub(crate) fn as_int(v: &VmValue, span: Span) -> Result<i64, RuntimeError> {
 /// Future 자동 조인 (얕게): 최상위 Future 하나만 resolve.
 fn auto_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
     match v {
-        VmValue::Future(f) => f.resolve().map_err(|mut e| { e.span = span; e }),
+        // 작업 안에서 난 에러는 원래 위치(작업 쪽 줄·파일)를 유지한다 — 실제로 잘못된 곳을 가리키도록 (Phase 56).
+        // 위치가 없는 에러만 값을 쓴 지점으로 채운다.
+        VmValue::Future(f) => f.resolve().map_err(|mut e| {
+            if e.span.line == 0 {
+                e.span = span;
+            }
+            e
+        }),
         other => Ok(other),
     }
 }

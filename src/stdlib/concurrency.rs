@@ -142,7 +142,7 @@ pub(crate) fn b_parallel_map(
         crate::scheduler::global().spawn_task(move || {
             let mut out = Vec::with_capacity(jobs.len());
             for (c, item) in jobs {
-                match Vm::run_spawned(output.clone(), c, vec![item]) {
+                match Vm::run_spawned(output.clone(), c, vec![item], span) {
                     Ok(v) => out.push(v),
                     Err(e) => {
                         done.complete(Err(e));

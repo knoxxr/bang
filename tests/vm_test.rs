@@ -1279,3 +1279,30 @@ fn test_vm_returned_future_is_complete() {
     let src = "fn slow() {\n sleep(50)\n return 7\n}\nfn f() { return spawn slow() }\nlet t = now_ms()\nlet x = f()\nprint(now_ms() - t >= 40, x + 1)";
     assert_eq!(run_vm(src), vec!["true 8"]);
 }
+
+// ============================================================================
+// Phase 56 — 모든 런타임 에러에 위치, 작업 에러는 원래 위치를 유지
+// ============================================================================
+
+fn run_vm_err(source: &str) -> bang::runtime::RuntimeError {
+    let prog = lex_parse(source);
+    let out = compile(&prog).expect("컴파일 실패");
+    let mut vm = Vm::new(out.global_count as usize, Arc::new(Mutex::new(Vec::new())));
+    vm.run(out.main_fn).expect_err("에러여야 함")
+}
+
+#[test]
+fn test_vm_task_start_errors_have_location() {
+    // 이전: "런타임 오류: 인자 개수 불일치…"만 나오고 위치가 없었다
+    let e = run_vm_err("print(parallel_map([1], fn(a, b) { return a }))");
+    assert_eq!((e.span.line, e.span.col), (1, 7), "{e}");
+    let e = run_vm_err("fn h(a, b) { return a }\nlet fs = [h]\nlet x = spawn fs[0](1)\nprint(x)");
+    assert_eq!(e.span.line, 3, "spawn한 줄을 가리켜야 함: {e}");
+}
+
+#[test]
+fn test_vm_task_error_keeps_origin_line() {
+    // 작업 안에서 난 에러는 값을 쓴 줄이 아니라 실제로 난 줄을 가리킨다
+    let src = "fn risky() {\n    let a = 1\n    return a / 0\n}\nlet x = spawn risky()\ntry { print(x) } catch e { print(e.line, e.kind) }";
+    assert_eq!(run_vm(src), vec!["3 zero_division"]);
+}

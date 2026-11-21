@@ -150,3 +150,20 @@ print(m.total())
 ";
     assert_eq!(run_with_module(module, main), "[1, 2, 3]\n6\n");
 }
+
+/// Phase 56: import한 모듈 안에서 난 런타임 에러는 그 모듈 파일 이름과 그 파일의 줄을 보여 준다.
+/// (이전: 메인 파일의 같은 줄 번호를 보여 줘서 엉뚱한 줄(빈 줄)을 가리켰다)
+#[test]
+fn test_runtime_error_in_module_shows_module_file_and_line() {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("bang_import_err_{}_{n}", std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    fs::write(dir.join("mathx.bang"), "// 모듈\n\n\nfn risky(x) {\n    return 10 / x\n}\n").unwrap();
+    fs::write(dir.join("main.bang"), "let m = import(\"mathx\")\nprint(m.risky(0))\n").unwrap();
+    let out = Command::new(BANG).arg("main.bang").current_dir(&dir).output().expect("실행 실패");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr.contains("mathx.bang 5:12"), "{stderr}");
+    assert!(stderr.contains("return 10 / x"), "모듈의 소스 줄을 보여야 함: {stderr}");
+}

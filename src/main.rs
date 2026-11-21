@@ -127,6 +127,17 @@ fn lex_and_parse(source: &str, _path: &str) -> bang::ast::Program {
 // Phase 7: 소스 컨텍스트가 있는 에러 포맷
 // ============================================================================
 
+/// 런타임 에러 출력: import한 모듈 안에서 난 에러면 그 모듈 파일의 줄을 보여 준다 (Phase 56).
+fn runtime_error_text(e: &bang::runtime::RuntimeError, main_source: &str) -> String {
+    match &e.file {
+        Some(path) => match fs::read_to_string(path.as_ref()) {
+            Ok(src) => format_with_context(&e.to_string(), e.span, &src),
+            Err(_) => e.to_string(),
+        },
+        None => format_with_context(&e.to_string(), e.span, main_source),
+    }
+}
+
 fn format_with_context(message: &str, span: Span, source: &str) -> String {
     if span.line == 0 {
         return message.to_string();
@@ -205,7 +216,7 @@ fn run_vm_program(prog: &bang::ast::Program, source: &str) {
     };
     let mut vm = bang::vm::Vm::new(out.global_count as usize, bang::vm::Output::Stdout);
     if let Err(e) = vm.run(out.main_fn) {
-        eprintln!("{}", format_with_context(&e.to_string(), e.span, source));
+        eprintln!("{}", runtime_error_text(&e, source));
         process::exit(1);
     }
 }
@@ -425,7 +436,7 @@ fn cmd_repl() {
         // 스니펫마다 새 VM(공유 전역) — 이전 에러의 잔여 상태가 남지 않음
         let mut vm = bang::vm::Vm::with_globals(shared_globals.clone(), output.clone());
         if let Err(e) = vm.run(out.main_fn) {
-            eprintln!("{}", format_with_context(&e.to_string(), e.span, trimmed));
+            eprintln!("{}", runtime_error_text(&e, trimmed));
         }
         // (print는 VM이 stdout에 직접 출력하므로 별도 echo 불필요)
     }
@@ -800,7 +811,7 @@ fn cmd_test(args: &[String]) {
                 Some(Err(e)) => {
                     failed += 1;
                     println!("  FAIL  {name}");
-                    println!("{}", format_with_context(&e.to_string(), e.span, &source)
+                    println!("{}", runtime_error_text(&e, &source)
                         .lines().map(|l| format!("        {l}")).collect::<Vec<_>>().join("\n"));
                 }
             }

@@ -649,3 +649,12 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                try 안 parallel에서 throw하면 spawn 스코프가 스택에 남던 문제 → TryHandler.spawn_depth로 정리.
              성능: fib_seq/fib_par 변화 없음(측정 잡음 범위).
              문서: SPEC 6.3·6.3-1(신설)·6.4-2. 회귀: vm_test +5. (tests: 424 green, clippy 0)
+✅ Phase 56 — 에러 위치 정확화 (헌법 7조 위반 수정) — v0.42.0
+             (발견, 헌법 점검) parallel_map/spawn의 인자 수 에러 등 일부 에러에 위치가 없었음(run_spawned가 Span(0,0)).
+               추가 발견: import한 모듈 안의 에러가 메인 파일의 같은 줄 번호를 보여 줘 엉뚱한 줄(빈 줄)을 가리켰음.
+             (수정) RuntimeError.file + CompiledFn.file(compile_with_file — import가 모듈 경로를 기록).
+               exec_until이 위치 없는 에러에 현재 지점을, 파일 없는 에러에 실행 중 함수의 파일을 채움.
+               표시: [모듈경로 줄:열], CLI(run/REPL/test)는 그 파일의 소스 줄을 보여 줌(runtime_error_text).
+               run_spawned(call_span): 작업 시작 전 에러는 spawn/parallel_map 호출 지점.
+               auto_resolve가 작업 에러의 위치를 "값을 쓴 줄"로 덮어쓰던 것 → 원래 난 줄 유지(위치 없을 때만 채움).
+             문서: SPEC 8장. 회귀: import_test +1, vm_test +2. (tests: 427 green, clippy 0)

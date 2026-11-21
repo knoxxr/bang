@@ -143,6 +143,7 @@ struct FnCompiler {
     arity: usize,
     /// 기본값 없는(필수) 매개변수 수 (Phase 47)
     min_arity: usize,
+    file: Option<Arc<str>>,
     locals: Vec<Local>,
     upvalues: Vec<UpvalueDesc>,
     loops: Vec<LoopInfo>,
@@ -159,6 +160,7 @@ impl FnCompiler {
             name,
             arity,
             min_arity: arity,
+            file: None,
             locals: Vec::new(),
             upvalues: Vec::new(),
             loops: Vec::new(),
@@ -226,6 +228,7 @@ impl FnCompiler {
             name: self.name,
             arity: self.arity,
             min_arity: self.min_arity,
+            file: self.file,
             chunk: self.chunk,
             upvalue_count: self.upvalues.len(),
             local_count: self.local_peak,
@@ -238,6 +241,8 @@ impl FnCompiler {
 // ============================================================================
 
 struct Compiler {
+    /// 소스 파일 경로 (Phase 56) — import 모듈이면 그 경로, 메인 프로그램이면 None
+    file: Option<Arc<str>>,
     fn_stack: Vec<FnCompiler>,
     globals: HashMap<String, u16>, // top-level name → global slot index
     global_count: u16,
@@ -247,6 +252,7 @@ struct Compiler {
 impl Compiler {
     fn new() -> Self {
         Self {
+            file: None,
             fn_stack: Vec::new(),
             globals: HashMap::new(),
             global_count: 0,
@@ -1103,6 +1109,7 @@ impl Compiler {
     ) {
         // Push a new FnCompiler
         let mut fn_comp = FnCompiler::new(name.clone(), params.len());
+        fn_comp.file = self.file.clone();
         fn_comp.min_arity = param_defaults.iter().take_while(|d| d.is_none()).count().min(params.len());
         fn_comp.ret_type = ret_type;
 
@@ -1185,7 +1192,8 @@ impl Compiler {
         self.prescan_globals(&prog.stmts);
 
         // Wrap top-level code in a "main" function
-        let main_fn = FnCompiler::new(Some("main".to_string()), 0);
+        let mut main_fn = FnCompiler::new(Some("main".to_string()), 0);
+        main_fn.file = self.file.clone();
         self.fn_stack.push(main_fn);
         self.cur_mut().begin_scope();
 
@@ -1262,7 +1270,13 @@ pub struct CompileOutput {
 /// Compile a parsed program into a main CompiledFn.
 /// Returns Err if any compile errors occurred.
 pub fn compile(prog: &Program) -> Result<CompileOutput, Vec<CompileError>> {
+    compile_with_file(prog, None)
+}
+
+/// 소스 파일 경로를 기록하며 컴파일 (import 모듈용 — 런타임 에러가 모듈 파일 위치를 가리키게).
+pub fn compile_with_file(prog: &Program, file: Option<&str>) -> Result<CompileOutput, Vec<CompileError>> {
     let mut compiler = Compiler::new();
+    compiler.file = file.map(Arc::from);
     compiler.compile_program(prog);
 
     if !compiler.errors.is_empty() {
