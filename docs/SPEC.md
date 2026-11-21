@@ -18,6 +18,14 @@ Bang은 동적 타입 범용 프로그래밍 언어이다.
 `bang run`·`bang repl`·`import`가 모두 VM으로 실행된다. 다른 백엔드가 VM과 다르게
 동작하면 그 백엔드의 결함이다(지원하지 않는 기능은 조용히 무시하지 않고 명확한 에러를 내야 한다).
 
+**실험적 AOT (`bang compile`)** — 지원 범위: int/float/bool/nil/str, 산술·비교·논리, let/대입·복합 대입,
+if/while/return, 최상위 함수(재귀), 빌트인 `print str int float bool len abs sqrt floor ceil round pow
+min max(인자 2개) exit assert`. 그 밖(리스트·맵·spawn·클로저·for·try·타입 힌트·f-문자열 등)은 컴파일 에러다.
+지원 범위 안에서는 VM과 같은 결과를 낸다(Phase 58): 정수 오버플로·0 나누기·잘못된 변환은 에러로 종료(종료 코드 1),
+`/`는 float, Python 참거짓, float 표시, `len`은 문자 수. `tests/transpile_test.rs`의 VM↔AOT 동치 테스트가
+같은 프로그램 모음을 두 엔진으로 실행해 표준 출력과 종료 코드를 비교한다. 한계: 에러 메시지에 줄·열 위치가 없다
+(내용과 종료 코드는 같다).
+
 ---
 
 ## 2. 어휘 구조 (Lexical Structure)

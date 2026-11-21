@@ -136,3 +136,80 @@ fn test_if_else_branch() {
         assert_eq!(out, "big\n");
     }
 }
+
+// ============================================================================
+// Phase 58 — VM ↔ AOT 동치 (헌법 4조 "의미는 계약"): 같은 프로그램은 같은 stdout·종료 코드
+// ============================================================================
+
+/// AOT 바이너리의 (stdout, 종료 코드). cc가 없으면 None.
+fn aot_output(src: &str, tag: &str) -> Option<(String, i32)> {
+    let tokens = Lexer::new(src).tokenize().expect("tokenize 실패");
+    let prog = Parser::new(tokens).parse().expect("parse 실패");
+    let c_code = transpile(&prog).unwrap_or_else(|e| panic!("transpile 실패: {e:?}\n{src}"));
+    let bin_path = unique_path(tag);
+    let c_path = bin_path.with_extension("c");
+    fs::write(&c_path, &c_code).expect("C 소스 쓰기 실패");
+    let status = Command::new("cc").args(["-O2", "-o"]).arg(&bin_path).arg(&c_path).arg("-lm").status();
+    let status = match status {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("SKIP aot_matches_vm[{tag}]: cc 없음");
+            let _ = fs::remove_file(&c_path);
+            return None;
+        }
+    };
+    assert!(status.success(), "cc 컴파일 실패:\n{c_code}");
+    let out = Command::new(&bin_path).output().expect("실행 실패");
+    let _ = fs::remove_file(&c_path);
+    let _ = fs::remove_file(&bin_path);
+    Some((String::from_utf8_lossy(&out.stdout).into_owned(), out.status.code().unwrap_or(-1)))
+}
+
+/// VM(`bang run`)의 (stdout, 종료 코드).
+fn vm_output(src: &str, tag: &str) -> (String, i32) {
+    let path = unique_path(tag).with_extension("bang");
+    fs::write(&path, src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_bang")).arg("run").arg(&path).output().expect("실행 실패");
+    let _ = fs::remove_file(&path);
+    (String::from_utf8_lossy(&out.stdout).into_owned(), out.status.code().unwrap_or(-1))
+}
+
+/// AOT 지원 부분집합의 프로그램 모음. 각각 VM과 AOT의 stdout·종료 코드가 같아야 한다.
+const AOT_VM_CORPUS: &[(&str, &str)] = &[
+    ("arith", "print(7 + 2 * 3, 7 - 10, 6 * -7, 7 % 3, -7 % 2, 7.5 % 2)"),
+    ("division", "print(7 / 2, 8 / 2, 1 / 3, 10 / 4, 1.0 / 0, -1.0 / 0, 0.0 / 1)"),
+    ("float_display", "print(0.1, 0.1 + 0.2, 1e21, 1e-7, 2.5e-3, 1e15, 1e16, 123.456, -0.5, 3.0)"),
+    ("str_of_float", "print(str(2.0) + \"|\" + str(0.1) + \"|\" + str(1 / 3))"),
+    ("truthiness", "fn t(v) {\n if v { return 1 }\n return 0\n}\nprint(t(0), t(1), t(\"\"), t(\"a\"), t(nil), t(0.0), t(false), t(true))\nprint(not 0, not \"\", 0 or \"기본\", 1 and 2, bool(0), bool(\"x\"))"),
+    ("while_truthy", "let n = 3\nlet s = 0\nwhile n {\n s = s + n\n n = n - 1\n}\nprint(s)"),
+    ("compare", "print(1 < 2, 2 <= 2, 3 > 4, \"a\" < \"b\", \"가\" > \"a\", 1 == 1.0, 1 == true, \"x\" == \"x\", nil == nil)"),
+    ("builtins", "print(floor(2.7), ceil(2.1), round(2.5), round(-2.5), pow(2, 10), pow(2.0, 3), pow(2, -1), sqrt(16), abs(-3), abs(-2.5), min(3, 1), max(1, 2.5))"),
+    ("casts", "print(int(\"42\"), int(\" 7 \"), int(3.9), int(-3.9), int(true), float(\"1.5\"), float(2), str(12), str(true), str(nil))"),
+    ("len_utf8", "print(len(\"héllo한\"), len(\"\"), len(\"abc\"))"),
+    ("strings", "let s = \"안녕\" + \", \" + \"bang\"\nprint(s, len(s))"),
+    ("recursion", "fn fib(n) {\n if n <= 1 { return n }\n return fib(n - 1) + fib(n - 2)\n}\nprint(fib(20))"),
+    ("compound", "let x = 10\nx += 5\nx -= 1\nx *= 2\nx /= 4\nprint(x)"),
+    ("overflow_add", "print(\"before\")\nlet m = 9223372036854775807\nprint(m + 1)\nprint(\"after\")"),
+    ("overflow_mul_neg", "let m = -9223372036854775807 - 1\nprint(m * 1)\nprint(-m)"),
+    ("overflow_abs", "let m = -9223372036854775807 - 1\nprint(abs(m))"),
+    ("zero_div", "print(1)\nprint(1 / 0)"),
+    ("zero_mod", "print(5 % 0)"),
+    ("bad_int", "print(int(\"abc\"))"),
+    ("bad_float", "print(float(\"1.5x\"))"),
+    ("bad_add", "print(1 + \"a\")"),
+    ("assert_msg", "print(\"a\")\nassert(1 > 2, \"틀림\")\nprint(\"b\")"),
+    ("exit_code", "print(\"x\")\nexit(3)"),
+];
+
+#[test]
+fn aot_matches_vm_on_corpus() {
+    let mut mismatches = Vec::new();
+    for (tag, src) in AOT_VM_CORPUS {
+        let vm = vm_output(src, tag);
+        let Some(aot) = aot_output(src, tag) else { return };
+        if vm != aot {
+            mismatches.push(format!("[{tag}]\n  VM : {vm:?}\n  AOT: {aot:?}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "VM과 AOT 결과가 다름 ({}건):\n{}", mismatches.len(), mismatches.join("\n"));
+}

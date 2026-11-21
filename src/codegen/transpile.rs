@@ -53,6 +53,7 @@ const C_RUNTIME: &str = r#"/* Bang Language C Runtime — 자동 생성 */
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+#include <errno.h>
 
 typedef enum { BT_INT=0, BT_FLOAT=1, BT_BOOL=2, BT_NIL=3, BT_STR=4 } BT;
 typedef struct { BT tag; union { int64_t i; double f; int b; char* s; }; } BV;
@@ -69,16 +70,64 @@ static BV BV_str(const char* s){ BV v; v.tag=BT_STR; v.s=(char*)s; return v; }
 #define BNIL     BV_nil()
 #define BSTR(s)  BV_str(s)
 
+/* VM과 같은 의미를 지키는 런타임 (Phase 58). 에러는 VM의 "잡히지 않은 에러"와 같이 stderr + exit 1. */
+static void bv_fail(const char* msg) { fprintf(stderr, "런타임 오류: %s\n", msg); exit(1); }
+
+/* 참거짓 — Python 규칙 (VM is_truthy와 같음) */
 static int bv_truthy(BV v) {
-    if (v.tag==BT_BOOL) return v.b;
-    if (v.tag==BT_NIL)  return 0;
+    switch (v.tag) {
+        case BT_BOOL:  return v.b;
+        case BT_NIL:   return 0;
+        case BT_INT:   return v.i != 0;
+        case BT_FLOAT: return v.f != 0.0;
+        case BT_STR:   return v.s[0] != '\0';
+    }
     return 1;
 }
 
+/* float 표시 — VM fmt_float와 같음: 가장 짧게 왕복되는 자릿수를 지수 없이, 정수 값이면 ".0" (|x| < 1e16) */
+static void bv_fmt_float(double x, char* out, size_t cap) {
+    if (isnan(x)) { snprintf(out, cap, "NaN"); return; }
+    if (isinf(x)) { snprintf(out, cap, x < 0 ? "-inf" : "inf"); return; }
+    char tmp[64];
+    int prec;
+    for (prec = 1; prec <= 17; prec++) {
+        snprintf(tmp, sizeof tmp, "%.*e", prec - 1, x);
+        if (strtod(tmp, NULL) == x) break;
+    }
+    /* tmp = [-]d[.ddd]e[+-]XX */
+    const char* p = tmp;
+    int neg = 0;
+    if (*p == '-') { neg = 1; p++; }
+    char digits[32]; int n = 0;
+    while (*p && *p != 'e') { if (*p != '.') digits[n++] = *p; p++; }
+    digits[n] = '\0';
+    int e = (*p == 'e') ? atoi(p + 1) : 0;
+    while (n > 1 && digits[n - 1] == '0') digits[--n] = '\0';   /* 꼬리 0 제거 */
+    int point = e + 1;               /* 소수점 앞 자릿수 */
+    char body[400]; int k = 0;
+    if (point <= 0) {
+        body[k++] = '0'; body[k++] = '.';
+        for (int i = 0; i < -point; i++) body[k++] = '0';
+        for (int i = 0; i < n; i++) body[k++] = digits[i];
+    } else if (point >= n) {
+        for (int i = 0; i < n; i++) body[k++] = digits[i];
+        for (int i = 0; i < point - n; i++) body[k++] = '0';
+        if (fabs(x) < 1e16) { body[k++] = '.'; body[k++] = '0'; }
+    } else {
+        for (int i = 0; i < point; i++) body[k++] = digits[i];
+        body[k++] = '.';
+        for (int i = point; i < n; i++) body[k++] = digits[i];
+    }
+    body[k] = '\0';
+    snprintf(out, cap, "%s%s", neg ? "-" : "", body);
+}
+
 static void bv_display(BV v) {
+    char buf[420];
     switch (v.tag) {
         case BT_INT:   printf("%lld", (long long)v.i); break;
-        case BT_FLOAT: printf("%g",   v.f); break;
+        case BT_FLOAT: bv_fmt_float(v.f, buf, sizeof buf); printf("%s", buf); break;
         case BT_BOOL:  printf("%s",   v.b ? "true" : "false"); break;
         case BT_NIL:   printf("nil"); break;
         case BT_STR:   printf("%s",   v.s); break;
@@ -91,85 +140,148 @@ static void bv_print_n(BV* a, int n) {
     printf("\n");
 }
 
+static int bv_is_num(BV v) { return v.tag == BT_INT || v.tag == BT_FLOAT; }
 static double bv_to_f(BV v, const char* op) {
     if (v.tag==BT_FLOAT) return v.f;
     if (v.tag==BT_INT)   return (double)v.i;
-    fprintf(stderr, "runtime: %s expects number\n", op); exit(1);
+    char m[96]; snprintf(m, sizeof m, "%s: 숫자 필요", op); bv_fail(m); return 0;
+}
+static void bv_overflow(const char* op) {
+    char m[96]; snprintf(m, sizeof m, "정수 오버플로: %s 결과가 64비트 범위를 벗어남", op); bv_fail(m);
+}
+/* float → int: Rust `as i64`와 같이 범위 밖은 포화, NaN은 0 */
+static int64_t bv_f2i(double f) {
+    if (isnan(f)) return 0;
+    if (f >= 9223372036854775807.0) return INT64_MAX;
+    if (f <= -9223372036854775808.0) return INT64_MIN;
+    return (int64_t)f;
 }
 
 static BV bv_add(BV a, BV b) {
-    if (a.tag==BT_INT && b.tag==BT_INT) return BINT(a.i + b.i);
-    if ((a.tag==BT_INT||a.tag==BT_FLOAT) && (b.tag==BT_INT||b.tag==BT_FLOAT))
-        return BFLT(bv_to_f(a,"+")+bv_to_f(b,"+"));
+    if (a.tag==BT_INT && b.tag==BT_INT) { int64_t r; if (__builtin_add_overflow(a.i, b.i, &r)) bv_overflow("+"); return BINT(r); }
+    if (bv_is_num(a) && bv_is_num(b)) return BFLT(bv_to_f(a,"+")+bv_to_f(b,"+"));
     if (a.tag==BT_STR && b.tag==BT_STR) {
         size_t la=strlen(a.s), lb=strlen(b.s);
         char* r=(char*)malloc(la+lb+1);
-        if (!r){fprintf(stderr,"OOM\n");exit(1);}
+        if (!r) bv_fail("메모리 부족");
         memcpy(r,a.s,la); memcpy(r+la,b.s,lb+1);
         return BSTR(r);
     }
-    fprintf(stderr,"runtime: cannot add\n"); exit(1);
+    bv_fail("+: 연산 불가 (타입이 맞지 않음)"); return BNIL;
 }
-static BV bv_sub(BV a,BV b){if(a.tag==BT_INT&&b.tag==BT_INT)return BINT(a.i-b.i);return BFLT(bv_to_f(a,"-")-bv_to_f(b,"-"));}
-static BV bv_mul(BV a,BV b){if(a.tag==BT_INT&&b.tag==BT_INT)return BINT(a.i*b.i);return BFLT(bv_to_f(a,"*")*bv_to_f(b,"*"));}
+static BV bv_sub(BV a,BV b){
+    if(a.tag==BT_INT&&b.tag==BT_INT){int64_t r;if(__builtin_sub_overflow(a.i,b.i,&r))bv_overflow("-");return BINT(r);}
+    return BFLT(bv_to_f(a,"-")-bv_to_f(b,"-"));
+}
+static BV bv_mul(BV a,BV b){
+    if(a.tag==BT_INT&&b.tag==BT_INT){int64_t r;if(__builtin_mul_overflow(a.i,b.i,&r))bv_overflow("*");return BINT(r);}
+    return BFLT(bv_to_f(a,"*")*bv_to_f(b,"*"));
+}
+/* `/`는 항상 float. int/int에서 나누는 수가 0이면 에러, float이 섞이면 IEEE(inf/NaN) — VM과 같음 */
 static BV bv_div(BV a,BV b){
-    if(a.tag==BT_INT&&b.tag==BT_INT){if(!b.i){fprintf(stderr,"div by zero\n");exit(1);}return BINT(a.i/b.i);}
-    double db=bv_to_f(b,"/"); if(!db){fprintf(stderr,"div by zero\n");exit(1);}
-    return BFLT(bv_to_f(a,"/")/db);
+    if(a.tag==BT_INT&&b.tag==BT_INT){ if(!b.i) bv_fail("0으로 나눌 수 없음"); return BFLT((double)a.i/(double)b.i); }
+    return BFLT(bv_to_f(a,"/")/bv_to_f(b,"/"));
 }
-static BV bv_mod(BV a,BV b){if(a.tag==BT_INT&&b.tag==BT_INT){if(!b.i){fprintf(stderr,"mod by zero\n");exit(1);}return BINT(a.i%b.i);}fprintf(stderr,"mod: int required\n");exit(1);}
-static BV bv_neg(BV a){if(a.tag==BT_INT)return BINT(-a.i);if(a.tag==BT_FLOAT)return BFLT(-a.f);fprintf(stderr,"neg: number required\n");exit(1);}
+static BV bv_mod(BV a,BV b){
+    if(a.tag==BT_INT&&b.tag==BT_INT){
+        if(!b.i) bv_fail("나머지: 0으로 나눌 수 없음");
+        if(a.i==INT64_MIN && b.i==-1) bv_overflow("%");
+        return BINT(a.i%b.i);
+    }
+    return BFLT(fmod(bv_to_f(a,"%"),bv_to_f(b,"%")));
+}
+static BV bv_neg(BV a){
+    if(a.tag==BT_INT){ if(a.i==INT64_MIN) bv_overflow("단항 -"); return BINT(-a.i); }
+    if(a.tag==BT_FLOAT)return BFLT(-a.f);
+    bv_fail("단항 -: 숫자 필요"); return BNIL;
+}
 static BV bv_not_v(BV a){return BBOOL(!bv_truthy(a));}
 static BV bv_and_v(BV a,BV b){return bv_truthy(a)?b:a;}
 static BV bv_or_v(BV a,BV b){ return bv_truthy(a)?a:b;}
 
 static int bv_eq(BV a,BV b){
     if(a.tag==BT_INT&&b.tag==BT_INT)return a.i==b.i;
-    if((a.tag==BT_INT||a.tag==BT_FLOAT)&&(b.tag==BT_INT||b.tag==BT_FLOAT))return bv_to_f(a,"==")==bv_to_f(b,"==");
+    if(bv_is_num(a)&&bv_is_num(b))return bv_to_f(a,"==")==bv_to_f(b,"==");
     if(a.tag==BT_BOOL&&b.tag==BT_BOOL)return a.b==b.b;
     if(a.tag==BT_NIL&&b.tag==BT_NIL)return 1;
     if(a.tag==BT_STR&&b.tag==BT_STR)return strcmp(a.s,b.s)==0;
     return 0;
 }
-static int bv_lt(BV a,BV b){if(a.tag==BT_INT&&b.tag==BT_INT)return a.i<b.i;return bv_to_f(a,"<")<bv_to_f(b,"<");}
-static int bv_le(BV a,BV b){if(a.tag==BT_INT&&b.tag==BT_INT)return a.i<=b.i;return bv_to_f(a,"<=")<= bv_to_f(b,"<=");}
-static int bv_gt(BV a,BV b){return bv_lt(b,a);}
-static int bv_ge(BV a,BV b){return bv_le(b,a);}
+/* 비교: 숫자끼리, 문자열끼리(바이트 순 — VM의 Rust String 비교와 같음). 그 밖은 에러 */
+static int bv_cmp(BV a,BV b,const char* op){
+    if(a.tag==BT_INT&&b.tag==BT_INT)return (a.i>b.i)-(a.i<b.i);
+    if(bv_is_num(a)&&bv_is_num(b)){double x=bv_to_f(a,op),y=bv_to_f(b,op);return (x>y)-(x<y);}
+    if(a.tag==BT_STR&&b.tag==BT_STR){int c=strcmp(a.s,b.s);return (c>0)-(c<0);}
+    bv_fail("비교: 비교할 수 없는 타입"); return 0;
+}
+static int bv_lt(BV a,BV b){return bv_cmp(a,b,"<")<0;}
+static int bv_le(BV a,BV b){return bv_cmp(a,b,"<=")<=0;}
+static int bv_gt(BV a,BV b){return bv_cmp(a,b,">")>0;}
+static int bv_ge(BV a,BV b){return bv_cmp(a,b,">=")>=0;}
 
 static BV bv_str_cast(BV v){
-    char buf[64];
+    char buf[420];
     switch(v.tag){
         case BT_STR: return v;
-        case BT_INT: snprintf(buf,64,"%lld",(long long)v.i); break;
-        case BT_FLOAT: snprintf(buf,64,"%g",v.f); break;
+        case BT_INT: snprintf(buf,sizeof buf,"%lld",(long long)v.i); break;
+        case BT_FLOAT: bv_fmt_float(v.f,buf,sizeof buf); break;
         case BT_BOOL: return BSTR(v.b?"true":"false");
         case BT_NIL: return BSTR("nil");
         default: return BSTR("");
     }
-    char*r=strdup(buf); if(!r){fprintf(stderr,"OOM\n");exit(1);} return BSTR(r);
+    char*r=strdup(buf); if(!r) bv_fail("메모리 부족"); return BSTR(r);
+}
+/* 앞뒤 공백을 뺀 문자열 전체가 숫자여야 변환 (VM의 trim + parse와 같음) */
+static const char* bv_trim_copy(const char* s, char* buf, size_t cap){
+    while(*s==' '||*s=='\t'||*s=='\n'||*s=='\r') s++;
+    size_t n=strlen(s); while(n>0&&(s[n-1]==' '||s[n-1]=='\t'||s[n-1]=='\n'||s[n-1]=='\r')) n--;
+    if(n>=cap) n=cap-1; memcpy(buf,s,n); buf[n]='\0'; return buf;
 }
 static BV bv_int_cast(BV v){
     if(v.tag==BT_INT)return v;
-    if(v.tag==BT_FLOAT)return BINT((int64_t)v.f);
+    if(v.tag==BT_FLOAT)return BINT(bv_f2i(v.f));
     if(v.tag==BT_BOOL)return BINT(v.b?1:0);
-    if(v.tag==BT_STR)return BINT(atoll(v.s));
-    return BINT(0);
+    if(v.tag==BT_STR){
+        char t[128]; const char* s=bv_trim_copy(v.s,t,sizeof t); char* end; errno=0;
+        long long n=strtoll(s,&end,10);
+        if(!*s||*end||errno){char m[200];snprintf(m,sizeof m,"int 변환 실패: '%s'",v.s);bv_fail(m);}
+        return BINT(n);
+    }
+    bv_fail("int(): 변환할 수 없는 타입"); return BNIL;
 }
 static BV bv_float_cast(BV v){
     if(v.tag==BT_FLOAT)return v;
     if(v.tag==BT_INT)return BFLT((double)v.i);
-    if(v.tag==BT_BOOL)return BFLT(v.b?1.0:0.0);
-    if(v.tag==BT_STR)return BFLT(atof(v.s));
-    return BFLT(0.0);
+    if(v.tag==BT_STR){
+        char t[128]; const char* s=bv_trim_copy(v.s,t,sizeof t); char* end;
+        double f=strtod(s,&end);
+        if(!*s||*end||(s[0]=='0'&&(s[1]=='x'||s[1]=='X'))){char m[200];snprintf(m,sizeof m,"float 변환 실패: '%s'",v.s);bv_fail(m);}
+        return BFLT(f);
+    }
+    bv_fail("float(): 변환할 수 없는 타입"); return BNIL;
 }
 static BV bv_bool_cast(BV v){ return BBOOL(bv_truthy(v)); }
-static BV bv_len_f(BV v){if(v.tag==BT_STR)return BINT((int64_t)strlen(v.s));fprintf(stderr,"len: str required\n");exit(1);}
-static BV bv_abs_f(BV v){if(v.tag==BT_INT)return BINT(v.i<0?-v.i:v.i);return BFLT(fabs(bv_to_f(v,"abs")));}
+/* len: 문자 수 (UTF-8 바이트가 아니라 — VM과 같음) */
+static BV bv_len_f(BV v){
+    if(v.tag!=BT_STR) bv_fail("len(): str 필요");
+    int64_t n=0; for(const unsigned char* p=(const unsigned char*)v.s;*p;p++) if((*p&0xC0)!=0x80) n++;
+    return BINT(n);
+}
+static BV bv_abs_f(BV v){
+    if(v.tag==BT_INT){ if(v.i==INT64_MIN) bv_overflow("abs"); return BINT(v.i<0?-v.i:v.i); }
+    return BFLT(fabs(bv_to_f(v,"abs")));
+}
 static BV bv_sqrt_f(BV v){return BFLT(sqrt(bv_to_f(v,"sqrt")));}
-static BV bv_floor_f(BV v){return BFLT(floor(bv_to_f(v,"floor")));}
-static BV bv_ceil_f(BV v){return BFLT(ceil(bv_to_f(v,"ceil")));}
-static BV bv_round_f(BV v){return BFLT(round(bv_to_f(v,"round")));}
-static BV bv_pow_f(BV a,BV b){return BFLT(pow(bv_to_f(a,"pow"),bv_to_f(b,"pow")));}
+/* floor/ceil/round는 int를 돌려준다 (VM과 같음). round는 0에서 먼 쪽으로 반올림 */
+static BV bv_floor_f(BV v){return BINT(bv_f2i(floor(bv_to_f(v,"floor"))));}
+static BV bv_ceil_f(BV v){return BINT(bv_f2i(ceil(bv_to_f(v,"ceil"))));}
+static BV bv_round_f(BV v){return BINT(bv_f2i(round(bv_to_f(v,"round"))));}
+/* pow: int^int(지수 ≥ 0)이고 결과가 정수 범위면 int, 그 외 float (VM과 같음) */
+static BV bv_pow_f(BV a,BV b){
+    double r=pow(bv_to_f(a,"pow"),bv_to_f(b,"pow"));
+    if(a.tag==BT_INT&&b.tag==BT_INT&&b.i>=0&&r==floor(r)&&fabs(r)<9223372036854775807.0) return BINT((int64_t)r);
+    return BFLT(r);
+}
 static BV bv_min_f(BV a,BV b){return bv_lt(a,b)?a:b;}
 static BV bv_max_f(BV a,BV b){return bv_gt(a,b)?a:b;}
 "#;
@@ -471,7 +583,9 @@ impl Transpiler {
         let sp = expr.span;
         match &expr.kind {
             ExprKind::Int(n)    => format!("BINT({n})"),
-            ExprKind::Float(n)  => format!("BFLT({n})"),
+            // 지수 표기({:e})로 써야 C가 항상 double 리터럴로 읽는다 ("1e21"; 이전엔 정수 상수로 넘침)
+            ExprKind::Float(n) if n.is_finite() => format!("BFLT({n:e})"),
+            ExprKind::Float(n) => format!("BFLT({})", if n.is_nan() { "NAN" } else if *n > 0.0 { "INFINITY" } else { "-INFINITY" }),
             ExprKind::Bool(b)   => if *b { "BBOOL(1)".into() } else { "BBOOL(0)".into() },
             ExprKind::Nil       => "BNIL".into(),
             ExprKind::Str(s)    => format!("BSTR({})", c_str_literal(s)),
@@ -622,14 +736,23 @@ impl Transpiler {
                 "ceil"  => return format!("bv_ceil_f({})", a0()),
                 "round" => return format!("bv_round_f({})", a0()),
                 "pow"   => return format!("bv_pow_f({},{})", a0(), a1()),
+                "min" | "max" if arg_exprs.len() != 2 => {
+                    self.err("AOT: min/max는 인자 2개만 지원 (리스트 인자 미지원)", sp);
+                    return "BNIL".into();
+                }
                 "min"   => return format!("bv_min_f({},{})", a0(), a1()),
                 "max"   => return format!("bv_max_f({},{})", a0(), a1()),
+                "exit" if arg_exprs.is_empty() => return "((void)exit(0), BNIL)".into(),
                 "exit"  => return format!("((void)exit((int)bv_int_cast({}).i), BNIL)", a0()),
                 "assert" => {
+                    // VM과 같은 메시지: "assertion 실패" 또는 "assertion 실패: <메시지>"
                     let cond = a0();
-                    return format!(
-                        "((void)(bv_truthy({cond})||(fprintf(stderr,\"assertion failed\\n\"),exit(1),0)), BNIL)"
-                    );
+                    let fail = if arg_exprs.len() >= 2 {
+                        format!("(fprintf(stderr,\"런타임 오류: assertion 실패: %s\\n\",bv_str_cast({}).s),exit(1),0)", a1())
+                    } else {
+                        "(fprintf(stderr,\"런타임 오류: assertion 실패\\n\"),exit(1),0)".to_string()
+                    };
+                    return format!("((void)(bv_truthy({cond})||{fail}), BNIL)");
                 }
                 _ if self.user_fns.contains(name.as_str()) => {
                     let args_s = arg_exprs.join(", ");

@@ -670,3 +670,15 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              동작 스냅샷 갱신(float 표시 3줄, bool() 1줄) — 의도된 의미 변경. 기존 테스트 기대값 5곳 갱신.
              문서: SPEC 3.1(나눗셈·float 표시·참거짓)·3.2(맵 키), llms.txt(134개), TUTORIAL 3·8장, README, VS Code.
              회귀: vm_test +4, 스냅샷 +1줄. (tests: 431 green, clippy 0)
+✅ Phase 58 — AOT를 VM 의미에 맞춤 (헌법 4조 위반 수정) — v0.44.0
+             (발견, 헌법 점검) bang compile 결과가 VM과 조용히 달랐음: 정수 오버플로 wrap, 7/2 → 3, 참거짓, float 표시(%g),
+               len이 UTF-8 바이트 수, int("abc") → 0, float(true) → 1.0, 문자열 비교 불가, floor/ceil/round가 float,
+               % float 미지원, float 리터럴 1e21이 C 정수 상수로 넘침, exit() 인자 없으면 실패, min/max 리스트 인자.
+             (수정) C 런타임 재작성: __builtin_*_overflow 검사, / 는 float(int/int 0은 에러, float은 IEEE), Python 참거짓,
+               bv_fmt_float(가장 짧게 왕복되는 자릿수를 지수 없이 + ".0" — VM fmt_float와 같음), UTF-8 문자 수,
+               엄격한 int/float 변환(trim 후 전체 파싱), 문자열 비교(strcmp = Rust 바이트 순), floor/ceil/round → int
+               (Rust as i64처럼 포화), pow int 규칙, fmod, 에러 = "런타임 오류: …" + exit 1. float 리터럴은 {:e}로 출력.
+               min/max 인자 2개 아니면 컴파일 에러, assert 메시지 VM과 같게.
+             VM↔AOT 동치 테스트(tests/transpile_test.rs aot_matches_vm_on_corpus): 23개 프로그램(에러 경우 포함)을
+               두 엔진으로 실행해 stdout·종료 코드 비교 — 전부 일치. 한계: AOT 에러 메시지에 줄·열 없음.
+             문서: SPEC 1장(AOT 지원 범위·동치 보장). (tests: 432 green, clippy 0)
