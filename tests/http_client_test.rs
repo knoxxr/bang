@@ -156,3 +156,77 @@ tcp_close(c)
     assert!(ok, "tcp_connect 실패: {stderr}");
     assert_eq!(stdout.trim(), "true");
 }
+
+// ---- Phase 52: http_post / http_request ----
+
+/// 요청 하나를 받아 {method, ct, token, body}를 JSON으로 돌려주는 1회용 서버 (Rust 스레드).
+fn echo_server_once() -> (u16, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let h = std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            let n = s.read(&mut chunk).unwrap();
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break p;
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+        let header = |name: &str| {
+            head.lines()
+                .find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim().to_string()))
+        };
+        let len: usize = header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let mut body = buf[head_end + 4..].to_vec();
+        while body.len() < len {
+            let n = s.read(&mut chunk).unwrap();
+            body.extend_from_slice(&chunk[..n]);
+        }
+        let method = head.split(' ').next().unwrap_or("").to_string();
+        let esc = |v: Option<String>| v.map(|x| format!("{x:?}")).unwrap_or("null".into());
+        let out = format!(
+            "{{\"method\":\"{method}\",\"ct\":{},\"token\":{},\"body\":{:?}}}",
+            esc(header("content-type")),
+            esc(header("x-token")),
+            String::from_utf8_lossy(&body)
+        );
+        let resp = format!("HTTP/1.1 201 Created\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}", out.len());
+        s.write_all(resp.as_bytes()).unwrap();
+    });
+    (port, h)
+}
+
+#[test]
+fn test_http_post_json_body() {
+    let (port, h) = echo_server_once();
+    let (ok, out, err) = run_client(&format!(
+        "let r = http_post(\"http://127.0.0.1:{port}/x\", {{\"a\": 1, \"b\": [2]}})\nlet j = json_parse(r.body)\nprint(r.status, j.method, j.ct, j.body)"
+    ));
+    h.join().unwrap();
+    assert!(ok, "{err}");
+    assert_eq!(out.trim(), "201 POST application/json {\"a\":1,\"b\":[2]}");
+}
+
+#[test]
+fn test_http_request_method_headers_bytes() {
+    let (port, h) = echo_server_once();
+    let (ok, out, err) = run_client(&format!(
+        "let r = http_request(\"PUT\", \"http://127.0.0.1:{port}/\", bytes_from_str(\"raw\"), {{\"Content-Type\": \"text/csv\", \"X-Token\": \"t1\"}})\nlet j = json_parse(r.body)\nprint(j.method, j.ct, j.token, j.body)"
+    ));
+    h.join().unwrap();
+    assert!(ok, "{err}");
+    assert_eq!(out.trim(), "PUT text/csv t1 raw");
+}
+
+#[test]
+fn test_http_request_rejects_bad_method_and_header() {
+    let (ok, out, err) = run_client(
+        "try { http_request(\"get\", \"http://127.0.0.1:9/\") } catch e { print(e.kind) }\ntry { http_post(\"http://127.0.0.1:9/\", \"x\", {\"Bad Name\": \"v\"}) } catch e { print(e.kind) }\ntry { http_post(\"http://127.0.0.1:9/\", \"x\", {\"X\": \"a\\r\\nInjected: 1\"}) } catch e { print(e.kind) }",
+    );
+    assert!(ok, "{err}");
+    assert_eq!(out.trim(), "value\nvalue\nvalue");
+}

@@ -1154,3 +1154,20 @@ fn test_vm_map_order_survives_channel_and_spawn() {
     let src = "let ch = channel(1)\nsend(ch, {\"c\": 1, \"b\": 2, \"a\": 3})\nprint(recv(ch))\nfn mk() { return {\"q\": 1, \"p\": 2} }\nlet f = spawn mk()\nprint(f)";
     assert_eq!(run_vm(src), vec!["{c: 1, b: 2, a: 3}", "{q: 1, p: 2}"]);
 }
+
+// ============================================================================
+// Phase 52 — 경로 · CSV 빌트인
+// ============================================================================
+
+#[test]
+fn test_vm_path_builtins() {
+    // 구분자는 OS마다 다르므로 조합 결과를 다시 분해해 확인한다
+    let src = "let p = path_join(\"a\", \"b\", \"c.tar.gz\")\nprint(path_basename(p), path_ext(p), path_basename(path_dirname(p)))\nprint(path_ext(\"Makefile\") == \"\", path_dirname(\"c.txt\") == \"\", path_basename(\"\") == \"\")\nprint(path_abs(\"x\") == path_join(env_cwd(), \"x\"))\ntry { path_join() } catch e { print(e.kind) }";
+    assert_eq!(run_vm(src), vec!["c.tar.gz gz b", "true true true", "true", "argument"]);
+}
+
+#[test]
+fn test_vm_csv_roundtrip() {
+    let src = "let rows = csv_parse(\"name,note\\r\\n방,\\\"a, \\\"\\\"b\\\"\\\"\\nc\\\"\\n\")\nprint(len(rows), rows[1][0], rows[1][1] == \"a, \\\"b\\\"\\nc\")\nprint(csv_stringify([[\"id\", \"text\"], [1, \"쉼표, 포함\"], [2, nil]]))\nprint(csv_parse(csv_stringify(rows)) == rows)\ntry { csv_parse(\"a,\\\"open\") } catch e { print(e.kind) }\ntry { csv_stringify([1]) } catch e { print(e.kind) }";
+    assert_eq!(run_vm(src), vec!["2 방 true", "id,text\n1,\"쉼표, 포함\"\n2,\n", "true", "value", "argument"]);
+}

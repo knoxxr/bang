@@ -251,6 +251,110 @@ pub(crate) fn b_http_get(
     http_get(&url, span)
 }
 
+/// 요청 헤더 목록 (이름, 값) — 순서 유지.
+type HeaderList = Vec<(String, String)>;
+
+/// http_post/http_request의 body·headers 인자 해석.
+/// body: str/bytes는 그대로, map/list는 JSON으로 직렬화하고 Content-Type: application/json을 기본으로 붙인다.
+fn http_body_and_headers(
+    fname: &str,
+    body: Option<&VmValue>,
+    headers: Option<&VmValue>,
+    span: Span,
+) -> Result<(Option<Vec<u8>>, HeaderList), RuntimeError> {
+    let mut hs: Vec<(String, String)> = Vec::new();
+    match headers {
+        None | Some(VmValue::Nil) => {}
+        Some(VmValue::Map(m)) => {
+            for (k, v) in m.iter() {
+                let v = match v {
+                    VmValue::Str(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                hs.push((k.clone(), v));
+            }
+        }
+        Some(other) => {
+            return Err(RuntimeError::new(
+                format!("{fname}(): headers는 Map이어야 함, {} 발견", other.type_name()),
+                span,
+            )
+            .with_kind(crate::runtime::kind::ARGUMENT))
+        }
+    }
+    let has_ct = hs.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+    let bytes = match body {
+        None | Some(VmValue::Nil) => None,
+        Some(VmValue::Str(s)) => {
+            if !has_ct {
+                hs.push(("Content-Type".into(), "text/plain; charset=utf-8".into()));
+            }
+            Some(s.as_bytes().to_vec())
+        }
+        Some(VmValue::Bytes(b)) => {
+            if !has_ct {
+                hs.push(("Content-Type".into(), "application/octet-stream".into()));
+            }
+            Some(b.to_vec())
+        }
+        Some(v @ (VmValue::Map(_) | VmValue::List(_))) => {
+            let mut out = String::new();
+            super::json::json_stringify(v, &mut out, span)?;
+            if !has_ct {
+                hs.push(("Content-Type".into(), "application/json".into()));
+            }
+            Some(out.into_bytes())
+        }
+        Some(other) => {
+            return Err(RuntimeError::new(
+                format!("{fname}(): body는 str/bytes/map/list/nil, {} 발견", other.type_name()),
+                span,
+            )
+            .with_kind(crate::runtime::kind::ARGUMENT))
+        }
+    };
+    Ok((bytes, hs))
+}
+
+/// 132: http_post(url, body[, headers]) → {status, headers, body}
+pub(crate) fn b_http_post(
+    _vm: &mut Vm,
+    args: Vec<VmValue>,
+    span: Span,
+    _stop_depth: usize,
+) -> Result<VmValue, RuntimeError> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(RuntimeError::new(
+            format!("http_post(): 2~3개 인자 필요 (url, body[, headers]), {}개 전달", args.len()),
+            span,
+        )
+        .with_kind(crate::runtime::kind::ARGUMENT));
+    }
+    let url = str_arg("http_post", &args[0], span)?;
+    let (body, hs) = http_body_and_headers("http_post", args.get(1), args.get(2), span)?;
+    http_request("http_post", "POST", &url, body.as_deref().or(Some(&[])), &hs, span)
+}
+
+/// 133: http_request(method, url[, body[, headers]]) → {status, headers, body}
+pub(crate) fn b_http_request(
+    _vm: &mut Vm,
+    args: Vec<VmValue>,
+    span: Span,
+    _stop_depth: usize,
+) -> Result<VmValue, RuntimeError> {
+    if !(2..=4).contains(&args.len()) {
+        return Err(RuntimeError::new(
+            format!("http_request(): 2~4개 인자 필요 (method, url[, body[, headers]]), {}개 전달", args.len()),
+            span,
+        )
+        .with_kind(crate::runtime::kind::ARGUMENT));
+    }
+    let method = str_arg("http_request", &args[0], span)?;
+    let url = str_arg("http_request", &args[1], span)?;
+    let (body, hs) = http_body_and_headers("http_request", args.get(2), args.get(3), span)?;
+    http_request("http_request", &method, &url, body.as_deref(), &hs, span)
+}
+
 /// 122: tcp_read_bytes(conn) → Bytes (최대 4096바이트 1회 읽기, EOF면 빈 Bytes)
 pub(crate) fn b_tcp_read_bytes(
     _vm: &mut Vm,
@@ -408,6 +512,20 @@ fn decode_chunked(body: &[u8]) -> Option<Vec<u8>> {
 
 /// http_get(url) → {status: Int, headers: Map(소문자 키), body: Str}
 pub(crate) fn http_get(url: &str, span: Span) -> Result<VmValue, RuntimeError> {
+    http_request("http_get", "GET", url, None, &[], span)
+}
+
+/// HTTP/1.1 요청 하나 (Phase 52: http_get을 일반화 — http_post/http_request가 공유).
+/// `headers`는 기본 헤더(Host·Connection·User-Agent·Accept·Content-Length) 뒤에 붙고,
+/// 같은 이름(대소문자 무시)이면 기본값 대신 쓰인다 (Host·Connection·Content-Length는 고정).
+pub(crate) fn http_request(
+    fname: &str,
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+    headers: &[(String, String)],
+    span: Span,
+) -> Result<VmValue, RuntimeError> {
     use std::io::{Read, Write};
     let HttpUrl {
         tls,
@@ -415,7 +533,24 @@ pub(crate) fn http_get(url: &str, span: Span) -> Result<VmValue, RuntimeError> {
         port,
         path,
     } = parse_http_url(url, span)?;
-    let err = |m: String| RuntimeError::new(format!("http_get('{url}'): {m}"), span);
+    let err = |m: String| RuntimeError::new(format!("{fname}('{url}'): {m}"), span);
+    if method.is_empty() || !method.chars().all(|c| c.is_ascii_uppercase()) {
+        return Err(RuntimeError::new(
+            format!("{fname}(): 메서드는 대문자 영문이어야 함 (GET, POST, PUT, DELETE ...), '{method}' 발견"),
+            span,
+        )
+        .with_kind(crate::runtime::kind::VALUE));
+    }
+    for (k, v) in headers {
+        let bad_name = k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if bad_name || v.contains('\r') || v.contains('\n') {
+            return Err(RuntimeError::new(
+                format!("{fname}(): 잘못된 헤더 '{k}' (이름은 영숫자·-·_, 값에 줄바꿈 불가)"),
+                span,
+            )
+            .with_kind(crate::runtime::kind::VALUE));
+        }
+    }
 
     let tcp = std::net::TcpStream::connect((host.as_str(), port))
         .map_err(|e| err(format!("연결 실패: {e}")))?;
@@ -428,11 +563,30 @@ pub(crate) fn http_get(url: &str, span: Span) -> Result<VmValue, RuntimeError> {
         Box::new(tcp)
     };
 
-    let req = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: bang/{}\r\nAccept: */*\r\n\r\n",
-        env!("CARGO_PKG_VERSION"));
+    let has = |name: &str| headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    if !has("user-agent") {
+        req.push_str(&format!("User-Agent: bang/{}\r\n", env!("CARGO_PKG_VERSION")));
+    }
+    if !has("accept") {
+        req.push_str("Accept: */*\r\n");
+    }
+    for (k, v) in headers {
+        if ["host", "connection", "content-length"].iter().any(|f| k.eq_ignore_ascii_case(f)) {
+            continue;
+        }
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    if let Some(b) = body {
+        req.push_str(&format!("Content-Length: {}\r\n", b.len()));
+    }
+    req.push_str("\r\n");
+    let mut wire = req.into_bytes();
+    if let Some(b) = body {
+        wire.extend_from_slice(b);
+    }
     stream
-        .write_all(req.as_bytes())
+        .write_all(&wire)
         .map_err(|e| err(format!("요청 전송 실패: {e}")))?;
 
     // 헤더 끝(\r\n\r\n)까지 먼저 읽는다. read_to_end는 서버가 keep-alive면

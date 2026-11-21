@@ -67,7 +67,7 @@ src/
   vm/           스택 VM + GC (Phase 5)
   runtime/      RuntimeError + 채널(BangChannel, try_recv는 select용) + 채널 전송용 데이터 전용 Value
   stdlib/       빌트인 단일 등록 테이블(mod.rs BUILTINS: 이름·인자 수·구현) + 분야별 구현 파일
-                (core/concurrency/string/collections/math/json/time/fs/regex/net/sys/bytes).
+                (core/concurrency/string/collections/math/json/time/fs/regex/net/sys/bytes/csv).
                 resolver(이름·인자 수)와 VM(디스패치)이 이 테이블 하나를 읽는다 (Phase 44).
   scheduler/    M:N 스케줄러 (Phase 9) + 탄력 풀(Phase 28: idle 0이면 임시워커, cap 512)
   codegen/      [실험적] AOT C 트랜스파일러(transpile) — 정수·문자열·함수 부분집합, 미지원은 에러
@@ -96,7 +96,8 @@ docs/GUIDE.md   사용자 가이드 (초기 버전 기준 — 최신은 TUTORIAL
      editors/vscode-bang 문법 빌트인 목록·README 개수, CLAUDE.md 체크리스트.
 빌트인 명명 규칙
   - 분야 접두사: tcp_* (소켓), regex_*, json_*, proc_* (프로세스), env_* (환경),
-    file_* (파일), dir_* (디렉터리), bytes_* (바이트 변환). 동사는 접두사 뒤: file_read_bytes.
+    file_* (파일), dir_* (디렉터리), bytes_* (바이트 변환), path_* (경로 문자열), csv_* (CSV),
+    http_* (HTTP 클라이언트). 동사는 접두사 뒤: file_read_bytes.
   - 기존 비접두사 이름(read_file, list_dir, is_dir, sleep 등)은 번호 계약상 유지하며 개명하지 않는다.
   - 범용 연산(len, slice, push, map 등)은 접두사 없이 여러 타입을 받는 하나의 이름으로 확장한다.
 의존성: polling(리액터), rustls+webpki-roots(https feature, 기본 켜짐 — 자급 코어의 유일한 예외).
@@ -592,3 +593,16 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              동작 스냅샷 2줄 갱신(keys 순서, json_stringify 순서) — 의도된 의미 변경(사용자 승인).
              문서: SPEC 3.2(맵의 순서)·5장, llms.txt, TUTORIAL 11.5 출력(실행 결과로 재생성).
              회귀: omap 단위 +2, vm_test +2. (tests: 405 green, clippy 0)
+✅ Phase 52 — 실무 빌트인: 경로·CSV·HTTP POST (125-133) — v0.38.0
+             경로(fs.rs): path_join(가변)·path_basename·path_dirname·path_ext(점 없음)·path_abs(std::path::absolute,
+               존재 여부 무관). 문자열만 다루고 구분자는 OS를 따름.
+             CSV(새 파일 stdlib/csv.rs): csv_parse(RFC 4180 — 따옴표·""·필드 안 줄바꿈·CRLF, 미종결 따옴표 = value 에러),
+               csv_stringify(필요한 필드만 따옴표, nil은 빈 칸).
+             HTTP(net.rs): http_get을 http_request(fname, method, url, body, headers)로 일반화.
+               http_post(url, body[, headers]) / http_request(method, url[, body[, headers]]).
+               body: str/bytes/map·list(JSON 자동, application/json)/nil, Content-Length 자동, 사용자 헤더가 기본값 대체
+               (Host·Connection·Content-Length는 고정). 헤더 주입 방지(이름 영숫자·-·_, 값 줄바꿈 금지), 메서드 대문자만.
+             categorize_error: csv_* → value, http_post/http_request/path_abs → io.
+             명명 규칙에 path_* / csv_* / http_* 추가, 모듈 경계에 csv 추가.
+             문서: SPEC 12.1·14장, llms.txt(133개), README 표, VS Code 빌트인 목록, 스냅샷 +2줄.
+             회귀: csv 단위 +1, http_client_test +3(Rust 스레드 에코 서버), vm_test +2. (tests: 411 green, clippy 0)

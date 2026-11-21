@@ -171,3 +171,80 @@ pub(crate) fn b_file_read_bytes(
         .map_err(|e| RuntimeError::new(format!("file_read_bytes('{path}'): {e}"), span))?;
     Ok(VmValue::Bytes(Arc::new(data)))
 }
+
+// ── 경로 (Phase 52) — 문자열만 다루며 파일시스템에 접근하지 않는다 (path_abs 제외) ──
+
+fn path_str(p: &std::path::Path) -> String {
+    p.to_string_lossy().into_owned()
+}
+
+/// 125: path_join(a, b, ...) → OS 구분자로 이은 경로 (뒤 조각이 절대 경로면 거기서 다시 시작 — Python과 같음)
+pub(crate) fn b_path_join(
+    _vm: &mut Vm,
+    args: Vec<VmValue>,
+    span: Span,
+    _stop_depth: usize,
+) -> Result<VmValue, RuntimeError> {
+    if args.is_empty() {
+        return Err(RuntimeError::new("path_join(): 경로 조각이 하나 이상 필요", span)
+            .with_kind(crate::runtime::kind::ARGUMENT));
+    }
+    let mut p = std::path::PathBuf::new();
+    for a in &args {
+        p.push(str_arg("path_join", a, span)?);
+    }
+    Ok(VmValue::Str(path_str(&p)))
+}
+
+/// 126: path_basename(p) → 마지막 이름 ("a/b.txt" → "b.txt", 없으면 "")
+pub(crate) fn b_path_basename(
+    _vm: &mut Vm,
+    args: Vec<VmValue>,
+    span: Span,
+    _stop_depth: usize,
+) -> Result<VmValue, RuntimeError> {
+    req_args("path_basename", &args, 1, span)?;
+    let s = str_arg("path_basename", &args[0], span)?;
+    let name = std::path::Path::new(&s).file_name().map(|n| n.to_string_lossy().into_owned());
+    Ok(VmValue::Str(name.unwrap_or_default()))
+}
+
+/// 127: path_dirname(p) → 상위 경로 ("a/b.txt" → "a", "b.txt" → "", "/" → "")
+pub(crate) fn b_path_dirname(
+    _vm: &mut Vm,
+    args: Vec<VmValue>,
+    span: Span,
+    _stop_depth: usize,
+) -> Result<VmValue, RuntimeError> {
+    req_args("path_dirname", &args, 1, span)?;
+    let s = str_arg("path_dirname", &args[0], span)?;
+    let parent = std::path::Path::new(&s).parent().map(path_str);
+    Ok(VmValue::Str(parent.unwrap_or_default()))
+}
+
+/// 128: path_ext(p) → 확장자, 점 없이 ("a.tar.gz" → "gz", 없으면 "")
+pub(crate) fn b_path_ext(
+    _vm: &mut Vm,
+    args: Vec<VmValue>,
+    span: Span,
+    _stop_depth: usize,
+) -> Result<VmValue, RuntimeError> {
+    req_args("path_ext", &args, 1, span)?;
+    let s = str_arg("path_ext", &args[0], span)?;
+    let ext = std::path::Path::new(&s).extension().map(|e| e.to_string_lossy().into_owned());
+    Ok(VmValue::Str(ext.unwrap_or_default()))
+}
+
+/// 129: path_abs(p) → 현재 디렉터리 기준 절대 경로 (파일이 없어도 됨, 심볼릭 링크는 풀지 않음)
+pub(crate) fn b_path_abs(
+    _vm: &mut Vm,
+    args: Vec<VmValue>,
+    span: Span,
+    _stop_depth: usize,
+) -> Result<VmValue, RuntimeError> {
+    req_args("path_abs", &args, 1, span)?;
+    let s = str_arg("path_abs", &args[0], span)?;
+    std::path::absolute(&s)
+        .map(|p| VmValue::Str(path_str(&p)))
+        .map_err(|e| RuntimeError::new(format!("path_abs('{s}'): {e}"), span))
+}

@@ -704,7 +704,7 @@ write_file("copy.png", png)             // 무손실 복사
 
 ---
 
-## 12. HTTP 클라이언트 (http_get)
+## 12. HTTP 클라이언트 (http_get / http_post / http_request)
 
 ```bang
 let r = http_get("https://example.com/")
@@ -730,9 +730,27 @@ TLS 의존성이 빠지고 `https://` 요청은 "https를 지원하지 않음" �
 - 루트 인증서는 바이너리에 내장된 Mozilla 목록(webpki-roots)만 쓴다. OS 인증서 저장소를 읽지 않으므로,
   **사내 프록시처럼 자체 인증 기관(CA)을 쓰는 환경에서는 https 접속이 실패한다.**
   내장 목록은 bang을 새로 빌드해야 갱신된다.
-- GET만 지원한다(POST 등 없음). 요청 헤더를 지정할 수 없다.
+- (Phase 52 이전 한계였던 "GET만, 헤더 지정 불가"는 아래 12.1로 해소.)
 - `body`는 `str`이다 — UTF-8이 아닌 응답은 `�`로 대체된다(11장 한계 참고).
 - 클라이언트 인증서(mTLS), 프록시, HTTP/2는 지원하지 않는다.
+
+### 12.1 POST와 일반 요청 (Phase 52)
+
+```bang
+let r = http_post("https://api.example.com/items", {"name": "방"})   // map/list → JSON
+let r = http_post(url, "plain text", {"Authorization": "Bearer t"})
+let r = http_request("DELETE", url)
+let r = http_request("PUT", url, bytes_from_str("raw"), {"Content-Type": "text/csv"})
+```
+
+- `http_post(url, body[, headers])` (빌트인 132), `http_request(method, url[, body[, headers]])` (133).
+  반환과 에러 규칙은 `http_get`과 같다 (`{status, headers, body}`, 4xx/5xx는 status로).
+- body: `str`(기본 Content-Type `text/plain; charset=utf-8`), `bytes`(`application/octet-stream`),
+  map/list(JSON으로 직렬화, `application/json`), `nil`(본문 없음). `Content-Length`는 자동.
+- headers: str 값의 맵. 같은 이름(대소문자 무시)을 주면 기본값(User-Agent·Accept·Content-Type) 대신 쓰인다.
+  `Host`·`Connection`·`Content-Length`는 bang이 정하며 무시된다. 헤더 이름은 영숫자·`-`·`_`만,
+  값에 줄바꿈이 있으면 `value` 에러(헤더 주입 방지). 메서드는 대문자 영문만(`value` 에러).
+- 나머지 한계(리다이렉트 안 따라감, body는 str, 사내 CA·프록시·HTTP/2 미지원)는 `http_get`과 같다.
 
 ---
 
@@ -762,4 +780,31 @@ TLS 의존성이 빠지고 `https://` 요청은 "https를 지원하지 않음" �
 - 여러 줄 문자열(`"""`)과 블록 주석의 안쪽 줄은 그대로 둔다.
 - 포맷 전후의 토큰열이 다르면(포매터 결함) 파일을 쓰지 않는다. 렉싱 오류가 있는 파일은 건너뛴다.
 - `--check`: 파일을 바꾸지 않고, 포맷이 필요한 파일이 있으면 목록을 출력하고 exit 1.
+
+---
+
+## 14. 경로와 CSV (Phase 52)
+
+### 14.1 경로 (`path_*`)
+
+문자열만 다룬다 — 파일이 있는지 확인하지 않는다(`path_abs` 포함).
+
+| 빌트인 | 결과 |
+|---|---|
+| `path_join(a, b, ...)` (125) | OS 구분자로 이음. 뒤 조각이 절대 경로면 거기서 다시 시작 (`path_join("a", "/x")` → `/x`) |
+| `path_basename(p)` (126) | 마지막 이름 (`a/b.txt` → `b.txt`, 없으면 `""`) |
+| `path_dirname(p)` (127) | 상위 경로 (`a/b.txt` → `a`, `b.txt` → `""`) |
+| `path_ext(p)` (128) | 확장자, 점 없이 (`a.tar.gz` → `gz`, 없으면 `""`) |
+| `path_abs(p)` (129) | 현재 디렉터리 기준 절대 경로 (심볼릭 링크는 풀지 않음) |
+
+구분자는 OS를 따른다(Windows는 `\`). 비교할 때는 문자열을 직접 만들지 말고 `path_join`으로 만든다.
+
+### 14.2 CSV (`csv_*`)
+
+- `csv_parse(text)` (130) → 행 리스트, 각 행은 문자열 리스트. RFC 4180: `"..."` 따옴표 필드,
+  `""` = 따옴표 글자, 따옴표 안 줄바꿈·쉼표 허용, CRLF/LF 모두. 마지막 줄바꿈·빈 줄은 행을 만들지 않는다.
+  닫히지 않은 따옴표는 `value` 에러. 숫자 변환은 하지 않는다(`int(row[1])`).
+- `csv_stringify(rows)` (131) → 텍스트. 행마다 `\n`, 쉼표·따옴표·줄바꿈이 든 필드만 따옴표로 감싼다,
+  `nil`은 빈 칸, 그 밖의 값은 `str()` 표시. 행이 리스트가 아니면 `argument` 에러.
+- 헤더 행 기준으로 맵을 만들려면: `let head = rows[0]` 후 `for row in rows[1:]`에서 `for i, name in enumerate(head) { rec[name] = row[i] }`.
 

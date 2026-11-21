@@ -16,6 +16,7 @@ mod bytes;
 mod collections;
 mod concurrency;
 mod core;
+mod csv;
 mod fs;
 mod json;
 mod math;
@@ -176,6 +177,15 @@ pub static BUILTINS: &[Builtin] = &[
     Builtin { name: "tcp_read_bytes", arity: Some(1), func: net::b_tcp_read_bytes }, // 122
     Builtin { name: "assert_eq", arity: Some(2), func: core::b_assert_eq }, // 123
     Builtin { name: "format", arity: None, func: string::b_format }, // 124
+    Builtin { name: "path_join", arity: None, func: fs::b_path_join }, // 125
+    Builtin { name: "path_basename", arity: Some(1), func: fs::b_path_basename }, // 126
+    Builtin { name: "path_dirname", arity: Some(1), func: fs::b_path_dirname }, // 127
+    Builtin { name: "path_ext", arity: Some(1), func: fs::b_path_ext }, // 128
+    Builtin { name: "path_abs", arity: Some(1), func: fs::b_path_abs }, // 129
+    Builtin { name: "csv_parse", arity: Some(1), func: csv::b_csv_parse }, // 130
+    Builtin { name: "csv_stringify", arity: Some(1), func: csv::b_csv_stringify }, // 131
+    Builtin { name: "http_post", arity: None, func: net::b_http_post }, // 132
+    Builtin { name: "http_request", arity: None, func: net::b_http_request }, // 133
 ];
 
 /// 이름 → 번호.
@@ -203,10 +213,11 @@ pub fn categorize_error(name: &str, e: RuntimeError) -> RuntimeError {
     let k = if name.starts_with("file_") || name.starts_with("dir_") || name.starts_with("tcp_")
         || name.starts_with("proc_") || name.starts_with("env_")
         || matches!(name, "read_file" | "write_file" | "list_dir" | "is_dir" | "file_exists"
-            | "http_get" | "serve_event" | "input")
+            | "http_get" | "http_post" | "http_request" | "serve_event" | "input" | "path_abs")
     {
         kind::IO
     } else if name.starts_with("json_") || name.starts_with("regex_") || name.starts_with("bytes_")
+        || name.starts_with("csv_")
         || matches!(name, "int" | "float" | "chr" | "ord")
     {
         kind::VALUE
