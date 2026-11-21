@@ -1005,3 +1005,16 @@ fn test_vm_method_call_map_member_wins_and_errors() {
         ]
     );
 }
+
+#[test]
+fn test_vm_map_equality_is_structural() {
+    // Phase 49 이전: 맵 ==는 항상 false였다 (값 의미론 위반)
+    let src = "print({\"a\": 1, \"b\": [1]} == {\"b\": [1], \"a\": 1})\nprint({\"a\": 1} == {\"a\": 2})\nprint({\"a\": 1} == {\"a\": 1, \"b\": 2})\nprint({\"k\": 1} in [{\"k\": 1}])\nprint(unique([{\"a\": 1}, {\"a\": 1}]))\nlet f = fn() { return 1 }\nlet g = f\nprint(f == g)\nprint(f == fn() { return 1 })";
+    assert_eq!(run_vm(src), vec!["true", "false", "false", "true", "[{a: 1}]", "true", "false"]);
+}
+
+#[test]
+fn test_vm_assert_eq() {
+    let src = "assert_eq([1, {\"a\": \"x\"}], [1, {\"a\": \"x\"}])\ntry { assert_eq(\"1\", 1) } catch e { print(e) }\ntry { assert_eq([1, 2], [1]) } catch e { print(e) }";
+    assert_eq!(run_vm(src), vec!["assert_eq 실패: 기대 1, 실제 \"1\"", "assert_eq 실패: 기대 [1], 실제 [1, 2]"]);
+}

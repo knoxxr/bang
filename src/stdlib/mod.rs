@@ -173,6 +173,7 @@ pub static BUILTINS: &[Builtin] = &[
     Builtin { name: "bytes_to_hex", arity: Some(1), func: bytes::b_bytes_to_hex }, // 120
     Builtin { name: "file_read_bytes", arity: Some(1), func: fs::b_file_read_bytes }, // 121
     Builtin { name: "tcp_read_bytes", arity: Some(1), func: net::b_tcp_read_bytes }, // 122
+    Builtin { name: "assert_eq", arity: Some(2), func: core::b_assert_eq }, // 123
 ];
 
 /// 이름 → 번호.

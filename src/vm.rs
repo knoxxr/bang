@@ -420,6 +420,16 @@ impl Vm {
         Ok(())
     }
 
+    /// `bang test`용: 전역 슬롯의 값이 클로저면 인자 없이 **격리 실행**한다 (spawn과 같은 격리 —
+    /// 테스트끼리 전역 변경이 보이지 않는다). 클로저가 아니면 None.
+    pub fn run_global_fn_isolated(&self, slot: usize) -> Option<Result<VmValue, RuntimeError>> {
+        let value = self.globals.lock().ok()?.get(slot)?.clone();
+        match value {
+            VmValue::Closure(c) => Some(Vm::run_spawned(self.output.clone(), deep_clone_closure(&c), Vec::new())),
+            _ => None,
+        }
+    }
+
     /// spawned 클로저를 서브-VM에서 실행하고 결과 반환.
     /// std::thread::spawn 클로저 안에서 호출된다.
     pub fn run_spawned(
@@ -1452,6 +1462,16 @@ pub(crate) fn vm_eq(l: &VmValue, r: &VmValue) -> bool {
         (VmValue::Nil,      VmValue::Nil)       => true,
         (VmValue::List(a),  VmValue::List(b))  =>
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| vm_eq(x, y)),
+        // 맵도 값이다: 같은 키 집합 + 키마다 같은 값 (Phase 49 이전엔 항상 false였던 결함)
+        (VmValue::Map(a),   VmValue::Map(b))   =>
+            a.len() == b.len() && a.iter().all(|(k, x)| b.get(k).is_some_and(|y| vm_eq(x, y))),
+        // 참조 타입은 동일성(같은 Arc)으로 비교
+        (VmValue::Closure(a), VmValue::Closure(b)) => Arc::ptr_eq(a, b),
+        (VmValue::Builtin(a), VmValue::Builtin(b)) => a == b,
+        (VmValue::Channel(a), VmValue::Channel(b)) => Arc::ptr_eq(a, b),
+        (VmValue::Future(a),  VmValue::Future(b))  => Arc::ptr_eq(a, b),
+        (VmValue::TcpListener(a), VmValue::TcpListener(b)) => Arc::ptr_eq(a, b),
+        (VmValue::TcpConn(a), VmValue::TcpConn(b)) => Arc::ptr_eq(a, b),
         _ => false,
     }
 }

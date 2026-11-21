@@ -29,3 +29,4 @@ hi! 3 true true [e]
 false nil Str nil List
 <bytes 3: 68c3a9> hé 68c3a9 <bytes 2: 00ff>
 <bytes 3: 0001ff>
+assert_eq 실패: 기대 1, 실제 "1"

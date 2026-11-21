@@ -89,10 +89,10 @@ let r = select([ch1, ch2]) // 먼저 준비된 채널 → [index, value], 모두
 - 모든 spawn은 함수 본문이나 parallel 블록에 뿌리내리고 스코프 끝에서 자동 조인.
 - `print`만 Future를 깊게 해소해 표시한다.
 
-## 내장 함수 (122개)
+## 내장 함수 (123개)
 
 기본: `print(...)` `str(x)` `int(x)` `float(x)` `bool(x)` `len(x)` `type(x)`
-`assert(cond[,msg])` `exit([code])` `input()` `print_err(...)` `args()` `range([s,]e[,step])`
+`assert(cond[,msg])` `assert_eq(actual, expected)` `exit([code])` `input()` `print_err(...)` `args()` `range([s,]e[,step])`
 
 리스트/이터러블: `push(l,x)`→새 list `pop(l)` `sort(l)` `sort_by(l,keyfn)` `reverse(l)`
 `map(l,f)` `filter(l,f)` `reduce(l,f,init)` `any(l,f)` `all(l,f)` `flat(l)` `enumerate(l)`
@@ -183,6 +183,8 @@ bang script.bang       # 실행 (run 생략 가능)
 bang                   # REPL (VM 기반 — 전 기능 동작)
 bang check script.bang # 정적 검사 (타입·해석)
 bang new myproj        # 새 프로젝트 스캐폴딩
+bang test              # *_test.bang / test_*.bang 의 test_* 함수 실행 (assert_eq로 검증)
+bang fmt               # 들여쓰기 정규화 (--check: CI용)
 ```
 
 ## 하지 말 것 (bang에 없는 것)

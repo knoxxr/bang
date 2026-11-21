@@ -14,3 +14,4 @@ pub mod pkg;
 pub mod reactor;
 pub mod scheduler;
 pub mod codegen;
+pub mod fmt;

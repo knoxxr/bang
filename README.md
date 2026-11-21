@@ -123,6 +123,8 @@ bang check   <파일>       오류 검사 + 정적 타입 검사 (실행 없음)
 bang build   <파일>       컴파일 검증 + 통계
 bang parse   <파일>       AST 출력
 bang tokenize <파일>      토큰 출력 (디버그)
+bang test   [경로...]     테스트 실행 (*_test.bang / test_*.bang 의 test_* 함수, 실패 시 exit 1)
+bang fmt     [--check] [경로...]   들여쓰기 정규화 (줄 안 내용은 바꾸지 않음)
 bang repl                 대화형 셸
 bang version              버전 출력
 bang help                 도움말
@@ -198,6 +200,7 @@ let sorted = sort(xs)  // sorted = [1, 2, 3], xs 는 그대로
 | 바이트(불변) | `bytes_from_str(s)` `bytes_to_str(b)` `bytes_from_hex(s)` `bytes_to_hex(b)` `file_read_bytes(p)` `tcp_read_bytes(c)` + `len` `b[i]` `slice` `+` `==` (쓰기 빌트인은 str/bytes 모두 받음) |
 | 프로세스/환경 | `proc_run([prog, args...])` → `{code, stdout, stderr}` (셸 미경유) `env_get(name)` `env_cwd()` `sleep(ms)` |
 | I/O | `print(...)` `print_err(...)` `input(...)` `args()` |
+| 테스트 | `assert(cond[,msg])` `assert_eq(actual, expected)` — `bang test`와 함께 |
 
 ```
 // 고차 함수 — 함수를 값으로 넘긴다

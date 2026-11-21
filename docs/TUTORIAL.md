@@ -477,6 +477,35 @@ true true
 - `pop`은 마지막 원소를 돌려줄 뿐 지우지 않는다. 지우려면 `xs = xs[:-1]`.
 - 기본값 매개변수는 호출마다 새로 계산된다 (`fn f(xs = [])`가 호출 간에 공유되지 않는다).
 
+## 11.6 테스트와 포맷
+
+`_test.bang`으로 끝나는 파일에 `test_`로 시작하는 함수를 쓰고 `bang test`를 실행한다:
+
+```bang
+// calc_test.bang
+fn add(a, b) { return a + b }
+
+fn test_add() {
+    assert_eq(add(2, 3), 5)
+}
+
+fn test_add_strings() {
+    assert_eq(add("a", "b"), "ab")
+}
+```
+
+```
+$ bang test
+./calc_test.bang
+  ok    test_add
+  ok    test_add_strings
+
+결과: 2개 통과, 0개 실패 (1개 파일, 0ms)
+```
+
+실패하면 어느 줄에서 무엇이 달랐는지(`assert_eq 실패: 기대 5, 실제 4`)를 보여 주고 exit 1로
+끝난다. 들여쓰기는 `bang fmt`가 맞춰 준다 (`bang fmt --check`는 CI용).
+
 ## 12. 다음 단계
 
 - 예제 모음: [../examples/](../examples/) — 각 파일 상단 주석이 기대 출력입니다.

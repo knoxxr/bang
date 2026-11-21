@@ -148,3 +148,67 @@ fn test_removed_backend_flags_error_clearly() {
     }
     let _ = fs::remove_file(&path);
 }
+
+// ---- Phase 49: bang test / bang fmt ----
+
+fn temp_dir(tag: &str) -> PathBuf {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("bang_cli_{tag}_{}_{n}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("임시 디렉터리 생성 실패");
+    dir
+}
+
+#[test]
+fn test_bang_test_runs_test_functions_isolated() {
+    let dir = temp_dir("test");
+    fs::create_dir_all(dir.join("bang_modules/dep")).unwrap();
+    // bang_modules 안의 테스트는 발견하지 않는다
+    fs::write(dir.join("bang_modules/dep/x_test.bang"), "fn test_never() { assert(false) }\n").unwrap();
+    fs::write(dir.join("helper.bang"), "fn test_ignored() { assert(false) }\n").unwrap();
+    fs::write(
+        dir.join("math_test.bang"),
+        "let counter = 0\nfn test_one() {\n    counter += 1\n    assert_eq(counter, 1)\n}\n\
+         fn test_two() {\n    counter += 1\n    assert_eq(counter, 1)\n}\n",
+    )
+    .unwrap();
+    let out = Command::new(BANG).arg("test").arg(&dir).output().expect("실행 실패");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("ok    test_one") && stdout.contains("ok    test_two"), "{stdout}");
+    assert!(stdout.contains("2개 통과, 0개 실패"), "{stdout}");
+    assert!(!stdout.contains("test_never") && !stdout.contains("test_ignored"), "{stdout}");
+
+    // 실패하면 exit 1 + 실패 위치
+    fs::write(dir.join("fail_test.bang"), "fn test_bad() {\n    assert_eq(1 + 1, 3)\n}\n").unwrap();
+    let out = Command::new(BANG).arg("test").arg(&dir).output().expect("실행 실패");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("FAIL  test_bad") && stdout.contains("assert_eq 실패: 기대 3, 실제 2"), "{stdout}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_bang_fmt_check_and_write() {
+    let dir = temp_dir("fmt");
+    let file = dir.join("messy.bang");
+    fs::write(&file, "fn f(x) {\nif x {\n      return 1\n}\nreturn 2   \n}\n\n\nprint(f(true))\n").unwrap();
+    let out = Command::new(BANG).args(["fmt", "--check"]).arg(&dir).output().expect("실행 실패");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("포맷 필요"));
+    let out = Command::new(BANG).arg("fmt").arg(&file).output().expect("실행 실패");
+    assert!(out.status.success());
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "fn f(x) {\n    if x {\n        return 1\n    }\n    return 2\n}\n\nprint(f(true))\n"
+    );
+    let out = Command::new(BANG).args(["fmt", "--check"]).arg(&dir).output().expect("실행 실패");
+    assert!(out.status.success(), "포맷 후에는 --check 통과");
+    // 렉싱 오류 파일은 건드리지 않는다
+    let bad = dir.join("bad.bang");
+    fs::write(&bad, "let s = \"open\n").unwrap();
+    let out = Command::new(BANG).arg("fmt").arg(&bad).output().expect("실행 실패");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&bad).unwrap(), "let s = \"open\n");
+    let _ = fs::remove_dir_all(&dir);
+}

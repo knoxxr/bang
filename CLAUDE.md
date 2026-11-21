@@ -542,3 +542,19 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              문서: SPEC 3.3/4.1/4.2, llms.txt, TUTORIAL 11.5 "Python에서 왔다면"(스니펫 실행 검증).
              보류(사용자 결정 대기): 문자열 보간 문법.
              회귀: resolver +3, vm_test +7. (tests: 374 green, clippy 0)
+✅ Phase 49 — 도구: bang test / bang fmt + assert_eq(123) + 맵 동등 비교 결함 수정 — v0.34.0
+             (Phase 48 에러 모델은 사용자 결정 대기로 건너뜀)
+             bang test [경로...]: *_test.bang / test_*.bang 발견(bang_modules/.git/target 제외), 최상위 1회 실행 후
+               test_* 최상위 함수를 선언 순서로 격리 실행(Vm::run_global_fn_isolated = deep_clone_closure +
+               run_spawned → 테스트 간 전역 격리). 실패/파일 오류 시 exit 1, 실패 위치 소스 문맥 출력.
+             bang fmt [--check] [경로...]: src/fmt.rs 줄 단위 재들여쓰기(4칸). 여는 괄호 스택에 "연 줄의 수준"을
+               기록해 한 줄에서 여러 괄호를 열어도 한 단계만, 연산자로 끝난 줄 다음은 hanging indent, 줄 끝
+               공백·연속 빈 줄·CRLF 정리, 삼중 문자열/블록 주석 안쪽은 보존. 전후 토큰열 비교로 안전 검증
+               (다르면 쓰지 않음). 저장소의 모든 .bang(examples/tests/bench)이 포맷 안정.
+             assert_eq(actual, expected) 빌트인 123 (끝에 추가, GOLDEN·스냅샷 갱신).
+             (버그) vm_eq에 Map 비교가 없어 {"a":1} == {"a":1}이 false였음 → 키 집합·값 구조 비교.
+               참조 타입(함수·채널·Future·TCP)은 Arc 동일성. in/unique/index_of/union 등도 영향(올바르게).
+               assert_eq 스냅샷 작성 중 발견.
+             발견(미수정): print가 vm.output Vec에도 모든 줄을 누적 — 장시간 서버에서 메모리 증가 (테스트용 캡처 잔재).
+             문서: SPEC 5장(동등 비교)·13장 신설, README 명령/표, llms.txt(123개), TUTORIAL 11.6, VS Code 빌트인 목록.
+             회귀: fmt 단위 +7, cli_test +2, vm_test +2, 스냅샷 +1줄. (tests: 385 green, clippy 0)

@@ -121,6 +121,30 @@ pub(crate) fn b_type(
 }
 
 /// 18: assert
+/// 123: assert_eq(actual, expected) — 같지 않으면 두 값을 보여 주는 에러 (Phase 49, `bang test`용).
+pub(crate) fn b_assert_eq(
+    _vm: &mut Vm,
+    args: Vec<VmValue>,
+    span: Span,
+    _stop_depth: usize,
+) -> Result<VmValue, RuntimeError> {
+    req_args("assert_eq", &args, 2, span)?;
+    let actual = deep_resolve(args[0].clone(), span)?;
+    let expected = deep_resolve(args[1].clone(), span)?;
+    if vm_eq(&actual, &expected) {
+        return Ok(VmValue::Nil);
+    }
+    // 문자열은 따옴표로 감싸 1과 "1"을 구별해 보여 준다
+    let show = |v: &VmValue| match v {
+        VmValue::Str(s) => format!("{s:?}"),
+        other => format!("{other}"),
+    };
+    Err(RuntimeError::new(
+        format!("assert_eq 실패: 기대 {}, 실제 {}", show(&expected), show(&actual)),
+        span,
+    ))
+}
+
 pub(crate) fn b_assert(
     _vm: &mut Vm,
     args: Vec<VmValue>,

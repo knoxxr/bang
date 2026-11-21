@@ -31,6 +31,8 @@ fn main() {
         "add"      => cmd_add(&args[2..]),
         "install"  => cmd_install(&args[2..]),
         "new"      => cmd_new(&args[2..]),
+        "test"     => cmd_test(&args[2..]),
+        "fmt"      => cmd_fmt(&args[2..]),
         "help" | "--help" | "-h" => print_usage(),
         "version" | "--version" | "-V" => print_version(),
         other => {
@@ -68,6 +70,8 @@ fn print_usage() {
     eprintln!("  parse   <파일>   AST 출력");
     eprintln!("  tokenize <파일>  토큰화 출력 (디버그)");
     eprintln!("  repl             대화형 셸(REPL) 시작");
+    eprintln!("  test [경로...]   테스트 실행: *_test.bang / test_*.bang 파일의 test_* 함수");
+    eprintln!("  fmt [--check] [경로...]  들여쓰기 정규화 (--check: 바뀔 파일만 보고, exit 1)");
     eprintln!("  new <디렉토리>   새 프로젝트 스캐폴딩 (main.bang + bang.toml)");
     eprintln!("  add <이름> <git-url[@rev]>  의존성 추가 (bang.toml + bang_modules/ 설치)");
     eprintln!("  install          bang.toml의 모든 의존성 설치");
@@ -682,4 +686,169 @@ fn bracket_depth_delta(line: &str) -> i32 {
         }
     }
     depth
+}
+
+// ============================================================================
+// bang test / bang fmt (Phase 49)
+// ============================================================================
+
+/// 경로 목록 → .bang 파일 목록 (디렉터리는 재귀, bang_modules/.git/target 제외, 정렬).
+/// `only_tests`면 디렉터리 안에서는 *_test.bang / test_*.bang만 고른다 (직접 준 파일은 그대로).
+fn collect_bang_files(paths: &[String], only_tests: bool) -> Vec<std::path::PathBuf> {
+    fn is_test_file(p: &std::path::Path) -> bool {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name.ends_with("_test.bang") || (name.starts_with("test_") && name.ends_with(".bang"))
+    }
+    fn walk(dir: &std::path::Path, only_tests: bool, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if p.is_dir() {
+                if !matches!(name, "bang_modules" | ".git" | "target" | "node_modules") {
+                    walk(&p, only_tests, out);
+                }
+            } else if name.ends_with(".bang") && (!only_tests || is_test_file(&p)) {
+                out.push(p);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let roots: Vec<String> = if paths.is_empty() { vec![".".to_string()] } else { paths.to_vec() };
+    for r in &roots {
+        let p = std::path::Path::new(r);
+        if p.is_dir() {
+            walk(p, only_tests, &mut out);
+        } else if p.is_file() {
+            out.push(p.to_path_buf());
+        } else {
+            eprintln!("오류: '{r}' 파일 또는 디렉터리가 없습니다");
+            process::exit(1);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// bang test [경로...] — 테스트 파일의 최상위를 실행한 뒤 이름이 test_로 시작하는 최상위 함수를
+/// 하나씩 격리 실행한다. 함수가 에러 없이 끝나면 통과 (assert / assert_eq / throw로 실패).
+fn cmd_test(args: &[String]) {
+    let files = collect_bang_files(args, true);
+    if files.is_empty() {
+        eprintln!("테스트 파일이 없습니다 (*_test.bang 또는 test_*.bang)");
+        process::exit(1);
+    }
+    let started = std::time::Instant::now();
+    let (mut passed, mut failed, mut broken_files) = (0usize, 0usize, 0usize);
+    for file in &files {
+        let path = file.display().to_string();
+        println!("{path}");
+        let source = read_source(&path);
+        // 파일 단위 실패(파스·리졸브·컴파일·최상위 실행 에러)는 그 파일의 테스트를 건너뛴다
+        let tokens = match Lexer::new(&source).tokenize() {
+            Ok(t) => t,
+            Err(errs) => {
+                for e in errs { println!("  오류  {e}"); }
+                broken_files += 1;
+                continue;
+            }
+        };
+        let prog = match Parser::new(tokens).parse() {
+            Ok(p) => p,
+            Err(errs) => {
+                for e in errs { println!("  오류  {e}"); }
+                broken_files += 1;
+                continue;
+            }
+        };
+        let resolved = bang::resolver::resolve(&prog);
+        if !resolved.errors.is_empty() {
+            for e in &resolved.errors { println!("  오류  {e}"); }
+            broken_files += 1;
+            continue;
+        }
+        let out = match compile(&prog) {
+            Ok(o) => o,
+            Err(errs) => {
+                for e in &errs { println!("  오류  {e}"); }
+                broken_files += 1;
+                continue;
+            }
+        };
+        let output = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut vm = bang::vm::Vm::new(out.global_count as usize, output);
+        if let Err(e) = vm.run(out.main_fn) {
+            println!("  오류  최상위 실행 실패: {e}");
+            broken_files += 1;
+            continue;
+        }
+        // 선언 순서(전역 슬롯 순)대로 test_ 함수 실행
+        let mut tests: Vec<(&String, u16)> = out.global_names.iter()
+            .filter(|(n, _)| n.starts_with("test_"))
+            .map(|(n, s)| (n, *s))
+            .collect();
+        tests.sort_by_key(|(_, s)| *s);
+        if tests.is_empty() {
+            println!("  (test_로 시작하는 함수 없음)");
+        }
+        for (name, slot) in tests {
+            match vm.run_global_fn_isolated(slot as usize) {
+                None => continue, // 함수가 아닌 test_ 이름
+                Some(Ok(_)) => {
+                    passed += 1;
+                    println!("  ok    {name}");
+                }
+                Some(Err(e)) => {
+                    failed += 1;
+                    println!("  FAIL  {name}");
+                    println!("{}", format_with_context(&e.to_string(), e.span, &source)
+                        .lines().map(|l| format!("        {l}")).collect::<Vec<_>>().join("\n"));
+                }
+            }
+        }
+    }
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    let file_note = if broken_files > 0 { format!(", 파일 오류 {broken_files}개") } else { String::new() };
+    println!("\n결과: {passed}개 통과, {failed}개 실패{file_note} ({}개 파일, {ms:.0}ms)", files.len());
+    if failed > 0 || broken_files > 0 {
+        process::exit(1);
+    }
+}
+
+/// bang fmt [--check] [경로...] — 들여쓰기 정규화 (src/fmt.rs). 줄 안의 내용은 바꾸지 않는다.
+fn cmd_fmt(args: &[String]) {
+    let check = args.iter().any(|a| a == "--check");
+    let paths: Vec<String> = args.iter().filter(|a| a.as_str() != "--check").cloned().collect();
+    let files = collect_bang_files(&paths, false);
+    let (mut changed, mut errors) = (0usize, 0usize);
+    for file in &files {
+        let path = file.display().to_string();
+        let source = read_source(&path);
+        match bang::fmt::format_source(&source) {
+            Ok(formatted) if formatted == source => {}
+            Ok(formatted) => {
+                changed += 1;
+                if check {
+                    println!("포맷 필요: {path}");
+                } else if let Err(e) = fs::write(file, formatted) {
+                    eprintln!("오류: '{path}' 쓰기 실패: {e}");
+                    errors += 1;
+                } else {
+                    println!("포맷함: {path}");
+                }
+            }
+            Err(e) => {
+                eprintln!("건너뜀: {path} — {e}");
+                errors += 1;
+            }
+        }
+    }
+    if check && changed > 0 {
+        eprintln!("{changed}개 파일이 포맷되지 않았습니다 (bang fmt로 고치세요)");
+        process::exit(1);
+    }
+    if errors > 0 {
+        process::exit(1);
+    }
 }
