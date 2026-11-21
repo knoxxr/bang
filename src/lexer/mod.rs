@@ -20,6 +20,7 @@ pub enum LexErrorKind {
     UnterminatedString,
     InvalidEscape(char),
     InvalidNumber(String),
+    UnterminatedComment,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +37,7 @@ impl fmt::Display for LexError {
             LexErrorKind::UnterminatedString => "종료되지 않은 문자열".to_string(),
             LexErrorKind::InvalidEscape(c) => format!("잘못된 이스케이프 시퀀스: '\\{c}'"),
             LexErrorKind::InvalidNumber(s) => format!("잘못된 숫자 리터럴: '{s}'"),
+            LexErrorKind::UnterminatedComment => "종료되지 않은 블록 주석 ('*/' 없음)".to_string(),
         };
         write!(f, "[{}:{}] 오류: {}", self.line, self.col, msg)
     }
@@ -95,14 +97,23 @@ impl Lexer {
         }
 
         loop {
-            self.skip_blanks_and_line_comments();
+            // 여러 줄 블록 주석은 줄바꿈 하나로 취급한다 (문장 종결 규칙 유지)
+            let comment_nl = match self.skip_blanks_and_comments() {
+                Ok(nl) => nl,
+                Err(e) => {
+                    errors.push(e);
+                    false
+                }
+            };
 
             // 줄바꿈 처리
-            if !self.is_at_end() && self.peek() == '\n' {
-                // 연속된 \n + 빈 줄 + // 주석 줄을 모두 소비
+            if comment_nl || (!self.is_at_end() && self.peek() == '\n') {
+                // 연속된 \n + 빈 줄 + 주석 줄을 모두 소비
                 while !self.is_at_end() && self.peek() == '\n' {
                     self.advance();
-                    self.skip_blanks_and_line_comments();
+                    if let Err(e) = self.skip_blanks_and_comments() {
+                        errors.push(e);
+                    }
                 }
                 // 종결 가능한 토큰 뒤이고 줄바꿈이 유효한 컨텍스트면 Newline 방출
                 if self.newlines_active() {
@@ -133,7 +144,8 @@ impl Lexer {
             let result = match self.peek() {
                 '0'..='9' => self.scan_number(),
                 '"' => self.scan_string(),
-                'a'..='z' | 'A'..='Z' | '_' => Ok(self.scan_identifier()),
+                // 식별자: 유니코드 문자(한글 포함)·'_'로 시작 (Phase 46)
+                c if c.is_alphabetic() || c == '_' => Ok(self.scan_identifier()),
                 _ => self.scan_punct(),
             };
 
@@ -229,7 +241,10 @@ impl Lexer {
     // 공백 · 주석 건너뛰기 (줄바꿈은 건너뛰지 않음)
     // =========================================================================
 
-    fn skip_blanks_and_line_comments(&mut self) {
+    /// 공백·`//` 주석·`/* */` 블록 주석을 건너뛴다 (줄바꿈 자체는 소비하지 않음).
+    /// 건너뛴 블록 주석 안에 줄바꿈이 있었으면 true (호출자가 줄바꿈으로 취급).
+    fn skip_blanks_and_comments(&mut self) -> Result<bool, LexError> {
+        let mut saw_newline = false;
         loop {
             // 공백(스페이스·탭·캐리지리턴)만 건너뜀
             while !self.is_at_end() && matches!(self.peek(), ' ' | '\t' | '\r') {
@@ -242,42 +257,114 @@ impl Lexer {
                 }
                 continue;
             }
+            // `/* ... */` 블록 주석 (중첩 없음)
+            if self.peek() == '/' && self.peek_next() == '*' {
+                let start = self.span();
+                self.advance();
+                self.advance();
+                loop {
+                    if self.is_at_end() {
+                        return Err(self.error(LexErrorKind::UnterminatedComment, start.line, start.col));
+                    }
+                    if self.peek() == '*' && self.peek_next() == '/' {
+                        self.advance();
+                        self.advance();
+                        break;
+                    }
+                    if self.advance() == '\n' {
+                        saw_newline = true;
+                    }
+                }
+                continue;
+            }
             break;
         }
+        Ok(saw_newline)
     }
 
     // =========================================================================
     // 숫자 리터럴
     // =========================================================================
 
+    /// 숫자 리터럴: `42`, `1_000`, `3.14`, `1e3`, `2.5e-3`, `0xff`, `0b1010`, `0o17`.
+    /// `_`는 숫자 사이에서만 허용(가독성용 구분자).
     fn scan_number(&mut self) -> Result<Token, LexError> {
         let start = self.span();
-        let mut num_str = String::new();
-        let mut is_float = false;
+        let invalid = |me: &Self, s: String| me.error(LexErrorKind::InvalidNumber(s), start.line, start.col);
 
-        while !self.is_at_end() && self.peek().is_ascii_digit() {
-            num_str.push(self.advance());
+        // 진법 접두사
+        if self.peek() == '0' && matches!(self.peek_next(), 'x' | 'X' | 'b' | 'B' | 'o' | 'O') {
+            self.advance();
+            let p = self.advance().to_ascii_lowercase();
+            let radix = match p { 'x' => 16, 'b' => 2, _ => 8 };
+            let digits = self.scan_digits(|c| c.is_digit(radix));
+            let text = format!("0{p}{digits}");
+            if digits.is_empty() || self.peek().is_alphanumeric() {
+                return Err(invalid(self, text));
+            }
+            return i64::from_str_radix(&digits, radix)
+                .map(|n| Token::new(TokenKind::Int(n), start))
+                .map_err(|_| invalid(self, text));
         }
 
-        if !self.is_at_end() && self.peek() == '.' && self.peek_next().is_ascii_digit() {
+        let mut num_str = self.scan_digits(|c| c.is_ascii_digit());
+        let mut is_float = false;
+
+        if self.peek() == '.' && self.peek_next().is_ascii_digit() {
             is_float = true;
             num_str.push(self.advance()); // '.'
-            while !self.is_at_end() && self.peek().is_ascii_digit() {
+            num_str.push_str(&self.scan_digits(|c| c.is_ascii_digit()));
+        }
+
+        // 지수: e/E 뒤에 숫자 또는 부호+숫자가 올 때만 (그 외엔 숫자 뒤 식별자)
+        if matches!(self.peek(), 'e' | 'E') {
+            let after = self.source.get(self.pos + 1).copied().unwrap_or('\0');
+            let after2 = self.source.get(self.pos + 2).copied().unwrap_or('\0');
+            if after.is_ascii_digit() || (matches!(after, '+' | '-') && after2.is_ascii_digit()) {
+                is_float = true;
+                num_str.push(self.advance()); // e
+                if matches!(self.peek(), '+' | '-') {
+                    num_str.push(self.advance());
+                }
+                num_str.push_str(&self.scan_digits(|c| c.is_ascii_digit()));
+            }
+        }
+
+        if self.peek() == '_' || self.peek().is_alphabetic() {
+            // 1_ / 1abc 같은 꼬리는 잘못된 리터럴
+            while self.peek().is_alphanumeric() || self.peek() == '_' {
                 num_str.push(self.advance());
             }
+            return Err(invalid(self, num_str));
         }
 
         if is_float {
             num_str
                 .parse::<f64>()
                 .map(|n| Token::new(TokenKind::Float(n), start))
-                .map_err(|_| self.error(LexErrorKind::InvalidNumber(num_str), start.line, start.col))
+                .map_err(|_| invalid(self, num_str.clone()))
         } else {
             num_str
                 .parse::<i64>()
                 .map(|n| Token::new(TokenKind::Int(n), start))
-                .map_err(|_| self.error(LexErrorKind::InvalidNumber(num_str), start.line, start.col))
+                .map_err(|_| invalid(self, num_str.clone()))
         }
+    }
+
+    /// 숫자(조건 만족 문자)와 그 사이의 `_`를 읽어 `_`를 뺀 문자열을 돌려준다.
+    fn scan_digits(&mut self, is_digit: impl Fn(char) -> bool) -> String {
+        let mut out = String::new();
+        loop {
+            let c = self.peek();
+            if is_digit(c) {
+                out.push(self.advance());
+            } else if c == '_' && !out.is_empty() && is_digit(self.peek_next()) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        out
     }
 
     // =========================================================================
@@ -288,15 +375,30 @@ impl Lexer {
         let start = self.span();
         self.advance(); // '"'
 
+        // `"""..."""` 여러 줄 문자열: 줄바꿈을 그대로 담는다 (이스케이프는 동일하게 처리)
+        let triple = self.peek() == '"' && self.peek_next() == '"';
+        if triple {
+            self.advance();
+            self.advance();
+        }
+
         let mut value = String::new();
 
         loop {
-            if self.is_at_end() || self.peek() == '\n' {
+            if self.is_at_end() || (!triple && self.peek() == '\n') {
                 return Err(self.error(LexErrorKind::UnterminatedString, start.line, start.col));
             }
 
             let ch = self.advance();
             match ch {
+                '"' if triple => {
+                    if self.peek() == '"' && self.peek_next() == '"' {
+                        self.advance();
+                        self.advance();
+                        return Ok(Token::new(TokenKind::Str(value), start));
+                    }
+                    value.push('"');
+                }
                 '"' => return Ok(Token::new(TokenKind::Str(value), start)),
                 '\\' => {
                     if self.is_at_end() {
@@ -350,17 +452,24 @@ impl Lexer {
         let ch = self.advance();
 
         let kind = match ch {
+            '+' if self.peek() == '=' => { self.advance(); TokenKind::PlusEq }
             '+' => TokenKind::Plus,
             '-' => {
                 if self.peek() == '>' {
                     self.advance();
                     TokenKind::Arrow
+                } else if self.peek() == '=' {
+                    self.advance();
+                    TokenKind::MinusEq
                 } else {
                     TokenKind::Minus
                 }
             }
+            '*' if self.peek() == '=' => { self.advance(); TokenKind::StarEq }
             '*' => TokenKind::Star,
+            '/' if self.peek() == '=' => { self.advance(); TokenKind::SlashEq }
             '/' => TokenKind::Slash,
+            '%' if self.peek() == '=' => { self.advance(); TokenKind::PercentEq }
             '%' => TokenKind::Percent,
             '=' => {
                 if self.peek() == '=' {
@@ -699,6 +808,54 @@ mod tests {
         assert_eq!(
             kinds_no_eof("10 / 2"),
             vec![TokenKind::Int(10), TokenKind::Slash, TokenKind::Int(2)]
+        );
+    }
+
+    // ---- Phase 46 ----
+
+    #[test]
+    fn test_number_literal_forms() {
+        assert_eq!(kinds_no_eof("1_000"), vec![TokenKind::Int(1000)]);
+        assert_eq!(kinds_no_eof("0xff 0b101 0o17"), vec![TokenKind::Int(255), TokenKind::Int(5), TokenKind::Int(15)]);
+        assert_eq!(kinds_no_eof("1e3 2.5e-3 1E+2"), vec![TokenKind::Float(1000.0), TokenKind::Float(0.0025), TokenKind::Float(100.0)]);
+        // 숫자 뒤 '.'+식별자는 기존처럼 분리 (예: 필드 접근 아님 — 숫자 + Dot)
+        assert_eq!(kinds_no_eof("1.x"), vec![TokenKind::Int(1), TokenKind::Dot, TokenKind::Ident("x".into())]);
+        for bad in ["1_", "0x", "12abc", "0xfg"] {
+            assert!(Lexer::new(bad).tokenize().is_err(), "{bad}는 에러여야 함");
+        }
+    }
+
+    #[test]
+    fn test_compound_assign_tokens() {
+        assert_eq!(
+            kinds_no_eof("a += 1 -= *= /= %="),
+            vec![TokenKind::Ident("a".into()), TokenKind::PlusEq, TokenKind::Int(1), TokenKind::MinusEq,
+                 TokenKind::StarEq, TokenKind::SlashEq, TokenKind::PercentEq]
+        );
+        assert_eq!(kinds_no_eof("a->b"), vec![TokenKind::Ident("a".into()), TokenKind::Arrow, TokenKind::Ident("b".into())]);
+    }
+
+    #[test]
+    fn test_block_comments() {
+        assert_eq!(kinds_no_eof("1 /* x */ + 2"), vec![TokenKind::Int(1), TokenKind::Plus, TokenKind::Int(2)]);
+        // 여러 줄 블록 주석은 줄바꿈 하나로 취급
+        let ks = kinds_with_newlines("a /* x\n y */ b");
+        assert_eq!(ks, vec![TokenKind::Ident("a".into()), TokenKind::Newline, TokenKind::Ident("b".into()), TokenKind::Newline]);
+        assert!(Lexer::new("/* open").tokenize().is_err());
+    }
+
+    #[test]
+    fn test_triple_quoted_string() {
+        assert_eq!(kinds_no_eof("\"\"\"a\n\"b\"\\t\"\"\""), vec![TokenKind::Str("a\n\"b\"\t".into())]);
+        assert_eq!(kinds_no_eof("\"\""), vec![TokenKind::Str(String::new())]);
+        assert!(Lexer::new("\"\"\"never closed").tokenize().is_err());
+    }
+
+    #[test]
+    fn test_unicode_identifiers() {
+        assert_eq!(
+            kinds_no_eof("let 이름_1 = 점수"),
+            vec![TokenKind::Let, TokenKind::Ident("이름_1".into()), TokenKind::Eq, TokenKind::Ident("점수".into())]
         );
     }
 

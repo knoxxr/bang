@@ -497,7 +497,36 @@ impl Transpiler {
                     BinaryOp::Ge  => format!("BBOOL(bv_ge({l},{r}))"),
                     BinaryOp::And => format!("bv_and_v({l},{r})"),
                     BinaryOp::Or  => format!("bv_or_v({l},{r})"),
+                    BinaryOp::In | BinaryOp::NotIn => {
+                        self.err("AOT: in / not in 연산자 미지원", sp);
+                        "BNIL".into()
+                    }
                 }
+            }
+
+            ExprKind::CompoundAssign { op, target, value } => {
+                let val_e = self.emit_expr(value);
+                let f = match op {
+                    BinaryOp::Add => "bv_add", BinaryOp::Sub => "bv_sub",
+                    BinaryOp::Mul => "bv_mul", BinaryOp::Div => "bv_div",
+                    BinaryOp::Mod => "bv_mod",
+                    _ => {
+                        self.err("AOT: 지원하지 않는 복합 대입", sp);
+                        return "BNIL".into();
+                    }
+                };
+                match &target.kind {
+                    ExprKind::Ident(name) => format!("(b_{name} = {f}(b_{name},{val_e}), b_{name})"),
+                    _ => {
+                        self.err("AOT: 지원하지 않는 대입 대상", sp);
+                        "BNIL".into()
+                    }
+                }
+            }
+
+            ExprKind::Slice { .. } => {
+                self.err("AOT: 슬라이스 미지원", sp);
+                "BNIL".into()
             }
 
             ExprKind::Call { callee, args } => {

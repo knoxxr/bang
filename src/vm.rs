@@ -23,7 +23,7 @@ use crate::compiler::{
     OP_MAKE_ITER, OP_FOR_ITER,
     OP_SPAWN, OP_PARALLEL_ENTER, OP_PARALLEL_EXIT,
     OP_SETUP_TRY, OP_POP_TRY, OP_THROW, OP_CHECK_TYPE,
-    OP_SET_PATH, OP_UPDATE_VAR,
+    OP_SET_PATH, OP_UPDATE_VAR, OP_SLICE, OP_MAKE_ITER_PAIRS, OP_IN, OP_UNPACK,
 };
 use crate::ast::TypeAnn;
 use crate::lexer::token::Span;
@@ -992,6 +992,7 @@ impl Vm {
                     let slot = self.read_u16() as usize;
                     let kind = self.read_byte();
                     let depth = self.read_byte() as usize;
+                    let binop = self.read_byte();
                     let val = self.stack_pop();
                     let mut keys = self.stack.split_off(self.stack.len() - depth);
                     for k in keys.iter_mut() {
@@ -1005,11 +1006,13 @@ impl Vm {
                     // (키·값 평가 중 변수가 재대입됐다면 원래 의미대로 복사본을 고쳐 저장)
                     let prev = std::mem::replace(slot_ref, root_copy);
                     let restore = if same_container(&prev, slot_ref) { drop(prev); None } else { Some(prev) };
-                    let result = val.clone();
-                    if let Err(e) = set_path(slot_ref, &keys, val, span) {
-                        if let Some(p) = restore { *slot_ref = p; }
-                        return Err(e);
-                    }
+                    let result = match set_path(slot_ref, &keys, val, binop, span) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            if let Some(p) = restore { *slot_ref = p; }
+                            return Err(e);
+                        }
+                    };
                     drop(guard);
                     self.stack.push(result);
                 }
@@ -1055,6 +1058,32 @@ impl Vm {
                     };
                     drop(guard);
                     self.stack.push(new_val);
+                }
+                OP_SLICE => {
+                    let span = self.current_span();
+                    let end = auto_resolve(self.stack_pop(), span)?;
+                    let start = auto_resolve(self.stack_pop(), span)?;
+                    let target = auto_resolve(self.stack_pop(), span)?;
+                    self.stack.push(vm_slice(target, &start, &end, span)?);
+                }
+                OP_IN => {
+                    let span = self.current_span();
+                    let container = auto_resolve(self.stack_pop(), span)?;
+                    let needle = auto_resolve(self.stack_pop(), span)?;
+                    self.stack.push(VmValue::Bool(vm_contains(&container, &needle, span)?));
+                }
+                OP_UNPACK => {
+                    let span = self.current_span();
+                    let n = self.read_byte() as usize;
+                    match auto_resolve(self.stack_pop(), span)? {
+                        VmValue::List(items) if items.len() == n => {
+                            self.stack.extend(items.iter().cloned());
+                        }
+                        VmValue::List(items) => return Err(RuntimeError::new(
+                            format!("분해: 값 {n}개 기대, {}개 발견", items.len()), span)),
+                        other => return Err(RuntimeError::new(
+                            format!("분해: List 필요, {} 발견", other.type_name()), span)),
+                    }
                 }
                 OP_FIELD_GET => {
                     let span = self.current_span();
@@ -1151,14 +1180,38 @@ impl Vm {
                 }
 
                 // --- For loop ---
-                OP_MAKE_ITER => {
+                OP_MAKE_ITER | OP_MAKE_ITER_PAIRS => {
                     let span = self.current_span();
+                    let pairs = opcode == OP_MAKE_ITER_PAIRS;
                     let val = auto_resolve(self.stack_pop(), span)?;
                     let iter = match val {
                         VmValue::List(items) => VmIter::List { items, idx: 0 },
                         VmValue::Channel(ch) => VmIter::Channel(ch),
+                        // 맵: 키 정렬 순서(keys()와 동일). 변수 2개면 [키, 값] 쌍.
+                        VmValue::Map(m) => {
+                            let mut ks: Vec<&String> = m.keys().collect();
+                            ks.sort();
+                            let items = ks.into_iter().map(|k| {
+                                let key = VmValue::Str(k.clone());
+                                if pairs {
+                                    let v = m.get(k).cloned().unwrap_or(VmValue::Nil);
+                                    VmValue::List(Arc::new(vec![key, v]))
+                                } else {
+                                    key
+                                }
+                            }).collect();
+                            VmIter::List { items: Arc::new(items), idx: 0 }
+                        }
+                        VmValue::Str(s) => VmIter::List {
+                            items: Arc::new(s.chars().map(|c| VmValue::Str(c.to_string())).collect()),
+                            idx: 0,
+                        },
+                        VmValue::Bytes(b) => VmIter::List {
+                            items: Arc::new(b.iter().map(|&x| VmValue::Int(x as i64)).collect()),
+                            idx: 0,
+                        },
                         other => return Err(RuntimeError::new(
-                            format!("for-in: List 또는 Channel 필요, {} 발견", other.type_name()),
+                            format!("for-in: List/Map/Str/Bytes/Channel 필요, {} 발견", other.type_name()),
                             span)),
                     };
                     self.stack.push(VmValue::Iter(Arc::new(Mutex::new(iter))));
@@ -1427,6 +1480,59 @@ fn vm_index_set(container: VmValue, idx: VmValue, val: VmValue, span: Span) -> R
     }
 }
 
+/// 슬라이스 경계 해석: nil=기본값, 음수=끝에서부터, 범위 밖은 잘라냄 (Python과 같음).
+fn slice_bounds(len: usize, start: &VmValue, end: &VmValue, span: Span) -> Result<(usize, usize), RuntimeError> {
+    let len = len as i64;
+    let norm = |v: &VmValue, default: i64| -> Result<i64, RuntimeError> {
+        match v {
+            VmValue::Nil => Ok(default),
+            VmValue::Int(i) => {
+                let i = if *i < 0 { len.saturating_add(*i) } else { *i };
+                Ok(i.clamp(0, len))
+            }
+            other => Err(RuntimeError::new(
+                format!("슬라이스 경계는 Int 또는 생략이어야 함, {} 발견", other.type_name()), span)),
+        }
+    };
+    let s = norm(start, 0)?;
+    let e = norm(end, len)?;
+    Ok((s as usize, e.max(s) as usize))
+}
+
+fn vm_slice(target: VmValue, start: &VmValue, end: &VmValue, span: Span) -> Result<VmValue, RuntimeError> {
+    match target {
+        VmValue::List(items) => {
+            let (s, e) = slice_bounds(items.len(), start, end, span)?;
+            Ok(VmValue::List(Arc::new(items[s..e].to_vec())))
+        }
+        VmValue::Str(st) => {
+            let chars: Vec<char> = st.chars().collect();
+            let (s, e) = slice_bounds(chars.len(), start, end, span)?;
+            Ok(VmValue::Str(chars[s..e].iter().collect()))
+        }
+        VmValue::Bytes(b) => {
+            let (s, e) = slice_bounds(b.len(), start, end, span)?;
+            Ok(VmValue::Bytes(Arc::new(b[s..e].to_vec())))
+        }
+        other => Err(RuntimeError::new(
+            format!("슬라이스: List/Str/Bytes 필요, {} 발견", other.type_name()), span)),
+    }
+}
+
+/// `needle in container`: 리스트 원소(==)·맵 키·부분 문자열·바이트 값/부분열.
+fn vm_contains(container: &VmValue, needle: &VmValue, span: Span) -> Result<bool, RuntimeError> {
+    match (container, needle) {
+        (VmValue::List(items), _) => Ok(items.iter().any(|x| vm_eq(x, needle))),
+        (VmValue::Map(m), VmValue::Str(k)) => Ok(m.contains_key(k)),
+        (VmValue::Map(m), VmValue::Int(_)) => Ok(m.contains_key(&needle.to_string())),
+        (VmValue::Str(s), VmValue::Str(sub)) => Ok(s.contains(sub.as_str())),
+        (VmValue::Bytes(b), VmValue::Int(x)) => Ok(*x >= 0 && *x <= 255 && b.contains(&(*x as u8))),
+        (VmValue::Bytes(b), VmValue::Bytes(sub)) => Ok(sub.is_empty() || find_subseq(b, sub).is_some()),
+        (c, n) => Err(RuntimeError::new(
+            format!("in: {} 안에서 {} 찾기 지원 안 됨", c.type_name(), n.type_name()), span)),
+    }
+}
+
 fn lock_err(span: Span) -> RuntimeError {
     RuntimeError::new("내부 오류: 변수 잠금 실패", span)
 }
@@ -1447,7 +1553,7 @@ fn same_container(a: &VmValue, b: &VmValue) -> bool {
 
 /// target[k1][k2]...[kN] = val 을 제자리에서 수행한다 (Arc::make_mut — 공유 중일 때만 복사).
 /// 실패는 마지막 대입 전에 검출되므로 관찰 가능한 부분 변경이 없다.
-fn set_path(target: &mut VmValue, keys: &[VmValue], val: VmValue, span: Span) -> Result<(), RuntimeError> {
+fn set_path(target: &mut VmValue, keys: &[VmValue], val: VmValue, binop: u8, span: Span) -> Result<VmValue, RuntimeError> {
     let Some((last, init)) = keys.split_last() else {
         return Err(RuntimeError::new("내부 오류: 빈 대입 경로", span));
     };
@@ -1461,15 +1567,38 @@ fn set_path(target: &mut VmValue, keys: &[VmValue], val: VmValue, span: Span) ->
     if let VmValue::Future(_) = cur {
         *cur = auto_resolve(cur.clone(), span)?;
     }
+    // 복합 대입(v[k] op= val): 기존 값과 연산한 결과를 저장한다. 기존 값이 없으면 에러.
+    let combine = |old: &VmValue, val: VmValue| -> Result<VmValue, RuntimeError> {
+        let old = auto_resolve(old.clone(), span)?;
+        let val = auto_resolve(val, span)?;
+        match binop {
+            OP_ADD => vm_add(old, val, span),
+            OP_SUB => vm_arith(old, val, span, '-'),
+            OP_MUL => vm_arith(old, val, span, '*'),
+            OP_DIV => vm_arith(old, val, span, '/'),
+            _ => vm_arith(old, val, span, '%'),
+        }
+    };
     match (cur, last) {
         (VmValue::List(items), VmValue::Int(i)) => {
             let i = list_pos(items.len(), *i, span)?;
-            Arc::make_mut(items)[i] = val;
-            Ok(())
+            let new = if binop == 0 { val } else { combine(&items[i], val)? };
+            Arc::make_mut(items)[i] = new.clone();
+            Ok(new)
         }
         (VmValue::Map(map), key) => {
-            Arc::make_mut(map).insert(key.to_string(), val);
-            Ok(())
+            let k = key.to_string();
+            let new = if binop == 0 {
+                val
+            } else {
+                match map.get(&k) {
+                    Some(old) => combine(old, val)?,
+                    None => return Err(RuntimeError::new(
+                        format!("복합 대입: 맵에 키 '{k}' 없음 (get(m, k, 기본값) 사용)"), span)),
+                }
+            };
+            Arc::make_mut(map).insert(k, new.clone());
+            Ok(new)
         }
         (VmValue::Bytes(_), _) => Err(RuntimeError::new(
             "인덱스 대입: Bytes는 불변 — slice와 +로 새 Bytes를 만드세요", span)),

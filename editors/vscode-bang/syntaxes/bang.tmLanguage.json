@@ -18,10 +18,35 @@
   ],
   "repository": {
     "comment": {
-      "name": "comment.line.double-slash.bang",
-      "match": "//.*$"
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.bang",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.bang",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
     },
     "string": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.bang",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.bang",
+              "match": "\\\\[\\\\\"ntr0]"
+            }
+          ]
+        },
+        { "include": "#string-single" }
+      ]
+    },
+    "string-single": {
       "name": "string.quoted.double.bang",
       "begin": "\"",
       "end": "\"",
@@ -35,12 +60,16 @@
     "number": {
       "patterns": [
         {
+          "name": "constant.numeric.hex.bang",
+          "match": "\\b0([xX][0-9a-fA-F_]+|[bB][01_]+|[oO][0-7_]+)\\b"
+        },
+        {
           "name": "constant.numeric.float.bang",
-          "match": "\\b[0-9]+\\.[0-9]+\\b"
+          "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*)?[eE][+-]?[0-9]+\\b|\\b[0-9][0-9_]*\\.[0-9][0-9_]*\\b"
         },
         {
           "name": "constant.numeric.integer.bang",
-          "match": "\\b[0-9]+\\b"
+          "match": "\\b[0-9][0-9_]*\\b"
         }
       ]
     },

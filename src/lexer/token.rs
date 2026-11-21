@@ -72,6 +72,11 @@ pub enum TokenKind {
     GtEq,    // >=
     Eq,      // =
     Arrow,   // ->
+    PlusEq,    // +=
+    MinusEq,   // -=
+    StarEq,    // *=
+    SlashEq,   // /=
+    PercentEq, // %=
 
     // === 구두점 ===
     LParen,   // (
@@ -150,6 +155,11 @@ impl fmt::Display for TokenKind {
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
             TokenKind::Arrow => write!(f, "->"),
+            TokenKind::PlusEq => write!(f, "+="),
+            TokenKind::MinusEq => write!(f, "-="),
+            TokenKind::StarEq => write!(f, "*="),
+            TokenKind::SlashEq => write!(f, "/="),
+            TokenKind::PercentEq => write!(f, "%="),
             TokenKind::Star => write!(f, "*"),
             TokenKind::Slash => write!(f, "/"),
             TokenKind::Percent => write!(f, "%"),

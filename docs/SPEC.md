@@ -25,15 +25,19 @@ Bang은 동적 타입 범용 프로그래밍 언어이다.
 ### 2.1 문자 집합
 
 소스 코드는 UTF-8 인코딩이다. 파일 맨 앞의 UTF-8 BOM(U+FEFF)은 무시한다.
-식별자는 ASCII 영문자·숫자·`_`로 구성된다.
+식별자는 유니코드 문자(한글 포함)·`_`로 시작하고 문자·숫자·`_`로 이어진다 (Phase 46):
+`let 이름 = "방"`, `let 점수_합 = 0`.
 
 ### 2.2 주석
 
 ```
 // 한 줄 주석 (줄 끝까지)
+/* 블록 주석
+   여러 줄 가능 (중첩 없음) */
 ```
 
-블록 주석은 지원하지 않는다.
+줄바꿈을 포함한 블록 주석은 줄바꿈 하나로 취급된다(문장 종결 규칙 유지). 닫히지 않은
+블록 주석은 렉서 에러다.
 
 ### 2.3 키워드
 
@@ -70,7 +74,7 @@ channel  send  recv  close  wait  parallel_map
 | 식별자 | ✅ |
 | `return`, `break`, `continue` | ✅ |
 | `)`, `]`, `}` | ✅ |
-| 연산자 (`+`, `-`, `*`, `/`, `%`, `=`, 비교, 논리) | ❌ (다음 줄로 계속) |
+| 연산자 (`+`, `-`, `*`, `/`, `%`, `=`, `+=` 등 복합 대입, 비교, 논리) | ❌ (다음 줄로 계속) |
 | `(`, `[`, `{`, `,`, `:`, `.` | ❌ |
 | `let`, `fn`, `if`, `else`, `while`, `for`, `in`, `spawn`, `parallel` | ❌ |
 
@@ -85,11 +89,14 @@ Bang은 동적 타입 언어이다. 변수에 타입 선언이 없고,
 
 | 타입 | 설명 | 리터럴 예시 |
 |------|------|-------------|
-| `int` | 64비트 정수 (오버플로 시 런타임 에러 — 아래 참고) | `42`, `0`, `-7` |
-| `float` | 64비트 부동소수점 | `3.14`, `0.5` |
+| `int` | 64비트 정수 (오버플로 시 런타임 에러 — 아래 참고) | `42`, `-7`, `1_000_000`, `0xff`, `0b1010`, `0o17` |
+| `float` | 64비트 부동소수점 | `3.14`, `0.5`, `1e3`, `2.5e-3` |
 | `bool` | 불리언 | `true`, `false` |
-| `string` | 불변 문자열 | `"hello"`, `"a\nb"` |
+| `string` | 불변 문자열 | `"hello"`, `"a\nb"`, `"""여러 줄"""` |
 | `nil` | 값 없음 | `nil` |
+
+**숫자 리터럴** (Phase 46): `_`는 숫자 사이 구분자(`1_000`), 진법 접두사 `0x`/`0b`/`0o`,
+지수 `e`/`E`(부호 허용, 결과는 float). 숫자 바로 뒤에 문자가 붙으면(`12abc`, `1_`) 렉서 에러.
 
 **정수 오버플로**: `int` 연산(`+ - * / %`, 단항 `-`, `abs`, `sum`, `gcd` 등)의 결과가
 64비트 범위를 벗어나면 **try/catch로 잡을 수 있는 런타임 에러**를 낸다
@@ -140,7 +147,7 @@ if_stmt        = "if" expression block
                  { "else" "if" expression block }
                  [ "else" block ] ;
 while_stmt     = "while" expression block ;
-for_stmt       = "for" IDENT "in" expression block ;
+for_stmt       = "for" IDENT { "," IDENT } "in" expression block ;
 return_stmt    = "return" [ expression ] NL ;
 break_stmt     = "break" NL ;
 continue_stmt  = "continue" NL ;
@@ -151,12 +158,13 @@ params         = IDENT { "," IDENT } ;
 
 (* === 식(Expression) — 우선순위 낮은 순 === *)
 expression     = assignment ;
-assignment     = IDENT "=" assignment
+assignment     = target ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) assignment
                | logic_or ;
+target         = IDENT { "[" expression "]" | "." IDENT } ;
 logic_or       = logic_and { "or" logic_and } ;
 logic_and      = equality { "and" equality } ;
 equality       = comparison { ( "==" | "!=" ) comparison } ;
-comparison     = addition { ( "<" | "<=" | ">" | ">=" ) addition } ;
+comparison     = addition { ( "<" | "<=" | ">" | ">=" | "in" | "not" "in" ) addition } ;
 addition       = multiplication { ( "+" | "-" ) multiplication } ;
 multiplication = unary { ( "*" | "/" | "%" ) unary } ;
 unary          = ( "not" | "-" ) unary
@@ -164,6 +172,7 @@ unary          = ( "not" | "-" ) unary
 postfix        = primary { call_or_index } ;
 call_or_index  = "(" [ arguments ] ")"    (* 함수 호출 *)
                | "[" expression "]"        (* 인덱싱 *)
+               | "[" [ expression ] ":" [ expression ] "]"  (* 슬라이스 *)
                | "." IDENT ;              (* 멤버 접근 *)
 
 primary        = INT_LIT | FLOAT_LIT | STRING_LIT
@@ -187,10 +196,10 @@ arguments      = expression { "," expression } ;
 
 (* === 토큰 === *)
 NL             = <자동 삽입 줄바꿈> ;
-IDENT          = ( letter | "_" ) { letter | digit | "_" } ;
-INT_LIT        = digit { digit } ;
-FLOAT_LIT      = digit { digit } "." digit { digit } ;
-STRING_LIT     = '"' { char | escape } '"' ;
+IDENT          = ( unicode_letter | "_" ) { unicode_letter | digit | "_" } ;
+INT_LIT        = digits | "0" ( "x" | "b" | "o" ) radix_digits ;   (* 숫자 사이 "_" 허용 *)
+FLOAT_LIT      = digits [ "." digits ] [ ( "e" | "E" ) [ "+" | "-" ] digits ] ;  (* "." 또는 지수 필수 *)
+STRING_LIT     = '"' { char | escape } '"' | '"""' { char | NL | escape } '"""' ;
 escape         = "\\" ( "n" | "t" | "\\" | '"' ) ;
 ```
 
@@ -204,6 +213,11 @@ map["key"] = v   // 맵 키 대입
 ```
 
 > **주의**: `let`은 선언, `=`은 재대입. 선언되지 않은 변수에 `=`은 에러.
+
+**복합 대입** (Phase 46): `x += e`는 `x = x + e`와 같다 (`-=`, `*=`, `/=`, `%=`도 같은 방식).
+대상이 경로(`m[k] += 1`, `cfg.n *= 2`)여도 되며, 이때 **경로의 키 식은 한 번만 평가**된다.
+경로의 마지막 키가 맵에 없으면 에러(`복합 대입: 맵에 키 'k' 없음`) — 카운터는
+`m[k] = get(m, k, 0) + 1`로 쓴다. 값은 값 의미론 그대로다(`xs += [v]`는 xs만 바꾼다).
 
 **중첩 경로 대입** (Phase 45): 대입 대상은 변수에서 시작하는 인덱스·필드 경로일 수 있다.
 
@@ -234,11 +248,25 @@ cfg.db.port = 5432 // 맵 필드 경로
 | 2 | `or` | 좌→우 | 논리합 (단락 평가) |
 | 3 | `and` | 좌→우 | 논리곱 (단락 평가) |
 | 4 | `==`  `!=` | 좌→우 | 동등 비교 |
-| 5 | `<`  `<=`  `>`  `>=` | 좌→우 | 순서 비교 |
+| 5 | `<`  `<=`  `>`  `>=`  `in`  `not in` | 좌→우 | 순서 비교, 포함 검사 |
 | 6 | `+`  `-` | 좌→우 | 덧셈, 뺄셈, 문자열 연결 |
 | 7 | `*`  `/`  `%` | 좌→우 | 곱셈, 나눗셈, 나머지 |
 | 8 | `-` (단항)  `not` | 우→좌 | 산술 부정, 논리 부정 |
-| 9 (최고) | `()`  `[]`  `.` | 좌→우 | 호출, 인덱싱, 멤버 |
+| 9 (최고) | `()`  `[]`  `[:]`  `.` | 좌→우 | 호출, 인덱싱, 슬라이스, 멤버 |
+
+**`in` / `not in`** (Phase 46): `x in c`는 c가 리스트면 원소 중 `==`인 것이 있는지, 맵이면 키,
+문자열이면 부분 문자열, bytes면 바이트 값(Int) 또는 부분열(bytes)을 검사한다. 그 밖의 조합은 에러.
+주의: 단항 `not`은 비교보다 우선순위가 높다 — `not x in xs`는 `(not x) in xs`이므로
+**`x not in xs`**를 쓴다.
+
+**슬라이스** (Phase 46): `t[s:e]`는 list/str/bytes의 부분을 새 값으로 만든다. 경계를 생략하면
+처음/끝, 음수는 끝에서부터(`a[-2:]` = 마지막 2개), 범위 밖은 잘라 맞춘다(Python과 같음, step 없음).
+경계가 Int가 아니면 에러. (`slice(t, s, e)` 빌트인은 음수를 0으로 자르는 기존 동작을 유지한다.)
+
+**for-in 순회 대상** (Phase 46): list(원소), map(키 — 정렬 순서), str(문자), bytes(0~255 정수),
+channel(닫힐 때까지 수신). 변수가 둘 이상이면(`for k, v in m`) 원소를 분해한다: 맵은 `[키, 값]`
+쌍으로 순회하고, 그 외에는 각 원소가 같은 길이의 리스트여야 한다(`for i, x in enumerate(xs)`).
+길이가 다르면 에러(`분해: 값 2개 기대, 3개 발견`).
 
 ---
 
@@ -379,6 +407,9 @@ let results = parallel_map(items, fn(item) {
 | `\0` | 널 문자 |
 | `\\` | 역슬래시 |
 | `\"` | 큰따옴표 |
+
+**여러 줄 문자열** (Phase 46): `"""..."""`는 줄바꿈을 그대로 담는다. 이스케이프는 같게 처리되고,
+안에 `"`를 그대로 쓸 수 있다. 여는 `"""` 바로 뒤의 줄바꿈도 내용에 포함된다(Python과 같음).
 
 ---
 
@@ -533,7 +564,9 @@ if r.code != 0 {
 | `a + b` | 연결한 새 `bytes` |
 | `a == b` | 내용 비교 |
 | `b[i] = v` | **에러** — 불변. `slice`와 `+`로 새 값을 만든다 |
-| `for x in b` | 지원하지 않음 — `for i in range(len(b))` 사용 |
+| `for x in b` | 각 바이트를 `0..255` 정수로 순회 (Phase 46) |
+| `b[s:e]` | 슬라이스 — 새 `bytes` |
+| `x in b` | 바이트 값(Int) 또는 부분열(bytes) 포함 여부 |
 
 | 빌트인 | 설명 |
 |---|---|

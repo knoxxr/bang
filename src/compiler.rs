@@ -65,12 +65,21 @@ pub const OP_SETUP_TRY:       u8 = 75; // operand: u16 절대 catch ip
 pub const OP_POP_TRY:         u8 = 76; // try 본문 정상 종료 시 핸들러 제거
 pub const OP_THROW:           u8 = 77; // 스택 top 값을 예외로 던짐
 pub const OP_CHECK_TYPE:      u8 = 78; // operand: u8 타입 태그. 스택 top 타입 검증(peek)
-/// 경로 대입 `v[k1][k2].f = val` (Phase 45). operand: u16 slot, u8 kind(0=local,1=upval,2=global), u8 depth.
+/// 경로 대입 `v[k1][k2].f = val` (Phase 45). operand: u16 slot, u8 kind(0=local,1=upval,2=global), u8 depth,
+/// u8 binop(0=단순 대입, 그 외 OP_ADD..OP_MOD = 복합 대입 `v[k] op= val`, Phase 46).
 /// 스택: [root 복사본, k1..kN, val] → [val]. 변수 슬롯을 제자리 변경해 COW 복사를 피한다.
 pub const OP_SET_PATH:        u8 = 79;
 /// 갱신 대입 `x = push(x, e)` / `x = x + e` (Phase 45). operand: u16 slot, u8 kind, u8 op(0=push,1=add).
 /// 스택: [x 복사본, e] → [새 x]. 슬롯이 같은 값이면 제자리 변경.
 pub const OP_UPDATE_VAR:      u8 = 80;
+/// 슬라이스 `t[s:e]` (Phase 46). 스택: [t, s|nil, e|nil] → [부분]. 음수는 끝에서부터, 범위는 잘라냄.
+pub const OP_SLICE:           u8 = 81;
+/// `for a, b in x` 용 반복자 (Phase 46): 맵은 [키, 값] 쌍, 그 외는 OP_MAKE_ITER와 같다.
+pub const OP_MAKE_ITER_PAIRS: u8 = 82;
+/// 포함 검사 `x in c` (Phase 46). 스택: [x, c] → [bool].
+pub const OP_IN:              u8 = 83;
+/// 분해 (Phase 46). operand: u8 n. 스택: [list(길이 n)] → [e0, .., e(n-1)].
+pub const OP_UNPACK:          u8 = 84;
 
 // ============================================================================
 // Compile error
@@ -477,13 +486,22 @@ impl Compiler {
                 }
             }
 
-            StmtKind::For { var, iter, body } => {
+            StmtKind::For { vars, iter, body } => {
                 self.compile_expr(iter);
-                self.emit(OP_MAKE_ITER, sp);
+                self.emit(if vars.len() > 1 { OP_MAKE_ITER_PAIRS } else { OP_MAKE_ITER }, sp);
 
-                // Declare loop variable as local
+                // Declare loop variable(s) as local. 여러 개면 원소를 숨은 슬롯에 받아 분해한다.
                 self.cur_mut().begin_scope();
-                let var_slot = self.cur_mut().declare_local(var);
+                let var_slot = if vars.len() == 1 {
+                    self.cur_mut().declare_local(&vars[0])
+                } else {
+                    self.cur_mut().declare_local(" for-item")
+                };
+                let var_slots: Vec<u8> = if vars.len() > 1 {
+                    vars.iter().map(|v| self.cur_mut().declare_local(v)).collect()
+                } else {
+                    Vec::new()
+                };
 
                 let loop_start = self.current_pos();
                 let td = self.cur().try_depth;
@@ -501,6 +519,14 @@ impl Compiler {
                 let done_patch = self.cur_mut().chunk.code.len();
                 self.cur_mut().chunk.emit(0xff, sp);
                 self.cur_mut().chunk.emit(0xff, sp);
+
+                if !var_slots.is_empty() {
+                    self.emit_u8(OP_LOAD_LOCAL, var_slot, sp);
+                    self.emit_u8(OP_UNPACK, var_slots.len() as u8, sp);
+                    for &slot in var_slots.iter().rev() {
+                        self.emit_u8(OP_STORE_LOCAL, slot, sp);
+                    }
+                }
 
                 self.cur_mut().begin_scope();
                 self.compile_stmts(&body.stmts);
@@ -697,6 +723,11 @@ impl Compiler {
                             BinaryOp::Eq  => OP_EQ,  BinaryOp::Ne  => OP_NE,
                             BinaryOp::Lt  => OP_LT,  BinaryOp::Le  => OP_LE,
                             BinaryOp::Gt  => OP_GT,  BinaryOp::Ge  => OP_GE,
+                            BinaryOp::In => OP_IN,
+                            BinaryOp::NotIn => {
+                                self.emit(OP_IN, sp);
+                                OP_NOT
+                            }
                             BinaryOp::And | BinaryOp::Or => unreachable!(),
                         };
                         self.emit(op_byte, sp);
@@ -754,6 +785,21 @@ impl Compiler {
             ExprKind::Assign { target, value } => {
                 self.compile_assign(target, value, sp);
             }
+
+            ExprKind::CompoundAssign { op, target, value } => {
+                self.compile_compound_assign(*op, target, value, sp);
+            }
+
+            ExprKind::Slice { target, start, end } => {
+                self.compile_expr(target);
+                for b in [start, end] {
+                    match b {
+                        Some(e) => self.compile_expr(e),
+                        None => { self.emit(OP_NIL, sp); }
+                    }
+                }
+                self.emit(OP_SLICE, sp);
+            }
         }
     }
 
@@ -777,6 +823,78 @@ impl Compiler {
             }
             _ => None,
         }
+    }
+
+    /// `x op= e` → `x = x op e` (변수: 갱신 패턴 재사용), 경로는 OP_SET_PATH의 binop로 (키 1회 평가).
+    fn compile_compound_assign(&mut self, op: BinaryOp, target: &Expr, value: &Expr, sp: Span) {
+        let op_byte = match op {
+            BinaryOp::Add => OP_ADD, BinaryOp::Sub => OP_SUB, BinaryOp::Mul => OP_MUL,
+            BinaryOp::Div => OP_DIV, BinaryOp::Mod => OP_MOD,
+            _ => {
+                self.error("지원하지 않는 복합 대입 연산자", sp);
+                self.emit(OP_NIL, sp);
+                return;
+            }
+        };
+        match &target.kind {
+            ExprKind::Ident(_) => {
+                let desugared = Expr {
+                    kind: ExprKind::Binary {
+                        op,
+                        left: Box::new(target.clone()),
+                        right: Box::new(value.clone()),
+                    },
+                    span: value.span,
+                };
+                self.compile_assign(target, &desugared, sp);
+            }
+            ExprKind::Index { .. } | ExprKind::Field { .. } => {
+                self.compile_path_assign(target, value, op_byte, sp);
+            }
+            _ => {
+                self.error("유효하지 않은 대입 대상", sp);
+                self.emit(OP_NIL, sp);
+            }
+        }
+    }
+
+    /// 경로 대입: 루트는 반드시 변수. v[a][b].c = val (binop≠0이면 v[a][b].c op= val)
+    fn compile_path_assign(&mut self, target: &Expr, value: &Expr, binop: u8, sp: Span) {
+        let mut keys: Vec<PathKey> = Vec::new();
+        let root = match collect_assign_path(target, &mut keys) {
+            Some(r) => r.to_string(),
+            None => {
+                self.error("대입 대상은 변수에서 시작해야 합니다 (예: v[i], v.f, v[i][j])", sp);
+                self.emit(OP_NIL, sp);
+                return;
+            }
+        };
+        let loc = self.resolve_name(&root);
+        let Some((kind, slot)) = var_operand(&loc) else {
+            self.error(format!("정의되지 않은 변수: '{root}'"), sp);
+            self.emit(OP_NIL, sp);
+            return;
+        };
+        if keys.len() > u8::MAX as usize {
+            self.error("대입 경로가 너무 깊습니다", sp);
+            self.emit(OP_NIL, sp);
+            return;
+        }
+        self.emit_load(loc, sp);
+        for key in &keys {
+            match key {
+                PathKey::Expr(e) => self.compile_expr(e),
+                PathKey::Name(n) => {
+                    let idx = self.add_const(VmValue::Str(n.to_string()));
+                    self.emit_u16(OP_CONST, idx, sp);
+                }
+            }
+        }
+        self.compile_expr(value);
+        self.emit_u16(OP_SET_PATH, slot, sp);
+        self.emit(kind, sp);
+        self.emit(keys.len() as u8, sp);
+        self.emit(binop, sp);
     }
 
     fn compile_assign(&mut self, target: &Expr, value: &Expr, sp: Span) {
@@ -805,41 +923,7 @@ impl Compiler {
                 }
             }
             ExprKind::Index { .. } | ExprKind::Field { .. } => {
-                // 경로 대입: 루트는 반드시 변수. v[a][b].c = val
-                let mut keys: Vec<PathKey> = Vec::new();
-                let root = match collect_assign_path(target, &mut keys) {
-                    Some(r) => r.to_string(),
-                    None => {
-                        self.error("대입 대상은 변수에서 시작해야 합니다 (예: v[i], v.f, v[i][j])", sp);
-                        self.emit(OP_NIL, sp);
-                        return;
-                    }
-                };
-                let loc = self.resolve_name(&root);
-                let Some((kind, slot)) = var_operand(&loc) else {
-                    self.error(format!("정의되지 않은 변수: '{root}'"), sp);
-                    self.emit(OP_NIL, sp);
-                    return;
-                };
-                if keys.len() > u8::MAX as usize {
-                    self.error("대입 경로가 너무 깊습니다", sp);
-                    self.emit(OP_NIL, sp);
-                    return;
-                }
-                self.emit_load(loc, sp);
-                for key in &keys {
-                    match key {
-                        PathKey::Expr(e) => self.compile_expr(e),
-                        PathKey::Name(n) => {
-                            let idx = self.add_const(VmValue::Str(n.to_string()));
-                            self.emit_u16(OP_CONST, idx, sp);
-                        }
-                    }
-                }
-                self.compile_expr(value);
-                self.emit_u16(OP_SET_PATH, slot, sp);
-                self.emit(kind, sp);
-                self.emit(keys.len() as u8, sp);
+                self.compile_path_assign(target, value, 0, sp);
             }
             _ => {
                 self.error("유효하지 않은 대입 대상", sp);

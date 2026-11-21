@@ -509,3 +509,19 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                검증: 8 × sleep(300) = 0.3s (이전 2.4s).
              (4) 렉서가 UTF-8 BOM 무시 (Phase 43 발견 결함).
              SPEC 2.1/4.2/6.5 갱신. 회귀: lexer +1, vm_test +9. (tests: 353 green, clippy 0)
+✅ Phase 46 — 문법 편의 묶음 (Python 체감 1차) — v0.32.0
+             렉서: 복합 대입 토큰(+= -= *= /= %=), /* */ 블록 주석(줄바꿈 포함 시 줄바꿈 1개로 취급,
+               미종결 에러), """여러 줄 문자열""", 숫자 1_000·0xff·0b101·0o17·1e3·2.5e-3
+               (숫자 뒤 문자 붙으면 에러), 유니코드(한글) 식별자.
+             파서/AST: ExprKind::CompoundAssign·Slice, BinaryOp::In/NotIn(비교 수준, `not in` 2토큰),
+               StmtKind::For{vars: Vec<String>} (for k, v in m).
+             컴파일러/VM: 복합 대입 — 변수는 x = x op e로 디슈가(Phase 45 갱신 경로 재사용), 경로는
+               OP_SET_PATH binop 피연산자(키 1회 평가, 마지막 맵 키 없으면 에러).
+               OP_SLICE(81, Python식 음수·잘라맞춤, step 없음) / OP_MAKE_ITER_PAIRS(82) / OP_IN(83) /
+               OP_UNPACK(84). for-in이 map(정렬 키)·str(문자)·bytes(정수)도 순회.
+             AOT: x op= e(변수)만 지원, in/슬라이스/경로 복합 대입은 명확한 에러.
+             결정: `not`의 우선순위는 그대로(단항) — `not x in xs`는 (not x) in xs. SPEC 5장에 `x not in xs`
+               사용을 명시. slice() 빌트인은 번호 계약상 기존 동작(음수→0) 유지, 문법 슬라이스만 Python식.
+             문서: SPEC 2.1/2.2/2.5/3.1/4.1/4.2/5/7/11, llms.txt(세미콜론 쓰던 잘못된 관용구도 수정),
+               VS Code 문법(블록 주석·삼중 문자열·숫자 리터럴).
+             회귀: lexer +5, vm_test +6. (tests: 364 green, clippy 0)

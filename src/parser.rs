@@ -392,12 +392,16 @@ impl Parser {
 
     fn parse_for(&mut self, span: Span) -> Option<Stmt> {
         self.advance(); // for
-        let var = self.expect_ident()?;
+        let mut vars = vec![self.expect_ident()?];
+        while matches!(self.peek(), TokenKind::Comma) {
+            self.advance(); // ,
+            vars.push(self.expect_ident()?);
+        }
         self.expect(&TokenKind::In)?;
         let iter = self.parse_expr()?;
         let body = self.parse_block()?;
         self.consume_stmt_end();
-        Some(Stmt { kind: StmtKind::For { var, iter, body }, span })
+        Some(Stmt { kind: StmtKind::For { vars, iter, body }, span })
     }
 
     fn parse_return(&mut self, span: Span) -> Option<Stmt> {
@@ -531,10 +535,30 @@ impl Parser {
                     TokenKind::LBracket => {
                         let span = lhs.span;
                         self.advance(); // [
-                        let index = self.parse_expr()?;
+                        // 슬라이스 `a[s:e]` / `a[:e]` / `a[s:]` / `a[:]` 또는 인덱스 `a[i]`
+                        let start = if matches!(self.peek(), TokenKind::Colon) {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_expr()?))
+                        };
+                        if matches!(self.peek(), TokenKind::Colon) {
+                            self.advance(); // :
+                            let end = if matches!(self.peek(), TokenKind::RBracket) {
+                                None
+                            } else {
+                                Some(Box::new(self.parse_expr()?))
+                            };
+                            self.expect(&TokenKind::RBracket)?;
+                            lhs = Expr {
+                                kind: ExprKind::Slice { target: Box::new(lhs), start, end },
+                                span,
+                            };
+                            continue;
+                        }
                         self.expect(&TokenKind::RBracket)?;
+                        let index = start?;
                         lhs = Expr {
-                            kind: ExprKind::Index { target: Box::new(lhs), index: Box::new(index) },
+                            kind: ExprKind::Index { target: Box::new(lhs), index },
                             span,
                         };
                         continue;
@@ -550,6 +574,22 @@ impl Parser {
                 }
             }
 
+            // `not in` (비교 수준 이항 연산자 — 두 토큰)
+            if matches!(self.peek(), TokenKind::Not) && matches!(self.peek_n(1), TokenKind::In) {
+                if 9 < min_bp {
+                    break;
+                }
+                self.advance(); // not
+                self.advance(); // in
+                let rhs = self.parse_expr_bp(10)?;
+                let span = lhs.span;
+                lhs = Expr {
+                    kind: ExprKind::Binary { op: BinaryOp::NotIn, left: Box::new(lhs), right: Box::new(rhs) },
+                    span,
+                };
+                continue;
+            }
+
             // 이항 연산자
             let Some((l_bp, r_bp)) = infix_bp(self.peek()) else { break };
             if l_bp < min_bp {
@@ -559,7 +599,17 @@ impl Parser {
             let op_span = self.peek_span();
             let op_tok = self.advance().kind.clone();
 
-            if op_tok == TokenKind::Eq {
+            if let Some(op) = compound_assign_op(&op_tok) {
+                // 복합 대입: x += e, v[i] -= e, m.f *= e
+                if !is_assign_target(&lhs) {
+                    self.error_at(op_span, "대입 대상은 변수·인덱스·필드만 허용됩니다");
+                }
+                let value = self.parse_expr_bp(r_bp)?;
+                lhs = Expr {
+                    kind: ExprKind::CompoundAssign { op, target: Box::new(lhs), value: Box::new(value) },
+                    span: op_span,
+                };
+            } else if op_tok == TokenKind::Eq {
                 // 대입: 좌변 유효성 검사
                 if !is_assign_target(&lhs) {
                     self.error_at(op_span, "대입 대상은 변수·인덱스·필드만 허용됩니다");
@@ -747,12 +797,14 @@ impl Parser {
 /// 이항 연산자의 (left_bp, right_bp). None 이면 이항 연산자 아님.
 fn infix_bp(tok: &TokenKind) -> Option<(u8, u8)> {
     match tok {
-        TokenKind::Eq                                    => Some((2, 1)),   // 우결합
+        TokenKind::Eq | TokenKind::PlusEq | TokenKind::MinusEq
+        | TokenKind::StarEq | TokenKind::SlashEq
+        | TokenKind::PercentEq                           => Some((2, 1)),   // 우결합
         TokenKind::Or                                    => Some((3, 4)),
         TokenKind::And                                   => Some((5, 6)),
         TokenKind::EqEq | TokenKind::BangEq              => Some((7, 8)),
         TokenKind::Lt | TokenKind::LtEq
-        | TokenKind::Gt | TokenKind::GtEq               => Some((9, 10)),
+        | TokenKind::Gt | TokenKind::GtEq | TokenKind::In => Some((9, 10)),
         TokenKind::Plus | TokenKind::Minus               => Some((11, 12)),
         TokenKind::Star | TokenKind::Slash
         | TokenKind::Percent                             => Some((13, 14)),
@@ -775,7 +827,20 @@ fn token_to_binary_op(tok: &TokenKind) -> BinaryOp {
         TokenKind::GtEq    => BinaryOp::Ge,
         TokenKind::And     => BinaryOp::And,
         TokenKind::Or      => BinaryOp::Or,
+        TokenKind::In      => BinaryOp::In,
         _ => unreachable!("token_to_binary_op: {tok:?}"),
+    }
+}
+
+/// 복합 대입 토큰 → 연산자 (`+=` → Add ...). 복합 대입이 아니면 None.
+fn compound_assign_op(tok: &TokenKind) -> Option<BinaryOp> {
+    match tok {
+        TokenKind::PlusEq    => Some(BinaryOp::Add),
+        TokenKind::MinusEq   => Some(BinaryOp::Sub),
+        TokenKind::StarEq    => Some(BinaryOp::Mul),
+        TokenKind::SlashEq   => Some(BinaryOp::Div),
+        TokenKind::PercentEq => Some(BinaryOp::Mod),
+        _ => None,
     }
 }
 
@@ -1126,7 +1191,7 @@ print(\"next\")
     fn test_for_in_loop() {
         let prog = parse("for item in list {\n  print(item)\n}");
         match &prog.stmts[0].kind {
-            StmtKind::For { var, .. } => assert_eq!(var, "item"),
+            StmtKind::For { vars, .. } => assert_eq!(vars, &vec!["item".to_string()]),
             _ => panic!("For 기대"),
         }
     }

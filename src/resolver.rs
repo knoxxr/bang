@@ -378,18 +378,22 @@ impl Resolver {
                 false
             }
 
-            StmtKind::For { var, iter, body } => {
+            StmtKind::For { vars, iter, body } => {
                 self.resolve_expr(iter);
-                // 루프 변수를 body와 같은 새 스코프에 선언
+                // 루프 변수(들)를 body와 같은 새 스코프에 선언
                 self.push_scope(FrameKind::Block);
-                let slot = self.scopes.last().map(|f| f.vars.len()).unwrap_or(0);
-                self.scopes.last_mut().unwrap().vars.push((var.clone(), VarInfo {
-                    slot,
-                    state: VarState::Defined,
-                    used: false,
-                    span: stmt.span,
-                    arity: None,
-                }));
+                for var in vars {
+                    let slot = self.scopes.last().map(|f| f.vars.len()).unwrap_or(0);
+                    if let Some(frame) = self.scopes.last_mut() {
+                        frame.vars.push((var.clone(), VarInfo {
+                            slot,
+                            state: VarState::Defined,
+                            used: false,
+                            span: stmt.span,
+                            arity: None,
+                        }));
+                    }
+                }
                 self.resolve_stmts(&body.stmts);
                 self.pop_scope(true);
                 false
@@ -522,6 +526,14 @@ impl Resolver {
                 None
             }
 
+            ExprKind::Slice { target, start, end } => {
+                self.resolve_expr(target);
+                for e in [start, end].into_iter().flatten() {
+                    self.resolve_expr(e);
+                }
+                None
+            }
+
             ExprKind::Function { name, params, body, .. } => {
                 let arity = params.len();
                 self.push_scope(FrameKind::Function);
@@ -578,6 +590,12 @@ impl Resolver {
             }
 
             ExprKind::Assign { target, value } => {
+                self.resolve_expr(value);
+                self.resolve_assign_target(target);
+                None
+            }
+
+            ExprKind::CompoundAssign { target, value, .. } => {
                 self.resolve_expr(value);
                 self.resolve_assign_target(target);
                 None

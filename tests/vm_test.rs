@@ -888,3 +888,56 @@ fn test_vm_parallel_map_order_errors_and_builtins() {
     let src = "print(parallel_map(range(1000), fn(x) { return x * 2 })[999])\nprint(parallel_map([1, 2], str))\nprint(parallel_map([], fn(x) { return x }))\ntry {\n parallel_map([1, 0, 2], fn(x) { return 10 / x })\n} catch e {\n print(e)\n}";
     assert_eq!(run_vm(src), vec!["1998", "[1, 2]", "[]", "0으로 나눌 수 없음"]);
 }
+
+// ============================================================================
+// Phase 46 — 문법 편의: 복합 대입·in·순회 확장·슬라이스·리터럴·주석·한글 식별자
+// ============================================================================
+
+#[test]
+fn test_vm_compound_assign() {
+    let src = "let x = 10\nx += 5\nx -= 1\nx *= 2\nx /= 4\nprint(x)\nlet n = 7\nn %= 4\nprint(n)\nlet s = \"a\"\ns += \"b\"\nprint(s)\nlet xs = [1]\nxs += [2]\nprint(xs)";
+    assert_eq!(run_vm(src), vec!["7", "3", "ab", "[1, 2]"]);
+}
+
+#[test]
+fn test_vm_compound_assign_path_evaluates_key_once() {
+    let src = "let calls = 0\nfn k() {\n calls += 1\n return \"a\"\n}\nlet m = {\"a\": 1, \"b\": [1, 2]}\nm[k()] += 10\nm.b[-1] *= 7\nprint(m)\nprint(calls)\ntry { m[\"zz\"] += 1 } catch e { print(e) }\nprint(m)";
+    assert_eq!(
+        run_vm(src),
+        vec!["{a: 11, b: [1, 14]}", "1", "복합 대입: 맵에 키 'zz' 없음 (get(m, k, 기본값) 사용)", "{a: 11, b: [1, 14]}"]
+    );
+}
+
+#[test]
+fn test_vm_in_operator() {
+    let src = "let m = {\"a\": 1}\nprint(2 in [1, 2])\nprint(5 not in [1, 2])\nprint(\"a\" in m)\nprint(\"z\" not in m)\nprint(\"ell\" in \"hello\")\nprint([1] in [[1], 2])\nprint(255 in bytes_from_hex(\"00ff\"))\ntry { print(1 in 5) } catch e { print(e) }";
+    assert_eq!(
+        run_vm(src),
+        vec!["true", "true", "true", "true", "true", "true", "true", "in: Int 안에서 Int 찾기 지원 안 됨"]
+    );
+}
+
+#[test]
+fn test_vm_for_over_map_str_bytes_and_pairs() {
+    let src = "for k in {\"b\": 2, \"a\": 1} { print(k) }\nfor k, v in {\"b\": 2, \"a\": 1} { print(k + str(v)) }\nfor c in \"한글\" { print(c) }\nfor x in bytes_from_hex(\"0aff\") { print(x) }\nfor i, v in enumerate([\"x\", \"y\"]) { print(str(i) + v) }\ntry {\n for p, q in [[1, 2, 3]] { print(p + q) }\n} catch e { print(e) }";
+    assert_eq!(
+        run_vm(src),
+        vec!["a", "b", "a1", "b2", "한", "글", "10", "255", "0x", "1y", "분해: 값 2개 기대, 3개 발견"]
+    );
+}
+
+#[test]
+fn test_vm_slice_syntax() {
+    let src = "let a = [0, 1, 2, 3, 4, 5]\nprint(a[1:3])\nprint(a[:2])\nprint(a[4:])\nprint(a[-2:])\nprint(a[:-4])\nprint(a[:])\nprint(a[10:20])\nprint(a[4:1])\nprint(\"héllo\"[1:3])\nprint(bytes_to_hex(bytes_from_hex(\"0102ff\")[1:]))\ntry { print(a[\"x\":]) } catch e { print(e) }";
+    assert_eq!(
+        run_vm(src),
+        vec!["[1, 2]", "[0, 1]", "[4, 5]", "[4, 5]", "[0, 1]", "[0, 1, 2, 3, 4, 5]", "[]", "[]", "él", "02ff",
+             "슬라이스 경계는 Int 또는 생략이어야 함, Str 발견"]
+    );
+}
+
+#[test]
+fn test_vm_literals_comments_unicode_idents() {
+    let src = "/* 블록\n주석 */\nlet 이름 = \"방\"\nlet 합 = 1_000 + 0xff + 0b101 + 0o17 /* 인라인 */\nprint(이름 + str(합))\nprint(1e3)\nlet s = \"\"\"a\n\"b\" \"\"\"\nprint(s)";
+    assert_eq!(run_vm(src), vec!["방1275", "1000", "a\n\"b\" "]);
+}

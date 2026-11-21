@@ -170,10 +170,12 @@ impl Checker {
                 self.infer(cond);
                 self.push_scope(); self.check_stmts(&body.stmts); self.pop_scope();
             }
-            StmtKind::For { var, iter, body } => {
+            StmtKind::For { vars, iter, body } => {
                 self.infer(iter);
                 self.push_scope();
-                self.define(var, Ty::Unknown); // 원소 타입은 알 수 없음
+                for var in vars {
+                    self.define(var, Ty::Unknown); // 원소 타입은 알 수 없음
+                }
                 self.check_stmts(&body.stmts);
                 self.pop_scope();
             }
@@ -240,7 +242,7 @@ impl Checker {
                 let r = self.infer(right);
                 use BinaryOp::*;
                 match op {
-                    Eq | Ne | Lt | Le | Gt | Ge | And | Or => Ty::Bool,
+                    Eq | Ne | Lt | Le | Gt | Ge | And | Or | In | NotIn => Ty::Bool,
                     Add => {
                         if l == Ty::Str && r == Ty::Str { Ty::Str }
                         else if l == Ty::Int && r == Ty::Int { Ty::Int }
@@ -259,6 +261,18 @@ impl Checker {
             ExprKind::Assign { target, value } => {
                 self.infer(target);
                 self.infer(value)
+            }
+            ExprKind::CompoundAssign { target, value, .. } => {
+                self.infer(target);
+                self.infer(value);
+                Ty::Unknown
+            }
+            ExprKind::Slice { target, start, end } => {
+                let t = self.infer(target);
+                for e in [start, end].into_iter().flatten() {
+                    self.infer(e);
+                }
+                if matches!(t, Ty::List | Ty::Str | Ty::Bytes) { t } else { Ty::Unknown }
             }
             ExprKind::Call { callee, args } => {
                 // 인자 타입 추론(내부 검사)
