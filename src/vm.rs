@@ -24,7 +24,7 @@ use crate::compiler::{
     OP_SPAWN, OP_PARALLEL_ENTER, OP_PARALLEL_EXIT,
     OP_SETUP_TRY, OP_POP_TRY, OP_THROW, OP_CHECK_TYPE,
     OP_SET_PATH, OP_UPDATE_VAR, OP_SLICE, OP_MAKE_ITER_PAIRS, OP_IN, OP_UNPACK,
-    OP_JUMP_IF_ARG, OP_METHOD_CALL,
+    OP_JUMP_IF_ARG, OP_METHOD_CALL, OP_FMT, OP_BUILD_STR,
 };
 use crate::ast::TypeAnn;
 use crate::lexer::token::Span;
@@ -1082,6 +1082,34 @@ impl Vm {
                     };
                     drop(guard);
                     self.stack.push(new_val);
+                }
+                OP_FMT => {
+                    let span = self.current_span();
+                    let idx = self.read_u16();
+                    let spec_src = match self.get_constant(idx) {
+                        VmValue::Str(s) => s,
+                        _ => return Err(RuntimeError::no_span("OP_FMT: non-string spec")),
+                    };
+                    let v = deep_resolve(self.stack_pop(), span)?;
+                    let spec = crate::stdlib::parse_format_spec(&spec_src).map_err(|m| {
+                        RuntimeError::new(format!("형식 '{spec_src}': {m}"), span).with_kind(crate::runtime::kind::VALUE)
+                    })?;
+                    let s = crate::stdlib::apply_format(&v, &spec).map_err(|m| {
+                        RuntimeError::new(format!("형식 '{spec_src}': {m}"), span).with_kind(crate::runtime::kind::VALUE)
+                    })?;
+                    self.stack.push(VmValue::Str(s));
+                }
+                OP_BUILD_STR => {
+                    let span = self.current_span();
+                    let n = self.read_byte() as usize;
+                    let parts = self.stack.split_off(self.stack.len() - n);
+                    let mut out = String::new();
+                    for p in parts {
+                        // 값이 필요한 지점 → Future는 (print처럼) 깊게 해소
+                        let v = deep_resolve(p, span)?;
+                        out.push_str(&v.to_string());
+                    }
+                    self.stack.push(VmValue::Str(out));
                 }
                 OP_JUMP_IF_ARG => {
                     let idx = self.read_byte() as usize;

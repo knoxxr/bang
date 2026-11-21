@@ -436,8 +436,8 @@ sleep(500)                        // 0.5초 대기 (spawn된 작업 안에서도
 
 ## 11.5 Python에서 왔다면
 
-Python 손버릇 대부분이 그대로 통한다 — 복합 대입, 슬라이스, `in`, `for k, v`, 메서드 문법,
-기본값 매개변수, if 식, 한글 이름까지:
+Python 손버릇 대부분이 그대로 통한다 — f-문자열(`f"{x:.2f}"`), 복합 대입, 슬라이스, `in`,
+`for k, v`, 메서드 문법, 기본값 매개변수, if 식, 한글 이름까지:
 
 ```bang
 let words = "the cat and the hat".split(" ")
@@ -446,7 +446,7 @@ for w in words {
     counts[w] = get(counts, w, 0) + 1
 }
 for k, v in counts {
-    print(k + ": " + str(v))
+    print(f"{k}: {v}")
 }
 
 let xs = [5, 3, 8, 1]

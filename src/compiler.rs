@@ -86,6 +86,10 @@ pub const OP_JUMP_IF_ARG:     u8 = 85;
 /// 메서드 호출 `x.f(args)` (Phase 47). operand: u16 이름 상수, u8 argc, u8 discarded(문장 위치면 1).
 /// 스택: [x, args..] → [결과]. x가 맵이고 키 f가 있으면 그 값을 호출, 아니면 빌트인 f(x, args..).
 pub const OP_METHOD_CALL:     u8 = 86;
+/// 형식 지정 (Phase 50). operand: u16 형식 문자열 상수. 스택 top 값 → 형식화된 Str.
+pub const OP_FMT:             u8 = 87;
+/// 문자열 조립 (Phase 50). operand: u8 n. 스택의 n개 값을 표시 형식(str())으로 이어 붙인 Str.
+pub const OP_BUILD_STR:       u8 = 88;
 
 // ============================================================================
 // Compile error
@@ -793,6 +797,36 @@ impl Compiler {
                 self.emit_u8(OP_CALL, argc, sp);
             }
 
+            ExprKind::FString(parts) => {
+                // 조각을 차례로 스택에 쌓고 OP_BUILD_STR로 한 번에 이어 붙인다 (255개씩 묶음)
+                let mut pending = 0u8;
+                let mut have_acc = false;
+                for p in parts {
+                    match p {
+                        FStringPart::Lit(s) => {
+                            let idx = self.add_const(VmValue::Str(s.clone()));
+                            self.emit_u16(OP_CONST, idx, sp);
+                        }
+                        FStringPart::Expr(e, spec) => {
+                            self.compile_expr(e);
+                            if let Some(spec) = spec {
+                                let idx = self.add_const(VmValue::Str(spec.clone()));
+                                self.emit_u16(OP_FMT, idx, sp);
+                            }
+                        }
+                    }
+                    pending += 1;
+                    if pending == 254 {
+                        self.emit_u8(OP_BUILD_STR, pending + have_acc as u8, sp);
+                        have_acc = true;
+                        pending = 0;
+                    }
+                }
+                if pending > 0 || !have_acc {
+                    self.emit_u8(OP_BUILD_STR, pending + have_acc as u8, sp);
+                }
+            }
+
             ExprKind::IfExpr { cond, then, else_ } => {
                 self.compile_expr(cond);
                 let else_jump = self.emit_jump(OP_JUMP_FALSE, sp);
@@ -822,8 +856,15 @@ impl Compiler {
             ExprKind::Spawn(inner) => {
                 // Part B: 진짜 spawn — OS 스레드로 실행
                 // 메서드 호출(spawn x.f())은 아래 thunk 경로로 (OP_SPAWN은 클로저 callee만 받음)
-                let is_method = matches!(&inner.kind, ExprKind::Call { callee, .. }
-                    if matches!(&callee.kind, ExprKind::Field { name, .. } if builtin_index(name).is_some()));
+                // 빌트인 직접 호출(spawn len(x))도 thunk 경로로 — OP_SPAWN은 클로저만 받는다
+                let is_method = match &inner.kind {
+                    ExprKind::Call { callee, .. } => match &callee.kind {
+                        ExprKind::Field { name, .. } => builtin_index(name).is_some(),
+                        ExprKind::Ident(name) => matches!(self.resolve_name(name), VarLocation::Builtin(_)),
+                        _ => false,
+                    },
+                    _ => false,
+                };
                 if let (ExprKind::Call { callee, args }, false) = (&inner.kind, is_method) {
                     // spawn foo(a, b) → callee + args + OP_SPAWN(argc)
                     self.compile_expr(callee);

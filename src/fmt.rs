@@ -104,9 +104,34 @@ fn scan_line(line: &str, start: Mode) -> LineScan {
                             continue;
                         }
                         // 한 줄 문자열: 닫는 따옴표까지 건너뜀
+                        let is_f = i > 0 && chars[i - 1] == 'f'
+                            && (i < 2 || !(chars[i - 2].is_alphanumeric() || chars[i - 2] == '_'));
                         last = "\"".into();
                         in_word = false;
                         i += 1;
+                        if is_f {
+                            // f-문자열: {식} 안의 문자열("...")은 바깥 문자열을 닫지 않는다
+                            let mut depth = 0usize;
+                            while i < chars.len() {
+                                match chars[i] {
+                                    '\\' => i += 2,
+                                    '{' if depth == 0 && chars.get(i + 1) == Some(&'{') => i += 2,
+                                    '}' if depth == 0 && chars.get(i + 1) == Some(&'}') => i += 2,
+                                    '{' => { depth += 1; i += 1; }
+                                    '}' => { depth = depth.saturating_sub(1); i += 1; }
+                                    '"' if depth > 0 => {
+                                        i += 1;
+                                        while i < chars.len() && chars[i] != '"' {
+                                            i += if chars[i] == '\\' { 2 } else { 1 };
+                                        }
+                                        i += 1;
+                                    }
+                                    '"' => { i += 1; break; }
+                                    _ => i += 1,
+                                }
+                            }
+                            continue;
+                        }
                         while i < chars.len() {
                             match chars[i] {
                                 '\\' => i += 2,
@@ -215,8 +240,25 @@ pub fn reindent(source: &str) -> String {
 }
 
 /// 소스 → 토큰 종류열 (비교용). 렉싱 실패면 None.
+/// f-문자열 조각의 위치(줄·열)는 들여쓰기에 따라 바뀌는 게 정상이므로 비교에서 지운다.
 fn token_kinds(source: &str) -> Option<Vec<TokenKind>> {
-    Lexer::new(source).tokenize().ok().map(|ts| ts.into_iter().map(|t| t.kind).collect())
+    use crate::lexer::token::FStrPart;
+    Lexer::new(source).tokenize().ok().map(|ts| {
+        ts.into_iter()
+            .map(|t| match t.kind {
+                TokenKind::FStr(parts) => TokenKind::FStr(
+                    parts
+                        .into_iter()
+                        .map(|p| match p {
+                            FStrPart::Expr { src, spec, .. } => FStrPart::Expr { src, spec, line: 0, col: 0 },
+                            lit => lit,
+                        })
+                        .collect(),
+                ),
+                k => k,
+            })
+            .collect()
+    })
 }
 
 /// 포맷 결과. 소스가 렉싱되지 않거나 포맷이 토큰열을 바꾸면 에러(쓰지 말 것).
@@ -275,6 +317,13 @@ mod tests {
         // 맵 항목 끝의 콤마는 연속으로 보지 않는다
         let m = "let m = {\n    \"a\": 1,\n    \"b\": 2\n}\n";
         assert_eq!(format_source(m).unwrap(), m);
+    }
+
+    #[test]
+    fn fstrings_with_nested_quotes() {
+        let src = "fn f() {\nprint(f\"{m[\"k\"]} {{ ( \")\nreturn 1\n}\n";
+        let want = "fn f() {\n    print(f\"{m[\"k\"]} {{ ( \")\n    return 1\n}\n";
+        assert_eq!(format_source(src).unwrap(), want);
     }
 
     #[test]

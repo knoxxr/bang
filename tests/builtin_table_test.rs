@@ -133,6 +133,7 @@ const GOLDEN: &[(usize, &str, Option<usize>)] = &[
     (121, "file_read_bytes", Some(1)),
     (122, "tcp_read_bytes", Some(1)),
     (123, "assert_eq", Some(2)),
+    (124, "format", None),
 ];
 
 #[test]

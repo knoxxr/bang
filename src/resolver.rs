@@ -557,6 +557,15 @@ impl Resolver {
                 None
             }
 
+            ExprKind::FString(parts) => {
+                for p in parts {
+                    if let crate::ast::FStringPart::Expr(e, _) = p {
+                        self.resolve_expr(e);
+                    }
+                }
+                None
+            }
+
             ExprKind::IfExpr { cond, then, else_ } => {
                 self.resolve_expr(cond);
                 self.resolve_block(then);

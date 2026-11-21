@@ -60,3 +60,4 @@ print(file_read_bytes("b.bin"))
 // 단언
 assert_eq([1, {"a": "x"}], [1, {"a": "x"}])
 try { assert_eq("1", 1) } catch e { print(e.message) }
+print(format("{:>6.2f}|{:,}|{}", 3.14159, 1234567, [1]))

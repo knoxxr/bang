@@ -535,6 +535,11 @@ impl Transpiler {
                 "BNIL".into()
             }
 
+            ExprKind::FString(_) => {
+                self.err("AOT: f-문자열 미지원 (+ 와 str() 사용)", sp);
+                "BNIL".into()
+            }
+
             ExprKind::IfExpr { .. } => {
                 self.err("AOT: if 식 미지원 (if 문 사용)", sp);
                 "BNIL".into()

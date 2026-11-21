@@ -273,6 +273,14 @@ impl Checker {
                 self.infer(value);
                 Ty::Unknown
             }
+            ExprKind::FString(parts) => {
+                for p in parts {
+                    if let FStringPart::Expr(e, _) = p {
+                        self.infer(e);
+                    }
+                }
+                Ty::Str
+            }
             ExprKind::IfExpr { cond, then, else_ } => {
                 self.infer(cond);
                 self.push_scope(); self.check_stmts(&then.stmts); self.pop_scope();

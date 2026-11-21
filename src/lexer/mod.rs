@@ -6,7 +6,7 @@
 
 pub mod token;
 
-use token::{Span, Token, TokenKind};
+use token::{FStrPart, Span, Token, TokenKind};
 
 use std::fmt;
 
@@ -21,6 +21,8 @@ pub enum LexErrorKind {
     InvalidEscape(char),
     InvalidNumber(String),
     UnterminatedComment,
+    /// f-문자열 안의 `{ }` 짝이 맞지 않거나 식이 비었음
+    BadFString(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +40,7 @@ impl fmt::Display for LexError {
             LexErrorKind::InvalidEscape(c) => format!("잘못된 이스케이프 시퀀스: '\\{c}'"),
             LexErrorKind::InvalidNumber(s) => format!("잘못된 숫자 리터럴: '{s}'"),
             LexErrorKind::UnterminatedComment => "종료되지 않은 블록 주석 ('*/' 없음)".to_string(),
+            LexErrorKind::BadFString(m) => format!("f-문자열 오류: {m}"),
         };
         write!(f, "[{}:{}] 오류: {}", self.line, self.col, msg)
     }
@@ -144,6 +147,11 @@ impl Lexer {
             let result = match self.peek() {
                 '0'..='9' => self.scan_number(),
                 '"' => self.scan_string(),
+                // f-문자열: f"..." / f"""...""" (Phase 50)
+                'f' if self.peek_next() == '"' => {
+                    self.advance(); // f
+                    self.scan_fstring()
+                }
                 // 식별자: 유니코드 문자(한글 포함)·'_'로 시작 (Phase 46)
                 c if c.is_alphabetic() || c == '_' => Ok(self.scan_identifier()),
                 _ => self.scan_punct(),
@@ -224,6 +232,7 @@ impl Lexer {
             TokenKind::Int(_)
                 | TokenKind::Float(_)
                 | TokenKind::Str(_)
+                | TokenKind::FStr(_)
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::Nil
@@ -425,6 +434,129 @@ impl Lexer {
                 _ => value.push(ch),
             }
         }
+    }
+
+    /// `f"..."` 스캔 (여는 `f`는 소비된 상태, 현재 위치는 `"`). 글자 부분은 일반 문자열과 같은
+    /// 이스케이프를 처리하고, `{{`/`}}`는 중괄호 글자, `{식[:형식]}`은 식 조각이 된다.
+    /// 식 안에서는 문자열·괄호 중첩을 추적해 `f"{m["k"]}"`, `f"{ {"a": 1}["a"] }"`도 허용한다.
+    fn scan_fstring(&mut self) -> Result<Token, LexError> {
+        let start = Span::new(self.line, self.col.saturating_sub(1));
+        let bad = |me: &Self, m: &str| me.error(LexErrorKind::BadFString(m.to_string()), start.line, start.col);
+        self.advance(); // "
+        let triple = self.peek() == '"' && self.peek_next() == '"';
+        if triple {
+            self.advance();
+            self.advance();
+        }
+        let mut parts: Vec<FStrPart> = Vec::new();
+        let mut lit = String::new();
+        loop {
+            if self.is_at_end() || (!triple && self.peek() == '\n') {
+                return Err(self.error(LexErrorKind::UnterminatedString, start.line, start.col));
+            }
+            let ch = self.advance();
+            match ch {
+                '"' if !triple => break,
+                '"' if self.peek() == '"' && self.peek_next() == '"' => {
+                    self.advance();
+                    self.advance();
+                    break;
+                }
+                '{' if self.peek() == '{' => {
+                    self.advance();
+                    lit.push('{');
+                }
+                '}' if self.peek() == '}' => {
+                    self.advance();
+                    lit.push('}');
+                }
+                '}' => return Err(bad(self, "짝 없는 '}' — 글자 중괄호는 '}}'로 쓰세요")),
+                '{' => {
+                    if !lit.is_empty() {
+                        parts.push(FStrPart::Lit(std::mem::take(&mut lit)));
+                    }
+                    let (line, col) = (self.line, self.col);
+                    let mut src = String::new();
+                    let mut spec: Option<String> = None;
+                    let mut depth = 0usize;
+                    loop {
+                        if self.is_at_end() || (!triple && self.peek() == '\n') {
+                            return Err(bad(self, "'{' 가 닫히지 않음"));
+                        }
+                        let c = self.advance();
+                        match c {
+                            '"' => {
+                                // 식 안의 문자열 리터럴: 그대로 복사
+                                src.push('"');
+                                loop {
+                                    if self.is_at_end() || self.peek() == '\n' {
+                                        return Err(bad(self, "'{' 가 닫히지 않음 (또는 식 안의 문자열이 닫히지 않음)"));
+                                    }
+                                    let d = self.advance();
+                                    src.push(d);
+                                    if d == '\\' && !self.is_at_end() {
+                                        src.push(self.advance());
+                                    } else if d == '"' {
+                                        break;
+                                    }
+                                }
+                            }
+                            '{' | '(' | '[' => {
+                                depth += 1;
+                                src.push(c);
+                            }
+                            '}' if depth == 0 => break,
+                            '}' | ')' | ']' => {
+                                depth = depth.saturating_sub(1);
+                                src.push(c);
+                            }
+                            ':' if depth == 0 => {
+                                // 형식 지정자: 닫는 '}'까지
+                                let mut sp = String::new();
+                                loop {
+                                    if self.is_at_end() || self.peek() == '\n' || self.peek() == '"' {
+                                        return Err(bad(self, "형식 지정자 뒤 '}' 없음"));
+                                    }
+                                    let d = self.advance();
+                                    if d == '}' {
+                                        break;
+                                    }
+                                    sp.push(d);
+                                }
+                                spec = Some(sp);
+                                break;
+                            }
+                            _ => src.push(c),
+                        }
+                    }
+                    if src.trim().is_empty() {
+                        return Err(bad(self, "빈 '{}' — 식이 필요합니다"));
+                    }
+                    parts.push(FStrPart::Expr { src, line, col, spec });
+                }
+                '\\' => {
+                    if self.is_at_end() {
+                        return Err(self.error(LexErrorKind::UnterminatedString, start.line, start.col));
+                    }
+                    let esc_span = self.span();
+                    let esc = self.advance();
+                    match esc {
+                        'n' => lit.push('\n'),
+                        't' => lit.push('\t'),
+                        'r' => lit.push('\r'),
+                        '0' => lit.push('\0'),
+                        '\\' => lit.push('\\'),
+                        '"' => lit.push('"'),
+                        _ => return Err(self.error(LexErrorKind::InvalidEscape(esc), esc_span.line, esc_span.col)),
+                    }
+                }
+                _ => lit.push(ch),
+            }
+        }
+        if !lit.is_empty() || parts.is_empty() {
+            parts.push(FStrPart::Lit(lit));
+        }
+        Ok(Token::new(TokenKind::FStr(parts), start))
     }
 
     // =========================================================================
@@ -857,6 +989,28 @@ mod tests {
             kinds_no_eof("let 이름_1 = 점수"),
             vec![TokenKind::Let, TokenKind::Ident("이름_1".into()), TokenKind::Eq, TokenKind::Ident("점수".into())]
         );
+    }
+
+    #[test]
+    fn test_fstring_tokens() {
+        let toks = kinds_no_eof("f\"a{x}b{y:.2f}{{c}}\"");
+        assert_eq!(toks.len(), 1);
+        let TokenKind::FStr(parts) = &toks[0] else { panic!("FStr 아님: {toks:?}") };
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0], FStrPart::Lit("a".into()));
+        assert!(matches!(&parts[1], FStrPart::Expr { src, spec: None, line: 1, col: 5 } if src == "x"));
+        assert_eq!(parts[2], FStrPart::Lit("b".into()));
+        assert!(matches!(&parts[3], FStrPart::Expr { src, spec: Some(sp), .. } if src == "y" && sp == ".2f"));
+        assert_eq!(parts[4], FStrPart::Lit("{c}".into()));
+        // 식 안의 문자열·중첩 괄호
+        let toks = kinds_no_eof("f\"{m[\"k\"]} { {\"a\": 1}[\"a\"] }\"");
+        let TokenKind::FStr(parts) = &toks[0] else { panic!() };
+        assert!(matches!(&parts[0], FStrPart::Expr { src, .. } if src == "m[\"k\"]"));
+        // f 다음에 따옴표가 아니면 그냥 식별자
+        assert_eq!(kinds_no_eof("f (x)")[0], TokenKind::Ident("f".into()));
+        for bad in ["f\"{\"", "f\"}\"", "f\"{}\"", "f\"{x\""] {
+            assert!(Lexer::new(bad).tokenize().is_err(), "{bad}");
+        }
     }
 
     #[test]

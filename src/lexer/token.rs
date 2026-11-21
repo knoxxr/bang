@@ -24,6 +24,15 @@ impl fmt::Display for Span {
     }
 }
 
+/// f-문자열의 한 조각 (Phase 50).
+#[derive(Debug, Clone, PartialEq)]
+pub enum FStrPart {
+    /// 이스케이프가 처리된 글자 그대로의 부분 (`{{`/`}}`는 `{`/`}`로)
+    Lit(String),
+    /// `{식[:형식]}` — 식의 소스와 그 시작 위치(원본 파일 기준), 형식 지정자
+    Expr { src: String, line: usize, col: usize, spec: Option<String> },
+}
+
 /// 토큰 종류
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
@@ -31,6 +40,8 @@ pub enum TokenKind {
     Int(i64),
     Float(f64),
     Str(String),
+    /// `f"..."` 보간 문자열 (Phase 50)
+    FStr(Vec<FStrPart>),
     True,
     False,
     Nil,
@@ -130,6 +141,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Int(n) => write!(f, "Int({n})"),
             TokenKind::Float(n) => write!(f, "Float({n})"),
             TokenKind::Str(s) => write!(f, "Str({s:?})"),
+            TokenKind::FStr(parts) => write!(f, "FStr({} parts)", parts.len()),
             TokenKind::True => write!(f, "True"),
             TokenKind::False => write!(f, "False"),
             TokenKind::Nil => write!(f, "Nil"),

@@ -217,6 +217,14 @@ impl fmt::Display for BinaryOp {
     }
 }
 
+/// f-문자열 조각.
+#[derive(Debug, Clone)]
+pub enum FStringPart {
+    Lit(String),
+    /// 식과 형식 지정자(`{x:.2f}`의 `.2f`)
+    Expr(Box<Expr>, Option<String>),
+}
+
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     // 리터럴
@@ -237,6 +245,8 @@ pub enum ExprKind {
     Call { callee: Box<Expr>, args: Vec<Expr> },
     Index { target: Box<Expr>, index: Box<Expr> },
     Field { target: Box<Expr>, name: String },
+    /// `f"..."` 보간 문자열 (Phase 50): 글자 조각과 `{식[:형식]}` 조각을 이어 붙인 문자열.
+    FString(Vec<FStringPart>),
     /// `if c { a } else { b }` 식 (Phase 47). 각 갈래의 마지막 문장(식)이 값. else 필수.
     IfExpr { cond: Box<Expr>, then: Block, else_: Block },
     /// `target[start:end]` — 생략된 경계는 None (Phase 46)
@@ -405,6 +415,18 @@ fn dump_expr(out: &mut String, expr: &Expr, depth: usize) {
         ExprKind::Field { target, name } => {
             out.push_str(&format!("{pad}Field(.{name})\n"));
             dump_expr(out, target, depth + 1);
+        }
+        ExprKind::FString(parts) => {
+            out.push_str(&format!("{pad}FString\n"));
+            for p in parts {
+                match p {
+                    FStringPart::Lit(s) => out.push_str(&format!("{pad}  lit: {s:?}\n")),
+                    FStringPart::Expr(e, spec) => {
+                        out.push_str(&format!("{pad}  expr{}:\n", spec.as_ref().map(|s| format!(" (:{s})")).unwrap_or_default()));
+                        dump_expr(out, e, depth + 2);
+                    }
+                }
+            }
         }
         ExprKind::IfExpr { cond, then, else_ } => {
             out.push_str(&format!("{pad}IfExpr\n"));

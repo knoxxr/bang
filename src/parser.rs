@@ -718,6 +718,10 @@ impl Parser {
                 self.advance();
                 Some(Expr { kind: ExprKind::Str(s), span })
             }
+            TokenKind::FStr(parts) => {
+                self.advance();
+                self.parse_fstring(parts, span)
+            }
             TokenKind::True => {
                 self.advance();
                 Some(Expr { kind: ExprKind::Bool(true), span })
@@ -803,6 +807,59 @@ impl Parser {
         self.skip_newlines();
         self.expect(&TokenKind::RBrace)?;
         Some(Expr { kind: ExprKind::Map(entries), span })
+    }
+
+    /// f-문자열 조각들 → FString 식. 각 `{식}`의 소스를 따로 렉싱·파싱하고, 토큰 위치를
+    /// 원본 파일 기준으로 옮겨 에러 위치가 정확하게 나오게 한다. 형식 지정자는 여기서 검증한다.
+    #[inline(never)]
+    fn parse_fstring(&mut self, parts: Vec<crate::lexer::token::FStrPart>, span: Span) -> Option<Expr> {
+        use crate::lexer::token::FStrPart;
+        let mut out = Vec::new();
+        for p in parts {
+            match p {
+                FStrPart::Lit(s) => out.push(FStringPart::Lit(s)),
+                FStrPart::Expr { src, line, col, spec } => {
+                    let at = Span::new(line, col);
+                    if let Some(sp) = &spec {
+                        if let Err(m) = crate::stdlib::parse_format_spec(sp) {
+                            self.error_at(at, &format!("f-문자열 형식 지정자 '{sp}': {m}"));
+                            return None;
+                        }
+                    }
+                    let mut tokens = match crate::lexer::Lexer::new(&src).tokenize() {
+                        Ok(t) => t,
+                        Err(errs) => {
+                            let m = errs.first().map(|e| e.to_string()).unwrap_or_default();
+                            self.error_at(at, &format!("f-문자열 식 오류: {m}"));
+                            return None;
+                        }
+                    };
+                    for t in tokens.iter_mut() {
+                        if t.span.line == 1 {
+                            t.span.col += col - 1;
+                        }
+                        t.span.line += line - 1;
+                    }
+                    let mut sub = Parser::new(tokens);
+                    sub.depth = self.depth;
+                    let e = sub.parse_expr();
+                    while matches!(sub.peek(), TokenKind::Newline) {
+                        sub.advance();
+                    }
+                    if !matches!(sub.peek(), TokenKind::Eof) {
+                        let s = sub.peek_span();
+                        sub.error_at(s, "f-문자열의 {} 안에는 식 하나만 쓸 수 있습니다");
+                    }
+                    let failed = !sub.errors.is_empty();
+                    self.errors.extend(sub.errors);
+                    match e {
+                        Some(e) if !failed => out.push(FStringPart::Expr(Box::new(e), spec)),
+                        _ => return None,
+                    }
+                }
+            }
+        }
+        Some(Expr { kind: ExprKind::FString(out), span })
     }
 
     /// `if c { a } else { b }` 식 (Phase 47). else-if 체인 허용, else 필수.

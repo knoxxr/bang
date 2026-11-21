@@ -26,6 +26,8 @@ mod sys;
 mod time;
 
 /// 각 분야 파일이 공통으로 쓰는 이름들.
+pub use string::{apply_format, parse_format_spec, FormatSpec};
+
 mod prelude {
     pub(crate) use crate::lexer::token::Span;
     pub(crate) use crate::runtime::{BangChannel, RuntimeError};
@@ -174,6 +176,7 @@ pub static BUILTINS: &[Builtin] = &[
     Builtin { name: "file_read_bytes", arity: Some(1), func: fs::b_file_read_bytes }, // 121
     Builtin { name: "tcp_read_bytes", arity: Some(1), func: net::b_tcp_read_bytes }, // 122
     Builtin { name: "assert_eq", arity: Some(2), func: core::b_assert_eq }, // 123
+    Builtin { name: "format", arity: None, func: string::b_format }, // 124
 ];
 
 /// 이름 → 번호.

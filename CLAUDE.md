@@ -572,3 +572,15 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              (발견·수정) examples 중 기대 출력 주석이 있는데 테스트에 빠진 6개(error_handling·type_hints·
                json_demo·regex_demo·concurrency_demo·event_loop)를 vm_test에 추가 — 전부 통과.
              문서: SPEC 8.1~8.3, README, llms.txt, TUTORIAL 8장. 회귀: vm_test +4(+예제 6). (tests: 395 green, clippy 0)
+✅ Phase 50 — f-문자열 보간 + format() 빌트인(124) (사용자 결정 1) — v0.36.0
+             렉서: f"..." / f"""...""" → TokenKind::FStr(Vec<FStrPart>) (글자 조각 + {식[:형식]} 조각, 식의
+               원본 줄·열 기록). {{ }}는 글자 중괄호, 식 안의 문자열·괄호 중첩 추적(f"{m["k"]}" 가능).
+             파서: 조각마다 하위 렉서·파서로 식 하나를 파싱, 토큰 위치를 원본 기준으로 이동(에러 위치 정확).
+               형식 지정자는 파스 시 검증. ExprKind::FString. 키워드 추가 없음(f는 따옴표가 붙을 때만 접두사).
+             VM: OP_FMT(87, 형식 지정) / OP_BUILD_STR(88, n개 이어 붙임, Future 깊게 해소).
+             형식 지정자 [[채움]정렬][0][너비][,][.정밀도][f|d|x|b|%] — stdlib::string 공유 구현(apply_format),
+               format(fmt, ...)도 같은 규칙({} / {:형식}, 인자 수 불일치 = argument 에러).
+             (버그) spawn len(x)처럼 빌트인을 직접 spawn하면 "클로저 필요" 에러 → thunk 경로로 수정.
+             fmt: f-문자열 안 따옴표 인식, 토큰 비교 시 f-문자열 조각 위치는 무시(들여쓰기로 바뀌는 게 정상).
+             문서: SPEC 7장, llms.txt(124개), README, TUTORIAL 11.5, VS Code(f-문자열 하이라이팅·빌트인 목록).
+             회귀: lexer +1, fmt +1, vm_test +4, 스냅샷 +1줄. (tests: 401 green, clippy 0)

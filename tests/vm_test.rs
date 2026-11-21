@@ -1077,3 +1077,52 @@ fn test_vm_rethrown_builtin_error_keeps_original() {
     assert!(err.message.contains("인덱스 범위 초과"), "{}", err.message);
     assert_eq!((err.span.line, err.span.col), (3, 10));
 }
+
+// ============================================================================
+// Phase 50 — f-문자열 + format()
+// ============================================================================
+
+#[test]
+fn test_vm_fstring_basic_and_nested() {
+    let src = "let name = \"방\"\nlet n = 3\nlet m = {\"k\": [10, 20]}\nprint(f\"안녕, {name}! {n}개 — {n * 2}\")\nprint(f\"{m[\"k\"][1]} {m.k[0] + 1} { {\"a\": 1}[\"a\"] }\")\nprint(f\"중괄호 {{그대로}} {len([1, 2])}\")\nprint(f\"{[1, 2]} {nil} {true} {name.upper()}\")\nlet fut = spawn len(\"abcd\")\nprint(f\"미래 {fut}\")\nprint(f\"\")";
+    assert_eq!(run_vm(src), vec!["안녕, 방! 3개 — 6", "20 11 1", "중괄호 {그대로} 2", "[1, 2] nil true 방", "미래 4", ""]);
+}
+
+#[test]
+fn test_vm_fstring_format_specs() {
+    let src = "let name = \"방\"\nprint(f\"{3.14159:.2f} / {1234567:,} / {0.256:.1%} / {1234.5:,.1f}\")\nprint(f\"[{name:>5}] [{name:<5}] [{name:^5}] [{42:05d}] [{-42:05}] [{255:x}] [{5:b}] [{7:*>3}]\")\nprint(f\"{\"abcdef\":.3} {2:.1f}\")\ntry { print(f\"{name:.2d}\") } catch e { print(e.kind, e.message) }";
+    assert_eq!(
+        run_vm(src),
+        vec![
+            "3.14 / 1,234,567 / 25.6% / 1,234.5",
+            "[    방] [방    ] [  방  ] [00042] [-0042] [ff] [101] [**7]",
+            "abc 2.0",
+            "value 형식 '.2d': 'd' 형식은 Int 필요, Str 발견",
+        ]
+    );
+}
+
+#[test]
+fn test_vm_fstring_errors_have_positions() {
+    for (src, want) in [
+        ("print(f\"{1 2}\")", "식 하나만"),
+        ("print(f\"{x:zz}\")", "알 수 없는 종류"),
+        ("let a = 1\nprint(f\"ok {a +}\")", "f-문자열"),
+    ] {
+        let tokens = Lexer::new(src).tokenize();
+        let msg = match tokens {
+            Err(e) => e[0].to_string(),
+            Ok(t) => match Parser::new(t).parse() {
+                Err(e) => e[0].to_string(),
+                Ok(_) => panic!("{src}: 에러여야 함"),
+            },
+        };
+        assert!(msg.contains(want) || msg.contains("파스 오류"), "{src}: {msg}");
+    }
+}
+
+#[test]
+fn test_vm_format_builtin() {
+    let src = "print(format(\"{} + {} = {:.1f}\", 1, 2, 3))\nprint(format(\"{:*^9}\", \"가운데\"))\nprint(format(\"{{}} 없음\"))\ntry { format(\"{} {}\", 1) } catch e { print(e.kind) }\ntry { format(\"{}\", 1, 2) } catch e { print(e.kind) }\ntry { format(\"{x}\", 1) } catch e { print(e.kind) }";
+    assert_eq!(run_vm(src), vec!["1 + 2 = 3.0", "***가운데***", "{} 없음", "argument", "argument", "value"]);
+}
