@@ -726,3 +726,21 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                (unreachable!() 2곳도 함께 제거)
              VM↔AOT 동치 테스트 확장: 36개 프로그램(에러 13개)으로 stdout·종료 코드·에러 출력 블록까지 비교 — 전부 일치.
              문서: SPEC 1장(AOT 동치 범위)·3.1(산술의 타입). 회귀: vm_test +2, transpile 동치 +13. (tests: 438 green, clippy 0)
+✅ Phase 62 — 위키 매뉴얼 작성 중 발견한 결함 6건 수정 — v0.47.0  [동작 바뀜: input EOF·args·import 기준]
+             (매뉴얼) wiki/ 한국어 14페이지 + verify_wiki.py(예제 77블록 실행·출력 비교 + 내부 링크 검사) + publish.sh.
+             (1) 스크립트 인자: bang app.bang a b가 마지막 인자를 파일로 오인 → 경로 뒤 인자는 스크립트의 것.
+               args()는 Python sys.argv 모양 [스크립트, 인자...] (이전: 프로세스 argv 전체). REPL·bang test는 [].
+               stdlib::set_script_args(OnceLock) — CLI가 실행 전 1회 설정.
+             (2) 타입 표기 fn·nil이 키워드라 파스 오류 → parse_type이 Fn/Nil 토큰을 타입으로 받음.
+             (3) import 상대 경로가 현재 디렉터리 기준 → import를 쓴 파일의 디렉터리 기준(CompiledFn.src_dir,
+               compile_main(메인: 표시용 file은 None 유지)·compile_with_file(모듈)). 바레 이름은 기준/name.bang →
+               기준에서 위로 올라가며 bang_modules/ (Node식 — 패키지 안에서 프로젝트 의존성 import 가능) → BANG_PATH.
+               REPL·stdin은 현재 디렉터리. SPEC 16장 신설.
+             (4) bang add가 bang.toml을 [dependencies]만으로 다시 써 [package] 삭제 → pkg::update_manifest(섹션만 교체).
+             (5) 작업·콜백을 건넌 throw 값이 {kind: error, message: "잡히지 않은 예외: …"} 맵으로 바뀜 → RuntimeError.thrown에
+               원래 값을 실어 바깥 catch에 그대로 전달(spawn·parallel_map·함수 조인·map 등 콜백). derived Future는
+               에러의 thrown 값도 Isolator로 격리(작업 간 공유 금지). 잡히지 않으면 메시지는 이전과 같음.
+             (6) input()이 EOF에서도 "" → nil (빈 줄과 구별, Ruby gets와 같음).
+             (문서 오류 수정) 빌트인 개수 134→135(llms.txt·VS Code README), TUTORIAL json_stringify 주석, llms.txt contains·min/max.
+             문서: SPEC 8.1·10장·16장, llms.txt, README, wiki. 회귀: pkg +1, vm_test +4, cli_test +2, import_test +1.
+             (tests: 446 green 양쪽 feature, clippy 0)

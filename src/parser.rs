@@ -518,6 +518,18 @@ impl Parser {
     /// 타입 이름 파싱 (int/float/bool/str/nil/list/map/fn/any).
     fn parse_type(&mut self) -> Option<TypeAnn> {
         let span = self.peek_span();
+        // `fn`과 `nil`은 키워드라 식별자가 아니다 — 타입 자리에서는 타입 이름으로 받는다 (Phase 62)
+        match self.peek() {
+            TokenKind::Fn => {
+                self.advance();
+                return Some(TypeAnn::Fn);
+            }
+            TokenKind::Nil => {
+                self.advance();
+                return Some(TypeAnn::Nil);
+            }
+            _ => {}
+        }
         let name = self.expect_ident()?;
         match TypeAnn::from_name(&name) {
             Some(t) => Some(t),

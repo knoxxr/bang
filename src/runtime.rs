@@ -18,6 +18,9 @@ pub struct RuntimeError {
     pub kind: &'static str,
     /// 에러가 난 소스 파일 (Phase 56) — import한 모듈 안의 에러면 그 모듈 경로. None이면 실행 중인 메인 파일.
     pub file: Option<std::sync::Arc<str>>,
+    /// 잡히지 않은 사용자 `throw`의 원래 값 (Phase 62). 작업(spawn·parallel_map)이나 내장 함수의 콜백 경계를
+    /// 건너 바깥 `catch`에 도달하면 에러 맵 대신 이 값이 그대로 바인딩된다 ("throw한 값은 그대로", SPEC 8.1).
+    pub thrown: Option<Box<crate::vm::VmValue>>,
 }
 
 /// `catch e`의 `e.kind` 값 (SPEC 8.2). 대외 계약이므로 이름을 바꾸지 않는다.
@@ -53,10 +56,10 @@ pub mod kind {
 
 impl RuntimeError {
     pub fn new(msg: impl Into<String>, span: Span) -> Self {
-        Self { message: msg.into(), span, kind: kind::ERROR, file: None }
+        Self { message: msg.into(), span, kind: kind::ERROR, file: None, thrown: None }
     }
     pub fn no_span(msg: impl Into<String>) -> Self {
-        Self { message: msg.into(), span: Span::new(0, 0), kind: kind::ERROR, file: None }
+        Self { message: msg.into(), span: Span::new(0, 0), kind: kind::ERROR, file: None, thrown: None }
     }
     /// 종류 지정 (빌더).
     pub fn with_kind(mut self, k: &'static str) -> Self {

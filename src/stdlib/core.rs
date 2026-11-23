@@ -203,9 +203,13 @@ pub(crate) fn b_input(
         let _ = std::io::stdout().flush();
     }
     let mut line = String::new();
-    std::io::stdin()
+    let n = std::io::stdin()
         .read_line(&mut line)
         .map_err(|e| RuntimeError::new(format!("input(): {e}"), span))?;
+    // 입력 끝(EOF)은 nil — 빈 줄("")과 구별된다 (Phase 62, Ruby gets와 같음)
+    if n == 0 {
+        return Ok(VmValue::Nil);
+    }
     Ok(VmValue::Str(
         line.trim_end_matches('\n')
             .trim_end_matches('\r')
@@ -229,14 +233,26 @@ pub(crate) fn b_print_err(
     Ok(VmValue::Nil)
 }
 
-/// 56: args() → List of CLI args
+/// 스크립트 인자 (Phase 62): `bang app.bang a b` → ["app.bang", "a", "b"] (Python sys.argv와 같은 모양).
+/// CLI가 실행 전에 한 번 설정한다. 설정되지 않았으면(REPL·bang test·라이브러리로 쓸 때) 빈 리스트.
+static SCRIPT_ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// CLI 전용: 스크립트 경로와 그 뒤의 인자를 기록한다 (두 번째 호출은 무시).
+pub fn set_script_args(argv: Vec<String>) {
+    let _ = SCRIPT_ARGS.set(argv);
+}
+
+/// 56: args() → [스크립트, 인자...]
 pub(crate) fn b_args(
     _vm: &mut Vm,
     _args: Vec<VmValue>,
     _span: Span,
     _stop_depth: usize,
 ) -> Result<VmValue, RuntimeError> {
-    let cli_args: Vec<VmValue> = std::env::args().map(VmValue::Str).collect();
+    let cli_args: Vec<VmValue> = SCRIPT_ARGS
+        .get()
+        .map(|v| v.iter().cloned().map(VmValue::Str).collect())
+        .unwrap_or_default();
     Ok(VmValue::List(Arc::new(cli_args)))
 }
 
@@ -249,9 +265,10 @@ pub(crate) fn b_import(
 ) -> Result<VmValue, RuntimeError> {
     req_args("import", &args, 1, span)?;
     let spec = str_arg("import", &args[0], span)?;
-    // 이름 해석: 바레 이름은 bang_modules/ 및 BANG_PATH에서 검색,
-    // .bang/경로 구분자 포함이면 직접 경로.
-    let path = resolve_module(&spec).ok_or_else(|| {
+    // 이름 해석 (Phase 62): 상대 경로·바레 이름은 import를 쓴 파일의 디렉터리 기준.
+    // 바레 이름은 이어서 위쪽 bang_modules/ 및 BANG_PATH에서 검색.
+    let base = vm.frames.last().and_then(|f| f.closure.func.src_dir.clone());
+    let path = resolve_module(&spec, base.as_deref()).ok_or_else(|| {
         RuntimeError::new(
             format!("import(): 모듈을 찾을 수 없음: '{spec}' (bang_modules/ 또는 BANG_PATH 확인)"),
             span,

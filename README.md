@@ -267,9 +267,9 @@ bang install
 mathutils = "https://github.com/user/mathutils@v1.0.0"
 ```
 
-설치된 패키지는 **바레 이름**으로 import한다 — 검색 순서:
-`./<name>.bang` → `bang_modules/<name>/<name>.bang` (또는 `main.bang`/`lib.bang`) →
-`BANG_PATH` 의 디렉토리.
+설치된 패키지는 **바레 이름**으로 import한다 — import를 쓴 파일의 디렉터리를 기준으로
+`<name>.bang` → `bang_modules/<name>/<name>.bang` (또는 `main.bang`/`lib.bang`, 상위 디렉터리로 올라가며) →
+`BANG_PATH` 의 디렉토리 순서로 찾는다 (SPEC 16장).
 
 ```
 let math = import("mathutils")   // bang_modules/mathutils/ 에서 해석

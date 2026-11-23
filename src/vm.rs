@@ -97,12 +97,23 @@ impl VmFuture {
             if let Some(r) = &*g {
                 return r.clone();
             }
-            let r = src.resolve().map(|v| {
-                let mut iso = Isolator::new();
-                let v = iso.isolate(v);
-                iso.finish();
-                v
-            });
+            // 결과 값뿐 아니라 에러에 실린 throw 값도 격리한다 (Phase 62 — 작업 사이 공유 금지)
+            let r = match src.resolve() {
+                Ok(v) => {
+                    let mut iso = Isolator::new();
+                    let v = iso.isolate(v);
+                    iso.finish();
+                    Ok(v)
+                }
+                Err(mut e) => {
+                    if let Some(t) = e.thrown.take() {
+                        let mut iso = Isolator::new();
+                        e.thrown = Some(Box::new(iso.isolate(*t)));
+                        iso.finish();
+                    }
+                    Err(e)
+                }
+            };
             *g = Some(r.clone());
             return r;
         }
@@ -318,6 +329,8 @@ pub struct CompiledFn {
     pub min_arity: usize,
     /// 이 함수의 소스 파일 (import 모듈이면 그 경로, 메인이면 None) — 에러 위치 표시용 (Phase 56)
     pub file: Option<Arc<str>>,
+    /// 이 함수의 소스가 있는 디렉터리 — 상대 경로 import의 기준 (Phase 62). None이면 현재 디렉터리.
+    pub src_dir: Option<Arc<str>>,
     pub chunk: Chunk,
     pub upvalue_count: usize,
     pub local_count: usize,
@@ -892,7 +905,9 @@ impl Vm {
                     }
                     if let Some(h) = self.take_handler_above(stop_depth) {
                         // 사용자 throw는 던진 값 그대로, 내장 에러는 {kind, message, line, col} 맵
+                        // 다른 작업·콜백에서 잡히지 않고 건너온 throw는 원래 값 그대로 (Phase 62)
                         let exc = self.pending_exception.take()
+                            .or_else(|| e.thrown.take().map(|b| *b))
                             .unwrap_or_else(|| error_to_value(&e));
                         self.unwind_to(&h, exc);
                         // 루프 계속 → catch 블록에서 재개
@@ -901,9 +916,11 @@ impl Vm {
                         if let Some(orig) = rethrown_error(&v) {
                             return Err(orig);
                         }
-                        // 잡히지 않은 사용자 throw → 던진 값을 메시지에 표시
-                        return Err(RuntimeError::new(
-                            format!("잡히지 않은 예외: {v}"), e.span));
+                        // 잡히지 않은 사용자 throw → 던진 값을 메시지에 표시하고, 바깥 catch를 위해 값도 싣는다
+                        let mut err = RuntimeError::new(format!("잡히지 않은 예외: {v}"), e.span);
+                        err.file = e.file;
+                        err.thrown = Some(Box::new(v));
+                        return Err(err);
                     } else {
                         return Err(e);
                     }
@@ -2216,20 +2233,34 @@ pub(crate) fn module_loading() -> &'static Mutex<std::collections::HashSet<Strin
 }
 
 /// import 모듈 해석. 바레 이름은 검색 경로에서 찾고, 경로/확장자가 있으면 직접 경로.
-pub(crate) fn resolve_module(spec: &str) -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
+pub(crate) fn resolve_module(spec: &str, base: Option<&str>) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+    // 기준 디렉터리 (Phase 62): import를 쓴 파일이 있는 곳. 없으면(REPL·표준 입력) 현재 디렉터리.
+    let base: PathBuf = base.map(PathBuf::from).unwrap_or_default();
+    let at = |rel: &str| -> PathBuf {
+        if Path::new(rel).is_absolute() { PathBuf::from(rel) } else { base.join(rel) }
+    };
     // 직접 경로: .bang 확장자나 경로 구분자 포함
     if spec.ends_with(".bang") || spec.contains('/') || spec.contains('\\') {
-        let p = PathBuf::from(spec);
+        let p = at(spec);
         return if p.is_file() { Some(p) } else { None };
     }
-    // 바레 이름: 검색 후보
-    let mut candidates: Vec<PathBuf> = vec![
-        PathBuf::from(format!("{spec}.bang")),
-        PathBuf::from(format!("bang_modules/{spec}/{spec}.bang")),
-        PathBuf::from(format!("bang_modules/{spec}/main.bang")),
-        PathBuf::from(format!("bang_modules/{spec}/lib.bang")),
-    ];
+    // 바레 이름: 기준 디렉터리의 name.bang → 기준에서 위로 올라가며 bang_modules/ → BANG_PATH
+    let pkg = |dir: &Path| -> Vec<PathBuf> {
+        vec![
+            dir.join(format!("bang_modules/{spec}/{spec}.bang")),
+            dir.join(format!("bang_modules/{spec}/main.bang")),
+            dir.join(format!("bang_modules/{spec}/lib.bang")),
+        ]
+    };
+    let mut candidates: Vec<PathBuf> = vec![at(&format!("{spec}.bang"))];
+    candidates.extend(pkg(&base));
+    let abs_base = std::fs::canonicalize(if base.as_os_str().is_empty() { Path::new(".") } else { base.as_path() });
+    if let Ok(abs) = abs_base {
+        for anc in abs.ancestors().skip(1) {
+            candidates.extend(pkg(anc));
+        }
+    }
     if let Ok(bp) = std::env::var("BANG_PATH") {
         for dir in bp.split(':').filter(|d| !d.is_empty()) {
             candidates.push(PathBuf::from(format!("{dir}/{spec}.bang")));

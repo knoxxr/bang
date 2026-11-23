@@ -1411,3 +1411,72 @@ fn test_vm_exit_requires_int() {
     // 이전: exit("x")가 조용히 종료 코드 0으로 끝났다 (실패가 성공으로 보임)
     assert_eq!(run_vm("try { exit(\"x\") } catch e { print(e.kind, e.message) }"), vec!["argument exit(): 정수 필요, Str 발견"]);
 }
+
+// ============================================================================
+// Phase 62 — 작업·콜백을 건넌 throw 값 보존, 타입 표기 fn/nil
+// ============================================================================
+
+#[test]
+fn test_vm_thrown_value_survives_task_boundaries() {
+    // 이전: 작업 밖으로 나온 throw 값이 {kind: error, message: "잡히지 않은 예외: …"} 맵으로 바뀌었다
+    let src = r#"fn risky(x) {
+    if x == 2 { throw {"code": 42, "at": x} }
+    return x
+}
+try {
+    let v = spawn risky(2)
+    print(v + 1)
+} catch e { print("spawn", e.code) }
+try { print(parallel_map([1, 2, 3], risky)) } catch e { print("pmap", e.code) }
+fn forget() {
+    spawn risky(2)
+    return 1
+}
+try { forget() } catch e { print("join", e.at) }
+try { print(map([1, 2], risky)) } catch e { print("callback", e.code) }
+try { print(wait(spawn risky(1)) + wait(spawn (1 / 0))) } catch e { print("builtin", e.kind) }
+try {
+    try { wait(spawn risky(2)) } catch e { throw e }
+} catch e2 { print("rethrow", e2.code) }
+try { throw "plain" } catch e { print("local", e) }"#;
+    assert_eq!(
+        run_vm(src),
+        vec!["spawn 42", "pmap 42", "join 2", "callback 42", "builtin zero_division", "rethrow 42", "local plain"]
+    );
+}
+
+#[test]
+fn test_vm_thrown_object_is_isolated_and_usable() {
+    // 작업에서 던진 "객체"(맵+클로저)를 받아 쓸 수 있고, 다른 작업으로 넘긴 Future를 통해 받으면 격리된다
+    let src = r#"fn make() {
+    let n = 0
+    return {"inc": fn() {
+        n += 1
+        return n
+    }}
+}
+fn thrower() { throw make() }
+try { wait(spawn thrower()) } catch obj { print(obj.inc(), obj.inc()) }
+let f = spawn thrower()
+fn catch_in_task(fut) {
+    try { wait(fut) } catch o { return o.inc() + o.inc() }
+}
+print(wait(spawn catch_in_task(f)), wait(spawn catch_in_task(f)))"#;
+    assert_eq!(run_vm(src), vec!["1 2", "3 3"]);
+}
+
+#[test]
+fn test_vm_uncaught_thrown_value_message_unchanged() {
+    let e = run_vm_err("fn r() { throw \"끝\" }\nlet f = spawn r()\nprint(f)");
+    assert_eq!(e.message, "잡히지 않은 예외: 끝");
+}
+
+#[test]
+fn test_vm_type_hints_fn_and_nil() {
+    // 이전: fn·nil은 키워드라 타입 자리에서 파스 오류
+    let src = "fn apply(f: fn, x: int) -> int { return f(x) }\nlet n: nil = nil\nfn nothing() -> nil { return nil }\nprint(apply(fn(v) { return v + 1 }, 1), n, nothing())\ntry { apply(1, 2) } catch e { print(e.kind, e.message) }\ntry { let z: nil = 0 } catch e { print(e.message) }";
+    assert_eq!(
+        run_vm(src),
+        vec!["2 nil nil", "type 타입 불일치: fn 기대, Int 받음", "타입 불일치: nil 기대, Int 받음"]
+    );
+}

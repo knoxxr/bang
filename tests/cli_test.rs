@@ -235,3 +235,30 @@ fn test_broken_pipe_exits_quietly() {
     assert_eq!(out.status.code(), Some(141));
     assert!(out.stderr.is_empty(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
 }
+
+/// Phase 62: 스크립트 뒤의 인자는 스크립트의 것 — args()는 [스크립트, 인자...] (이전: 마지막 인자를 파일로 오인).
+#[test]
+fn test_script_args_passed_to_script() {
+    let p = temp_bang("print(args())\nprint(len(args()))\n");
+    let ps = p.to_str().unwrap();
+    assert_eq!(stdout_of(&[ps, "x", "y z", "--flag"]), format!("[{ps}, x, y z, --flag]\n4\n"));
+    assert_eq!(stdout_of(&["run", ps, "-v"]), format!("[{ps}, -v]\n2\n"));
+    let _ = fs::remove_file(&p);
+}
+
+/// Phase 62: input()은 입력 끝(EOF)에서 nil — 빈 줄("")과 구별된다.
+#[test]
+fn test_input_returns_nil_at_eof() {
+    let p = temp_bang("let lines = []\nwhile true {\n    let l = input()\n    if l == nil { break }\n    lines += [l]\n}\nprint(lines, len(lines))\n");
+    let mut child = Command::new(BANG)
+        .arg(&p)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn 실패");
+    child.stdin.take().unwrap().write_all(b"a\n\nb\n").expect("stdin 쓰기 실패");
+    let out = child.wait_with_output().expect("대기 실패");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "[a, , b] 3\n");
+    let _ = fs::remove_file(&p);
+}

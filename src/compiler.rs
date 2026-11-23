@@ -144,6 +144,7 @@ struct FnCompiler {
     /// 기본값 없는(필수) 매개변수 수 (Phase 47)
     min_arity: usize,
     file: Option<Arc<str>>,
+    src_dir: Option<Arc<str>>,
     locals: Vec<Local>,
     upvalues: Vec<UpvalueDesc>,
     loops: Vec<LoopInfo>,
@@ -161,6 +162,7 @@ impl FnCompiler {
             arity,
             min_arity: arity,
             file: None,
+            src_dir: None,
             locals: Vec::new(),
             upvalues: Vec::new(),
             loops: Vec::new(),
@@ -229,6 +231,7 @@ impl FnCompiler {
             arity: self.arity,
             min_arity: self.min_arity,
             file: self.file,
+            src_dir: self.src_dir,
             chunk: self.chunk,
             upvalue_count: self.upvalues.len(),
             local_count: self.local_peak,
@@ -243,6 +246,8 @@ impl FnCompiler {
 struct Compiler {
     /// 소스 파일 경로 (Phase 56) — import 모듈이면 그 경로, 메인 프로그램이면 None
     file: Option<Arc<str>>,
+    /// 소스 파일이 있는 디렉터리 (Phase 62) — 상대 경로 import의 기준. REPL·표준 입력은 None(현재 디렉터리).
+    src_dir: Option<Arc<str>>,
     fn_stack: Vec<FnCompiler>,
     globals: HashMap<String, u16>, // top-level name → global slot index
     global_count: u16,
@@ -253,6 +258,7 @@ impl Compiler {
     fn new() -> Self {
         Self {
             file: None,
+            src_dir: None,
             fn_stack: Vec::new(),
             globals: HashMap::new(),
             global_count: 0,
@@ -1114,6 +1120,7 @@ impl Compiler {
         // Push a new FnCompiler
         let mut fn_comp = FnCompiler::new(name.clone(), params.len());
         fn_comp.file = self.file.clone();
+        fn_comp.src_dir = self.src_dir.clone();
         fn_comp.min_arity = param_defaults.iter().take_while(|d| d.is_none()).count().min(params.len());
         fn_comp.ret_type = ret_type;
 
@@ -1198,6 +1205,7 @@ impl Compiler {
         // Wrap top-level code in a "main" function
         let mut main_fn = FnCompiler::new(Some("main".to_string()), 0);
         main_fn.file = self.file.clone();
+        main_fn.src_dir = self.src_dir.clone();
         self.fn_stack.push(main_fn);
         self.cur_mut().begin_scope();
 
@@ -1279,8 +1287,27 @@ pub fn compile(prog: &Program) -> Result<CompileOutput, Vec<CompileError>> {
 
 /// 소스 파일 경로를 기록하며 컴파일 (import 모듈용 — 런타임 에러가 모듈 파일 위치를 가리키게).
 pub fn compile_with_file(prog: &Program, file: Option<&str>) -> Result<CompileOutput, Vec<CompileError>> {
+    compile_inner(prog, file, file.map(dir_of))
+}
+
+/// 메인 스크립트 컴파일 (Phase 62): 에러 표시는 메인 파일 형식(파일 이름 없음) 그대로 두고,
+/// 상대 경로 import의 기준 디렉터리만 스크립트 위치로 기록한다.
+pub fn compile_main(prog: &Program, script_path: &str) -> Result<CompileOutput, Vec<CompileError>> {
+    compile_inner(prog, None, Some(dir_of(script_path)))
+}
+
+/// 파일 경로의 디렉터리 ("main.bang" → "", "lib/a.bang" → "lib").
+fn dir_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn compile_inner(prog: &Program, file: Option<&str>, src_dir: Option<String>) -> Result<CompileOutput, Vec<CompileError>> {
     let mut compiler = Compiler::new();
     compiler.file = file.map(Arc::from);
+    compiler.src_dir = src_dir.map(Arc::from);
     compiler.compile_program(prog);
 
     if !compiler.errors.is_empty() {

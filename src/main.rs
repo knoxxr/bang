@@ -159,8 +159,10 @@ fn format_with_context(message: &str, span: Span, source: &str) -> String {
 fn cmd_run(args: &[String]) {
     let mut dump_ast = false;
     let mut path: Option<&str> = None;
+    let mut script_args: Vec<String> = Vec::new();
 
-    for arg in args {
+    // 옵션은 파일 경로 앞에만 온다. 경로 뒤의 모든 인자는 스크립트의 것이다 (args() — Phase 62).
+    for (i, arg) in args.iter().enumerate() {
         match arg.as_str() {
             "--dump-ast" => dump_ast = true,
             // v0.30.0에서 제거된 백엔드 — 파일 경로로 오인하지 않게 명확히 알린다.
@@ -169,7 +171,11 @@ fn cmd_run(args: &[String]) {
                 eprintln!("      ('{arg}' 없이 'bang run <파일>'로 실행하세요)");
                 process::exit(1);
             }
-            _ => { path = Some(arg); }
+            _ => {
+                path = Some(arg);
+                script_args = args[i..].to_vec();
+                break;
+            }
         }
     }
 
@@ -182,6 +188,7 @@ fn cmd_run(args: &[String]) {
         }
     };
 
+    bang::stdlib::set_script_args(script_args);
     let source = read_source(path);
     let prog   = lex_and_parse(&source, path);
 
@@ -201,11 +208,13 @@ fn cmd_run(args: &[String]) {
         process::exit(1);
     }
 
-    run_vm_program(&prog, &source);
+    run_vm_program(&prog, &source, path);
 }
 
-fn run_vm_program(prog: &bang::ast::Program, source: &str) {
-    let out = match compile(prog) {
+fn run_vm_program(prog: &bang::ast::Program, source: &str, path: &str) {
+    // 상대 경로 import는 스크립트 위치 기준 (Phase 62). 표준 입력(-)은 현재 디렉터리 기준.
+    let compiled = if path == "-" { compile(prog) } else { bang::compiler::compile_main(prog, path) };
+    let out = match compiled {
         Ok(o) => o,
         Err(errors) => {
             for e in &errors {
@@ -554,7 +563,9 @@ fn read_deps() -> Vec<bang::pkg::Dependency> {
 }
 
 fn write_deps(deps: &[bang::pkg::Dependency]) {
-    let text = bang::pkg::serialize_manifest(deps);
+    // [package] 등 다른 섹션은 보존하고 [dependencies]만 바꾼다 (Phase 62)
+    let existing = fs::read_to_string(MANIFEST).unwrap_or_default();
+    let text = bang::pkg::update_manifest(&existing, deps);
     if let Err(e) = fs::write(MANIFEST, text) {
         eprintln!("오류: {MANIFEST} 쓰기 실패: {e}");
         process::exit(1);
@@ -778,7 +789,7 @@ fn cmd_test(args: &[String]) {
             broken_files += 1;
             continue;
         }
-        let out = match compile(&prog) {
+        let out = match bang::compiler::compile_main(&prog, &path) {
             Ok(o) => o,
             Err(errs) => {
                 for e in &errs { println!("  오류  {e}"); }

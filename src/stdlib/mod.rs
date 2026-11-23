@@ -16,6 +16,7 @@ mod bytes;
 mod collections;
 mod concurrency;
 mod core;
+pub use core::set_script_args;
 mod csv;
 mod fs;
 mod json;

@@ -66,6 +66,8 @@ f-문자열과 형식 지정(`{x:.2f}`, `{n:,}`), 슬라이스, `in`/`not in`, `
 | `with open(p) as f: f.read()` | `read_file(p)` |
 | `import json; json.loads(s)` | `json_parse(s)` (import 불필요) |
 | `subprocess.run([...])` | `proc_run([...])` |
+| `sys.argv` | `args()` (같은 모양: `[스크립트, 인자...]`) |
+| `for line in sys.stdin:` | `input()`을 `nil`이 나올 때까지 반복 |
 | `class Foo:` | 맵 + 클로저 ([함수와 클로저](함수와-클로저#클래스-대신-맵--클로저)) |
 | `async def` / `await` | 없음 — 아무 함수나 `spawn` |
 | `ThreadPoolExecutor().map(f, xs)` | `parallel_map(xs, f)` |
