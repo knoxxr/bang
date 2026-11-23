@@ -1,0 +1,1 @@
+bang v0.46.0 기준 · 이 위키의 원본은 저장소의 [`wiki/`](https://github.com/knoxxr/bang/tree/main/wiki) 디렉터리입니다 — 수정은 그쪽에 PR로 보내 주세요. · 언어의 정확한 정의는 [SPEC](https://github.com/knoxxr/bang/blob/main/docs/SPEC.md)이 기준입니다.

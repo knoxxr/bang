@@ -85,6 +85,9 @@ docs/PHILOSOPHY.md 헌법(9조 + 영구 거부 목록 + 거절의 기록). 기�
 docs/VISION.md  활성화 계획(철학+GTM 종합). P0~P2 실행 로드맵.
 docs/TUTORIAL.md 진행형 입문 튜토리얼 (먼저 읽는 문서).
 docs/GUIDE.md   사용자 가이드 (초기 버전 기준 — 최신은 TUTORIAL/SPEC).
+wiki/           GitHub Wiki 사용자 매뉴얼 원본(한국어 14페이지). 사용자에게 보이는 동작이 바뀌면 함께 갱신하고
+                python3 wiki/tools/verify_wiki.py 로 검증(bang 블록 실행·출력 비교 + 내부 링크 검사).
+                게시: sh wiki/tools/publish.sh (위키 push 권한 필요).
 정본 실행 엔진: VM. SPEC의 의미는 VM 기준이며, 다른 백엔드는 미지원 기능에서 명확한 에러를 내야 한다.
 
 빌트인 추가 절차 (번호 = src/stdlib/mod.rs BUILTINS에서의 위치, 바이트코드에 박히는 대외 계약)

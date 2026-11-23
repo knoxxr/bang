@@ -375,7 +375,7 @@ let mathutils = import("mathutils")
 let data = json_parse("{\"name\": \"Al\", \"nums\": [1, 2, 3]}")
 print(data.name)                  // Al
 print(sum(data.nums))             // 6
-print(json_stringify({"ok": true, "n": 5}))   // {"n":5,"ok":true}
+print(json_stringify({"ok": true, "n": 5}))   // {"ok":true,"n":5}
 ```
 
 **정규식** — 매칭·추출·치환 (캡처 그룹 지원):
