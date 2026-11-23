@@ -68,7 +68,8 @@ src/
   parser/       재귀 하강 + Pratt
   resolver/     스코프/바인딩 정적 해석 (Phase 4)
   compiler/     AST → 바이트코드 (Phase 5)
-  vm/           스택 VM (Phase 5). 메모리는 참조 카운팅(Arc) — 순환 수집기 없음(SPEC 15장 한계)
+  vm/           스택 VM (Phase 5). 메모리는 참조 카운팅(Arc) + 세대별 순환 수집(cycles.rs, Phase 60, SPEC 15장)
+  cycles        순환 참조 수집기 — 후보 상태 벡터에서 trial deletion (src/cycles.rs)
   runtime/      RuntimeError + 채널(BangChannel, try_recv는 select용) + 채널 전송용 데이터 전용 Value
   stdlib/       빌트인 단일 등록 테이블(mod.rs BUILTINS: 이름·인자 수·구현) + 분야별 구현 파일
                 (core/concurrency/string/collections/math/json/time/fs/regex/net/sys/bytes/csv).
@@ -692,3 +693,23 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              SPEC 15장 신설: 참조 카운팅, 순환 참조 누수(클로저가 끼는 두 경우·실측 298MB vs 12MB·회피법 — 실측 검증).
              SPEC 6장: 자동 대기는 얕다([spawn g()] == [3]은 false, wait로 꺼내 비교 — 실측 검증).
              README 값 의미론 문구 과장 수정, VISION 의존성 문구, CLAUDE.md 불변 규칙 문구·vm "GC" 표기 정정, llms.txt 순환 주의.
+✅ Phase 60 — 세대별 순환 참조 수집 (메모리 누수 제거) — v0.45.0
+             (발견) SPEC 15장에 적은 두 경우(자기 참조 객체·지역 재귀 함수)보다 심각한 누수: spawn·parallel_map·
+               serve_event 요청마다 Isolator가 복사한 모듈 전역 ↔ 그 안의 함수 순환이 해제되지 않아 작업마다 약 260B 누수
+               (spawn 20만 회 75MB, 횟수에 비례) — 장시간 서버에 치명적.
+             (구현) src/cycles.rs: 후보 상태 벡터에서 닿는 부분 그래프(상태 벡터·클로저·upvalue·클로저를 품은 리스트/맵;
+               클로저 없는 컨테이너·Future는 건너뜀)의 내부 참조 수를 세어, 외부 참조가 없는 순환만 상태 벡터를 비워 끊음
+               (trial deletion). 후보: (1) 클로저가 붙잡은 채 반환된 프레임 locals(release_locals, 되감기 포함) —
+               젊은 세대 2048개마다 수집, 생존자는 늙은 세대(살아남은 수의 2배가 되면 재검사, 최소 8192),
+               (2) 작업 경계 Isolator가 만든 상태 벡터 — 작업 종료 시(OP_SPAWN·parallel_map 원소·serve_event 요청·bang test),
+               (3) 작업 VM의 후보 전부 — run_spawned 끝에서 VM을 버린 뒤. isolate_closure가 (클로저, 새 상태 벡터) 반환.
+             (함께 수정한 성능 결함) Isolator가 끝난 Future의 결과를 "격리할 게 있나" 검사하며 실제로 통째로 복사(버려지는 일)
+               → 전역에 객체 Future를 모으며 spawn하면 O(n²) (300회 1.1초). contains_closure 순수 검사로 교체 → 14ms.
+             안전 검증: 수집 주기를 1(매 반환마다 수집)로 낮춘 빌드로 전체 테스트 436개 통과, 예제·검증 스크립트 29개의
+               출력이 일반 빌드와 동일. 회귀 테스트: 살아 있는 객체 다수 수집 후 유지, 실행 중 프레임 보호, 작업 결과 객체 유지,
+               쓰레기 순환 실제 해제(cycles::freed_cells_total).
+             실측: 순환 객체 30만 개 298MB → 14MB, spawn 20만 회 75MB → 12MB, parallel_map 반복 19MB → 12MB.
+               fib_seq/fib_par·큰 리스트 spawn 시간은 잡음 범위.
+             남은 한계: 오래 산 뒤 버려진 객체는 늙은 세대 재검사 때까지 남음(SPEC 15장).
+             문서: SPEC 15장 재작성, README 영어 요약, llms.txt(순환 주의 문구 제거), VISION(예외 기록).
+             회귀: vm_test +4. (tests: 436 green, clippy 0)

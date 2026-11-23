@@ -125,7 +125,8 @@ pub(crate) fn b_parallel_map(
     for t in 0..tasks {
         let (lo, hi) = (t * n / tasks, (t + 1) * n / tasks);
         // 값 의미론: 원소마다 독립된 클로저 복사본 (spawn과 동일한 격리)
-        let jobs: Vec<(Arc<VmClosure>, VmValue)> = list[lo..hi]
+        #[allow(clippy::type_complexity)]
+        let jobs: Vec<(Arc<VmClosure>, VmValue, Vec<StateCell>)> = list[lo..hi]
             .iter()
             .map(|item| {
                 // 원소마다 독립 격리 (원소 안의 객체도 복사 — Phase 53)
@@ -133,7 +134,8 @@ pub(crate) fn b_parallel_map(
                 let c = iso.closure(&closure);
                 let it = iso.isolate(item.clone());
                 iso.finish();
-                (c, it)
+                let cells = iso.new_cells();
+                (c, it, cells)
             })
             .collect();
         let output = vm.output.clone();
@@ -141,8 +143,11 @@ pub(crate) fn b_parallel_map(
         let done = future.clone();
         crate::scheduler::global().spawn_task(move || {
             let mut out = Vec::with_capacity(jobs.len());
-            for (c, item) in jobs {
-                match Vm::run_spawned(output.clone(), c, vec![item], span) {
+            for (c, item, cells) in jobs {
+                let r = Vm::run_spawned(output.clone(), c, vec![item], span);
+                // 원소용으로 복사한 상태의 순환 정리 (Phase 60)
+                crate::cycles::collect(cells);
+                match r {
                     Ok(v) => out.push(v),
                     Err(e) => {
                         done.complete(Err(e));

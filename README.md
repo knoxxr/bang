@@ -412,7 +412,7 @@ print(f"fetched {len(pages)} pages")
 - **Structured concurrency**: every task is joined before the function that spawned it returns; unhandled task
   errors propagate to the caller.
 - **Honest limits**: sequential execution is about 3–4× slower than CPython ([benchmarks](bench/README.md));
-  memory is reference-counted with no cycle collector (see SPEC §15); the experimental native compiler
+  memory is reference-counted with a generational cycle collector (see SPEC §15); the experimental native compiler
   (`bang compile`) supports only a small subset.
 - **Docs** are written in Korean first: [TUTORIAL](docs/TUTORIAL.md), [SPEC](docs/SPEC.md),
   [PHILOSOPHY](docs/PHILOSOPHY.md). [`llms.txt`](llms.txt) gives an LLM enough context to write bang.

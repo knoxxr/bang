@@ -1348,3 +1348,40 @@ fn test_vm_int_keys_survive_channel_and_spawn() {
     let src = "let ch = channel(1)\nsend(ch, {7: \"x\"})\nlet r = recv(ch)\nprint(r[7], keys(r))\nfn mk() { return {5: [1]} }\nlet f = spawn mk()\nprint(f[5])";
     assert_eq!(run_vm(src), vec!["x [7]", "[1]"]);
 }
+
+// ============================================================================
+// Phase 60 — 순환 참조 수집: 쓰레기 순환은 해제, 살아 있는 값은 절대 건드리지 않는다
+// ============================================================================
+
+#[test]
+fn test_cycle_collector_keeps_live_objects_across_many_collections() {
+    // 객체를 많이 만들어 수집을 여러 번 일으키는 동안, 일부는 전역 리스트에 보관 → 끝까지 멀쩡해야 함
+    let src = "fn make(n) {\n let me = {}\n let count = n\n me = {\"inc\": fn() { count += 1 }, \"get\": fn() { return count }, \"self\": fn() { return me }}\n return me\n}\nlet keep = []\nfor i in range(6000) {\n let o = make(i)\n if i % 1000 == 0 { keep += [o] }\n}\nlet s = 0\nfor o in keep {\n o.inc()\n s += o.get() + o.self().get()\n}\nprint(len(keep), s)";
+    // keep: i = 0,1000,...,5000 (6개). inc 후 get = i+1, self().get()도 같은 상태 → 2*(i+1) 합
+    let expected: i64 = (0..6).map(|k| 2 * (k * 1000 + 1)).sum();
+    assert_eq!(run_vm(src), vec![format!("6 {expected}")]);
+}
+
+#[test]
+fn test_cycle_collector_does_not_touch_running_frames() {
+    // 실행 중인 함수의 지역 변수를 클로저 수천 개가 붙잡는 동안 수집이 일어나도 변수는 유지
+    let src = "fn work() {\n let total = 0\n let fs = []\n for i in range(5000) { fs += [fn() { total += 1 }] }\n for f in fs { f() }\n fn rec(k) { return if k <= 0 { total } else { rec(k - 1) } }\n return rec(3)\n}\nprint(work(), work())";
+    assert_eq!(run_vm(src), vec!["5000 5000"]);
+}
+
+#[test]
+fn test_cycle_collector_task_results_survive() {
+    // 작업이 돌려준 객체(작업의 상태를 붙잡은 클로저)는 작업이 끝나 수집돼도 부모가 계속 쓸 수 있다
+    let src = "fn make() {\n let n = 10\n let me = {}\n me = {\"inc\": fn() { n += 1 }, \"get\": fn() { return n }, \"me\": fn() { return me }}\n return me\n}\nlet objs = []\nfor i in range(300) { objs += [spawn make()] }\nlet s = 0\nfor f in objs {\n f.inc()\n s += f.me().get()\n}\nprint(s)\nlet ps = parallel_map(range(200), fn(i) {\n let k = i\n return fn() { return k * 2 }\n})\nprint(ps[199](), len(ps))";
+    assert_eq!(run_vm(src), vec!["3300", "398 200"]);
+}
+
+#[test]
+fn test_cycle_collector_frees_garbage_cycles() {
+    // 버린 순환 객체는 실제로 해제된다 (전역 카운터가 늘어남 — 다른 테스트와 같은 프로세스라 "이상"으로 확인)
+    let before = bang::cycles::freed_cells_total();
+    let src = "fn make() {\n let me = {}\n me = {\"get\": fn() { return me }}\n return me\n}\nfor i in range(4000) { make() }\nfn outer() {\n fn rec(k) { return if k <= 0 { 0 } else { rec(k - 1) } }\n return rec(1)\n}\nfor i in range(2500) { outer() }\nfn w(n) { return n }\nfor i in range(1500) { wait(spawn w(i)) }\nprint(\"ok\")";
+    assert_eq!(run_vm(src), vec!["ok"]);
+    let freed = bang::cycles::freed_cells_total() - before;
+    assert!(freed >= 4000, "순환이 충분히 해제되지 않음: {freed}");
+}

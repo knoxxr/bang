@@ -427,7 +427,17 @@ pub struct Vm {
     /// 호출 프레임 locals 재사용 풀 (호출당 힙 할당 제거 → 할당자 경합 완화).
     /// 클로저에 포착되지 않은(strong_count==1) locals만 회수한다.
     locals_pool: Vec<Arc<Mutex<Vec<VmValue>>>>,
+    /// 순환 참조 후보 (Phase 60): 클로저가 붙잡은 채 반환된 프레임의 지역 변수 벡터.
+    /// 젊은 세대가 CYCLE_YOUNG_MAX개 모이면 수집하고, 살아남은 것은 늙은 세대로 옮긴다.
+    cycle_young: Vec<StateCell>,
+    cycle_old: Vec<StateCell>,
+    cycle_old_limit: usize,
 }
+
+/// 젊은 세대 수집 주기 (후보 수)
+const CYCLE_YOUNG_MAX: usize = 2048;
+/// 늙은 세대 최소 수집 기준 — 수집 뒤 살아남은 수의 2배로 늘어난다 (분할 상환 O(1))
+const CYCLE_OLD_MIN: usize = 8192;
 
 /// print의 출력 대상 (Phase 54).
 ///
@@ -481,6 +491,9 @@ impl Vm {
             handlers: Vec::new(),
             pending_exception: None,
             locals_pool: Vec::new(),
+            cycle_young: Vec::new(),
+            cycle_old: Vec::new(),
+            cycle_old_limit: CYCLE_OLD_MIN,
         }
     }
 
@@ -500,6 +513,9 @@ impl Vm {
             handlers: Vec::new(),
             pending_exception: None,
             locals_pool: Vec::new(),
+            cycle_young: Vec::new(),
+            cycle_old: Vec::new(),
+            cycle_old_limit: CYCLE_OLD_MIN,
         }
     }
 
@@ -518,9 +534,38 @@ impl Vm {
 
     /// 프레임 종료 시 locals를 회수한다. 클로저가 포착(strong_count>1)했으면 버린다.
     fn release_locals(&mut self, locals: Arc<Mutex<Vec<VmValue>>>) {
-        if Arc::strong_count(&locals) == 1 && self.locals_pool.len() < 256 {
-            self.locals_pool.push(locals);
+        if Arc::strong_count(&locals) == 1 {
+            if self.locals_pool.len() < 256 {
+                self.locals_pool.push(locals);
+            }
+            return;
         }
+        // 클로저가 이 지역 변수들을 붙잡았다 → 순환 후보 (객체가 자기 변수를 붙잡거나 지역 재귀 함수)
+        self.cycle_young.push(locals);
+        if self.cycle_young.len() >= CYCLE_YOUNG_MAX {
+            self.collect_cycles();
+        }
+    }
+
+    /// 순환 참조 수집 (Phase 60, src/cycles.rs). 젊은 세대를 보고, 늙은 세대가 기준을 넘으면 함께 본다.
+    pub(crate) fn collect_cycles(&mut self) {
+        let mut candidates = std::mem::take(&mut self.cycle_young);
+        let with_old = self.cycle_old.len() >= self.cycle_old_limit;
+        if with_old {
+            candidates.append(&mut self.cycle_old);
+        }
+        let r = crate::cycles::collect(candidates);
+        self.cycle_old.extend(r.survivors);
+        if with_old {
+            self.cycle_old_limit = (self.cycle_old.len() * 2).max(CYCLE_OLD_MIN);
+        }
+    }
+
+    /// 이 VM의 모든 순환 후보를 꺼낸다 (작업이 끝날 때 VM을 버린 뒤 수집하려고).
+    fn take_cycle_candidates(&mut self) -> Vec<StateCell> {
+        let mut all = std::mem::take(&mut self.cycle_young);
+        all.append(&mut self.cycle_old);
+        all
     }
 
     pub fn run(&mut self, main_fn: Arc<CompiledFn>) -> Result<(), RuntimeError> {
@@ -567,7 +612,12 @@ impl Vm {
     pub fn run_global_fn_isolated(&self, slot: usize) -> Option<Result<VmValue, RuntimeError>> {
         let value = self.globals.lock().ok()?.get(slot)?.clone();
         match value {
-            VmValue::Closure(c) => Some(Vm::run_spawned(self.output.clone(), deep_clone_closure(&c), Vec::new(), Span::new(0, 0))),
+            VmValue::Closure(c) => {
+                let (iso, cells) = isolate_closure(&c);
+                let r = Vm::run_spawned(self.output.clone(), iso, Vec::new(), Span::new(0, 0));
+                crate::cycles::collect(cells);
+                Some(r)
+            }
             _ => None,
         }
     }
@@ -592,6 +642,9 @@ impl Vm {
             handlers: Vec::new(),
             pending_exception: None,
             locals_pool: Vec::new(),
+            cycle_young: Vec::new(),
+            cycle_old: Vec::new(),
+            cycle_old_limit: CYCLE_OLD_MIN,
         };
         let argc = args.len();
         if argc < closure.func.min_arity || argc > closure.func.arity {
@@ -607,12 +660,18 @@ impl Vm {
         let locals = Arc::new(Mutex::new(locals_vec));
         vm.frames.push(CallFrame { closure, ip: 0, locals, argc, spawned: Vec::new() });
         // 작업의 자식들은 작업 함수 본문에 뿌리내려 반환 시 조인된다 (에러는 이 작업의 에러가 됨)
-        if let Err(e) = vm.exec_until(0) {
-            vm.drain_pending_tasks();
-            return Err(e);
-        }
-
-        Ok(vm.stack.pop().unwrap_or(VmValue::Nil))
+        let result = match vm.exec_until(0) {
+            Ok(()) => Ok(vm.stack.pop().unwrap_or(VmValue::Nil)),
+            Err(e) => {
+                vm.drain_pending_tasks();
+                Err(e)
+            }
+        };
+        // 작업이 끝났다: VM을 버린 뒤 작업 안에서 생긴 순환을 수집 (결과 값은 외부 참조로 살아 있다)
+        let candidates = vm.take_cycle_candidates();
+        drop(vm);
+        crate::cycles::collect(candidates);
+        result
     }
 
     /// 모듈 파일을 읽어 sub-VM에서 실행하고 export 맵을 만들어 캐시에 넣는다.
@@ -712,8 +771,10 @@ impl Vm {
                             if find_subseq(buf, b"\r\n\r\n").is_some() {
                                 let req = String::from_utf8_lossy(buf).into_owned();
                                 buf.clear();
-                                let h = deep_clone_closure(&handler);
-                                match Vm::run_spawned(self.output.clone(), h, vec![VmValue::Str(req)], span) {
+                                let (h, cells) = isolate_closure(&handler);
+                                let handled = Vm::run_spawned(self.output.clone(), h, vec![VmValue::Str(req)], span);
+                                crate::cycles::collect(cells);
+                                match handled {
                                     Ok(VmValue::Str(s)) => response = Some(s.into_bytes()),
                                     Ok(other) => response = Some(format!("{other}").into_bytes()),
                                     Err(e) => {
@@ -866,6 +927,7 @@ impl Vm {
         while self.frames.len() > h.frame_depth {
             if let Some(f) = self.frames.pop() {
                 for t in f.spawned { warn_if_spawn_err(t.join_unobserved()); }
+                self.release_locals(f.locals);
             }
         }
         while self.spawn_scopes.len() > h.spawn_depth {
@@ -1378,6 +1440,8 @@ impl Vm {
                             let closure_copy = iso.closure(&closure);
                             let args_copy: Vec<VmValue> = args.into_iter().map(|a| iso.isolate(a)).collect();
                             iso.finish();
+                            let cells = iso.new_cells();
+                            drop(iso);
                             let output_copy  = self.output.clone();
                             let future = VmFuture::new();
                             let future2 = future.clone();
@@ -1385,6 +1449,8 @@ impl Vm {
                             crate::scheduler::global().spawn_task(move || {
                                 let result = Vm::run_spawned(
                                     output_copy, closure_copy, args_copy, span);
+                                // 작업용으로 복사한 상태(모듈 전역 ↔ 함수 순환)를 정리 (Phase 60 — 이전엔 spawn마다 누수)
+                                crate::cycles::collect(cells);
                                 future2.complete(result);
                             });
                             // 가장 가까운 스코프에 등록: 같은 프레임의 parallel 블록이면 그 블록, 아니면 함수 본문
@@ -2210,7 +2276,7 @@ pub(crate) struct Isolator {
 }
 
 /// 클로저가 붙잡는 상태 벡터 (프레임 지역 변수들 또는 모듈 전역).
-type StateCell = Arc<Mutex<Vec<VmValue>>>;
+pub(crate) type StateCell = Arc<Mutex<Vec<VmValue>>>;
 
 impl Isolator {
     pub(crate) fn new() -> Self {
@@ -2248,10 +2314,14 @@ impl Isolator {
         match v {
             VmValue::Closure(c) => Some(VmValue::Closure(self.closure(c))),
             VmValue::Future(f) => {
-                // 이미 끝났고 결과에 클로저가 없으면 결코 바뀌지 않으므로 그대로 공유 (재포장·재검사 없음)
+                // 이미 끝났고 결과에 클로저가 없으면 결코 바뀌지 않으므로 그대로 공유 (재포장·재검사 없음).
+                // 검사는 복사 없는 순수 확인이어야 한다 — 이전에는 검사하면서 결과 객체를 통째로 복사해
+                // (어차피 derived Future가 꺼낼 때 다시 격리하므로 버려지는 일) 전역에 객체 Future를 모으며
+                // spawn하면 O(n²) 복사가 됐다 (300회 1.1초 → Phase 60에서 수정).
                 if let Some(Ok(v)) = f.peek() {
-                    // 격리할 것이 없으면(None) 여기서 그대로 반환, 있으면 아래에서 derived로 감싼다
-                    self.value(&v)?;
+                    if !contains_closure(&v) {
+                        return None;
+                    }
                 }
                 let key = Arc::as_ptr(f) as usize;
                 let d = self.futures.entry(key).or_insert_with(|| VmFuture::derived(f)).clone();
@@ -2298,6 +2368,11 @@ impl Isolator {
             }
             _ => None,
         }
+    }
+
+    /// 이 격리기가 새로 만든 상태 벡터들 (작업이 끝난 뒤 순환 수집 후보 — Phase 60).
+    pub(crate) fn new_cells(&self) -> Vec<StateCell> {
+        self.cells.values().cloned().collect()
     }
 
     pub(crate) fn isolate(&mut self, v: VmValue) -> VmValue {
@@ -2348,6 +2423,24 @@ impl HasLen for crate::omap::OrderedMap<VmValue> {
     fn size(&self) -> usize { self.len() }
 }
 
+/// 값 안에 클로저가 있는가 — 복사 없는 순수 검사 (큰 컨테이너는 "클로저 없음" 캐시 사용).
+pub(crate) fn contains_closure(v: &VmValue) -> bool {
+    match v {
+        VmValue::Closure(_) => true,
+        VmValue::List(l) => !known_closure_free_list(l) && l.iter().any(contains_closure),
+        VmValue::Map(m) => !known_closure_free_map(m) && m.values().any(contains_closure),
+        _ => false,
+    }
+}
+
+/// 큰 리스트/맵이 "클로저 없음"으로 이미 확인됐는가 (순환 수집기가 훑기를 건너뛰는 데 쓴다).
+pub(crate) fn known_closure_free_list(a: &Arc<Vec<VmValue>>) -> bool {
+    free_cache_hit(&free_cache().lists, a)
+}
+pub(crate) fn known_closure_free_map(a: &Arc<crate::omap::OrderedMap<VmValue>>) -> bool {
+    free_cache_hit(&free_cache().maps, a)
+}
+
 fn free_cache_hit<T: HasLen>(cache: &Mutex<HashMap<usize, std::sync::Weak<T>>>, a: &Arc<T>) -> bool {
     if a.size() < FREE_CACHE_MIN_LEN {
         return false;
@@ -2372,12 +2465,13 @@ fn free_cache_remember<T: HasLen>(cache: &Mutex<HashMap<usize, std::sync::Weak<T
     g.insert(Arc::as_ptr(a) as usize, Arc::downgrade(a));
 }
 
-/// 클로저 하나를 새 작업용으로 격리 (Isolator 한 번 쓰기).
-pub(crate) fn deep_clone_closure(c: &Arc<VmClosure>) -> Arc<VmClosure> {
+/// 클로저 하나를 새 작업용으로 격리 (Isolator 한 번 쓰기). 새로 만든 상태 벡터도 돌려준다 —
+/// 작업이 끝나면 crate::cycles::collect에 넘겨 순환을 정리한다.
+pub(crate) fn isolate_closure(c: &Arc<VmClosure>) -> (Arc<VmClosure>, Vec<StateCell>) {
     let mut iso = Isolator::new();
     let n = iso.closure(c);
     iso.finish();
-    n
+    (n, iso.new_cells())
 }
 
 /// 바이트 슬라이스에서 부분열의 시작 위치를 찾는다 (HTTP 헤더 끝 감지용).

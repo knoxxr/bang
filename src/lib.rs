@@ -16,3 +16,4 @@ pub mod scheduler;
 pub mod codegen;
 pub mod fmt;
 pub mod omap;
+pub mod cycles;
