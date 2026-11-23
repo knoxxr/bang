@@ -1690,10 +1690,11 @@ fn vm_add(l: VmValue, r: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
 }
 
 fn vm_arith(l: VmValue, r: VmValue, span: Span, op: char) -> Result<VmValue, RuntimeError> {
-    let to_float = |l: VmValue, r: VmValue| -> (f64, f64) {
-        let lf = match &l { VmValue::Int(n) => *n as f64, VmValue::Float(n) => *n, _ => 0.0 };
-        let rf = match &r { VmValue::Int(n) => *n as f64, VmValue::Float(n) => *n, _ => 0.0 };
-        (lf, rf)
+    // 숫자끼리만 (Phase 61: 이전에는 한쪽이 float이면 숫자가 아닌 쪽을 조용히 0.0으로 바꿔 2.5 * "x" → 0.0)
+    let num = |v: &VmValue| match v {
+        VmValue::Int(n) => Some(*n as f64),
+        VmValue::Float(n) => Some(*n),
+        _ => None,
     };
     match (&l, &r) {
         (VmValue::Int(a), VmValue::Int(b)) => match op {
@@ -1706,20 +1707,18 @@ fn vm_arith(l: VmValue, r: VmValue, span: Span, op: char) -> Result<VmValue, Run
                 // 정수 나눗셈은 idiv(a, b).
                 Ok(VmValue::Float(*a as f64 / *b as f64))
             }
-            '%' => {
+            _ => {
                 if *b == 0 { return Err(RuntimeError::new("나머지: 0으로 나눌 수 없음", span).with_kind(crate::runtime::kind::ZERO_DIVISION)); }
                 a.checked_rem(*b).map(VmValue::Int).ok_or_else(|| overflow_err("%", span))
             }
-            _ => unreachable!(),
         },
-        (VmValue::Float(_), _) | (_, VmValue::Float(_)) => {
-            let (a, b) = to_float(l, r);
+        (VmValue::Float(_), _) | (_, VmValue::Float(_)) if num(&l).is_some() && num(&r).is_some() => {
+            let (a, b) = (num(&l).unwrap_or(0.0), num(&r).unwrap_or(0.0));
             Ok(VmValue::Float(match op {
                 '-' => a - b,
                 '*' => a * b,
                 '/' => a / b,
-                '%' => a % b,
-                _ => unreachable!(),
+                _ => a % b,
             }))
         }
         (l, r) => Err(RuntimeError::new(

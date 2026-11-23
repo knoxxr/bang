@@ -713,3 +713,13 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              남은 한계: 오래 산 뒤 버려진 객체는 늙은 세대 재검사 때까지 남음(SPEC 15장).
              문서: SPEC 15장 재작성, README 영어 요약, llms.txt(순환 주의 문구 제거), VISION(예외 기록).
              회귀: vm_test +4. (tests: 436 green, clippy 0)
+✅ Phase 61 — AOT 에러를 VM과 글자 단위로 같게 + VM 산술 암묵 변환 결함 수정 — v0.46.0
+             AOT: 실패할 수 있는 연산·빌트인마다 인자를 먼저 계산한 뒤(GNU 문장식으로 순서 고정) 소스 위치 기록
+               (Transpiler::at), bv_fail이 VM과 같은 "[줄:열] 런타임 오류: …" + 원본 소스 줄·^ 표시. 원본 소스 줄을
+               실행 파일에 포함(transpile_with_source, bang compile이 사용). VM 문구 재현(bv_tname — 타입 이름 포함 문구,
+               as_float 문구, len/abs/int/float/exit/assert 문구). 에러 전 fflush(stdout)로 출력 순서도 VM과 같음.
+             (VM 결함, 수집 중 발견) vm_arith가 한쪽이 float이면 숫자 아닌 쪽을 조용히 0.0으로 바꿈 → 2.5 * "x" = 0.0,
+               1.5 - nil = 1.5, 7.5 % "a" = NaN. → type 에러. exit("x")가 조용히 exit 0 → argument 에러.
+               (unreachable!() 2곳도 함께 제거)
+             VM↔AOT 동치 테스트 확장: 36개 프로그램(에러 13개)으로 stdout·종료 코드·에러 출력 블록까지 비교 — 전부 일치.
+             문서: SPEC 1장(AOT 동치 범위)·3.1(산술의 타입). 회귀: vm_test +2, transpile 동치 +13. (tests: 438 green, clippy 0)

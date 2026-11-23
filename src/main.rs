@@ -481,7 +481,7 @@ fn cmd_compile(args: &[String]) {
     let prog   = lex_and_parse(&source, source_path);
 
     // C 트랜스파일
-    let c_code = match bang::codegen::transpile(&prog) {
+    let c_code = match bang::codegen::transpile_with_source(&prog, Some(&source)) {
         Ok(c) => c,
         Err(errors) => {
             for e in &errors {

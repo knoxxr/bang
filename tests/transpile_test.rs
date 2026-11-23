@@ -141,11 +141,26 @@ fn test_if_else_branch() {
 // Phase 58 — VM ↔ AOT 동치 (헌법 4조 "의미는 계약"): 같은 프로그램은 같은 stdout·종료 코드
 // ============================================================================
 
-/// AOT 바이너리의 (stdout, 종료 코드). cc가 없으면 None.
-fn aot_output(src: &str, tag: &str) -> Option<(String, i32)> {
+/// 실행 결과: (stdout, 종료 코드, stderr의 런타임 오류 부분 — 경고 줄 제외)
+type RunOut = (String, i32, String);
+
+/// stderr에서 "런타임 오류"로 시작하는 블록(에러 줄 + 소스 문맥)만 남긴다 (VM의 리졸버 경고는 컴파일 시점 출력이라 제외).
+fn runtime_error_block(stderr: &str) -> String {
+    match stderr.find("런타임 오류") {
+        Some(p) => {
+            let start = stderr[..p].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            stderr[start..].trim_end().to_string()
+        }
+        None => String::new(),
+    }
+}
+
+/// AOT 바이너리의 실행 결과. cc가 없으면 None.
+fn aot_output(src: &str, tag: &str) -> Option<RunOut> {
     let tokens = Lexer::new(src).tokenize().expect("tokenize 실패");
     let prog = Parser::new(tokens).parse().expect("parse 실패");
-    let c_code = transpile(&prog).unwrap_or_else(|e| panic!("transpile 실패: {e:?}\n{src}"));
+    let c_code = bang::codegen::transpile_with_source(&prog, Some(src))
+        .unwrap_or_else(|e| panic!("transpile 실패: {e:?}\n{src}"));
     let bin_path = unique_path(tag);
     let c_path = bin_path.with_extension("c");
     fs::write(&c_path, &c_code).expect("C 소스 쓰기 실패");
@@ -162,16 +177,24 @@ fn aot_output(src: &str, tag: &str) -> Option<(String, i32)> {
     let out = Command::new(&bin_path).output().expect("실행 실패");
     let _ = fs::remove_file(&c_path);
     let _ = fs::remove_file(&bin_path);
-    Some((String::from_utf8_lossy(&out.stdout).into_owned(), out.status.code().unwrap_or(-1)))
+    Some((
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.code().unwrap_or(-1),
+        runtime_error_block(&String::from_utf8_lossy(&out.stderr)),
+    ))
 }
 
-/// VM(`bang run`)의 (stdout, 종료 코드).
-fn vm_output(src: &str, tag: &str) -> (String, i32) {
+/// VM(`bang run`)의 실행 결과.
+fn vm_output(src: &str, tag: &str) -> RunOut {
     let path = unique_path(tag).with_extension("bang");
     fs::write(&path, src).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_bang")).arg("run").arg(&path).output().expect("실행 실패");
     let _ = fs::remove_file(&path);
-    (String::from_utf8_lossy(&out.stdout).into_owned(), out.status.code().unwrap_or(-1))
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.code().unwrap_or(-1),
+        runtime_error_block(&String::from_utf8_lossy(&out.stderr)),
+    )
 }
 
 /// AOT 지원 부분집합의 프로그램 모음. 각각 VM과 AOT의 stdout·종료 코드가 같아야 한다.
@@ -199,6 +222,20 @@ const AOT_VM_CORPUS: &[(&str, &str)] = &[
     ("bad_add", "print(1 + \"a\")"),
     ("assert_msg", "print(\"a\")\nassert(1 > 2, \"틀림\")\nprint(\"b\")"),
     ("exit_code", "print(\"x\")\nexit(3)"),
+    // Phase 61: 에러 메시지·위치·소스 문맥까지 같아야 한다
+    ("err_types", "print(1 + \"a\")"),
+    ("err_float_str", "print(2.5 * \"x\")"),
+    ("err_compare", "let a = 1\nprint(a < \"b\")"),
+    ("err_neg", "print(-\"a\")"),
+    ("err_builtin_arg", "print(sqrt(\"a\"))"),
+    ("err_len", "print(len(5))"),
+    ("err_abs", "print(abs(\"x\"))"),
+    ("err_int_nil", "print(int(nil))"),
+    ("err_assert_plain", "print(1)\n  assert(1 > 2)"),
+    ("err_exit_type", "exit(\"x\")"),
+    ("err_in_function", "fn f(x) {\n    return 10 / x\n}\nprint(f(2))\nprint(f(0))"),
+    ("err_compound", "let x = 9223372036854775807\nx += 1"),
+    ("err_utf8_line", "let 이름 = \"방\"\nprint(이름 - 1)"),
 ];
 
 #[test]

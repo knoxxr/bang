@@ -5,4 +5,4 @@
 // (Cranelift JIT는 Phase 44에서 제거 — 바이트코드를 직접 해석해 VM 변경마다 깨졌고 빌드 불가였다.)
 
 pub mod transpile;
-pub use transpile::{transpile, TranspileError};
+pub use transpile::{transpile, transpile_with_source, TranspileError};

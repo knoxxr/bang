@@ -176,16 +176,14 @@ pub(crate) fn b_assert(
 pub(crate) fn b_exit(
     _vm: &mut Vm,
     args: Vec<VmValue>,
-    _span: Span,
+    span: Span,
     _stop_depth: usize,
 ) -> Result<VmValue, RuntimeError> {
-    let code = args
-        .first()
-        .and_then(|v| match v {
-            VmValue::Int(n) => Some(*n as i32),
-            _ => None,
-        })
-        .unwrap_or(0);
+    // 정수가 아닌 종료 코드는 에러 (Phase 61: 이전에는 조용히 0으로 종료 — 실패가 성공으로 보였다)
+    let code = match args.first() {
+        None => 0,
+        Some(v) => int_of("exit", v, span)? as i32,
+    };
     std::process::exit(code);
 }
 

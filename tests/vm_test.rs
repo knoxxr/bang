@@ -1385,3 +1385,29 @@ fn test_cycle_collector_frees_garbage_cycles() {
     let freed = bang::cycles::freed_cells_total() - before;
     assert!(freed >= 4000, "순환이 충분히 해제되지 않음: {freed}");
 }
+
+// ============================================================================
+// Phase 61 — float 연산에서 숫자 아닌 값을 조용히 0.0으로 바꾸던 결함, exit() 인자 검사
+// ============================================================================
+
+#[test]
+fn test_vm_float_arith_rejects_non_numbers() {
+    // 이전: 2.5 * "x" → 0.0, 1.5 - nil → 1.5, 7.5 % "a" → NaN (암묵 변환)
+    let src = "for f in [fn() { return 2.5 * \"x\" }, fn() { return 1.5 - nil }, fn() { return 7.5 % \"a\" }, fn() { return 1 / [1] }] {\n try { print(f()) } catch e { print(e.kind, e.message) }\n}\nprint(7.5 % 2, 3 * 1.5, 1 - 0.5)";
+    assert_eq!(
+        run_vm(src),
+        vec![
+            "type *: Float * Str 연산 불가",
+            "type -: Float - Nil 연산 불가",
+            "type %: Float % Str 연산 불가",
+            "type /: Int / List 연산 불가",
+            "1.5 4.5 0.5",
+        ]
+    );
+}
+
+#[test]
+fn test_vm_exit_requires_int() {
+    // 이전: exit("x")가 조용히 종료 코드 0으로 끝났다 (실패가 성공으로 보임)
+    assert_eq!(run_vm("try { exit(\"x\") } catch e { print(e.kind, e.message) }"), vec!["argument exit(): 정수 필요, Str 발견"]);
+}
