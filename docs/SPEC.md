@@ -835,8 +835,10 @@ print(len(r.body))
 
 - `http_get(url)` → `{"status": int, "headers": map, "body": str}`. `http://`와 `https://`를 지원한다.
 - 리다이렉트는 따라가지 않는다 — `status`(301/302 등)와 `headers.location`을 그대로 돌려준다.
-- 4xx/5xx는 에러가 아니라 `status`로 돌려준다. 연결 실패·TLS 실패·타임아웃(10초)은 catch 가능한 에러다.
-- `Transfer-Encoding: chunked`와 `Content-Length`를 처리한다.
+- 4xx/5xx는 에러가 아니라 `status`로 돌려준다. 연결 실패·TLS 실패·대기 시간 초과는 catch 가능한 `io` 에러다.
+- `Transfer-Encoding: chunked`와 `Content-Length`를 처리한다. 본문이 `Content-Length`·chunked 경계보다 먼저
+  끊기면 `io` 에러다 (Phase 63 — 이전에는 대기 시간이 지나거나 연결이 끊기면 **잘린 본문을 조용히 돌려주었다**).
+  chunked 본문은 받는 대로 해석한다(이전에는 데이터 안의 `0\r\n\r\n` 바이트를 끝으로 오판할 수 있었다).
 
 **https 구현**: TLS는 rustls(+ring)로 처리한다. 헌법 5조 "자급 코어"의 유일한 의존성 예외이며,
 `https` cargo feature(기본 켜짐)로 격리되어 있다. `cargo build --no-default-features`로 빌드하면
@@ -871,6 +873,26 @@ let r = http_request("PUT", url, bytes_from_str("raw"), {"Content-Type": "text/c
   `Host`·`Connection`·`Content-Length`는 bang이 정하며 무시된다. 헤더 이름은 영숫자·`-`·`_`만,
   값에 줄바꿈이 있으면 `value` 에러(헤더 주입 방지). 메서드는 대문자 영문만(`value` 에러).
 - 나머지 한계(리다이렉트 안 따라감, body는 str, 사내 CA·프록시·HTTP/2 미지원)는 `http_get`과 같다.
+
+### 12.2 옵션: 대기 시간과 줄 단위 스트리밍 (Phase 63)
+
+`http_post(url, body, headers, options)`, `http_request(method, url, body, headers, options)` — 마지막 인자 맵
+(`headers`·`body`는 `nil`로 비워 둘 수 있다). `http_get(url)`은 번호 계약상 인자 1개 그대로다 — 옵션이 필요하면
+`http_request("GET", url, nil, nil, options)`.
+
+| 키 | 값 | 뜻 |
+|---|---|---|
+| `timeout_ms` | 0 이상의 int (기본 10000, 0 = 무제한) | 연결·요청 전송·응답 읽기 **각각**의 대기 상한. 스트리밍에서는 "다음 데이터가 올 때까지"의 상한이다 |
+| `on_line` | 함수 `fn(line)` | **2xx** 응답 본문을 받는 대로 줄 단위로 넘긴다(줄 끝 `\n`·`\r\n` 제거, 마지막에 줄바꿈 없는 조각도 넘김). 결과의 `body`는 `nil` |
+
+- 모르는 키나 잘못된 타입은 조용히 무시하지 않고 `argument` 에러다.
+- `on_line` 콜백은 요청을 부른 작업 안에서 동기로 실행된다(새 작업·스레드 없음). 붙잡은 변수를 바꿔 결과를 모으면 된다.
+  콜백이 정확히 `false`를 돌려주면 그 자리에서 수신을 멈추고 연결을 닫는다(정상 반환). 콜백이 던진 값은 요청 밖의
+  `catch`에 그대로 도착한다.
+- 2xx가 아닌 응답(예: 429·500의 에러 JSON)은 콜백에 넘기지 않고 평소처럼 `body`에 모아 돌려준다 — `status`를 보고 처리한다.
+- 서버 전송 이벤트(SSE, `text/event-stream`)는 이 줄 콜백으로 받는다: `data: ` 줄을 골라 `json_parse`한다.
+  예제: `examples/llm_fanout.bang` (LLM API 병렬 호출 + 스트리밍, 테스트는 로컬 가짜 서버로 종단 검증).
+
 
 ---
 

@@ -78,6 +78,10 @@ close(requests)
 
 사내 프록시가 자체 인증 기관(CA)으로 TLS를 가로채는 환경입니다. bang은 내장된 Mozilla 루트 인증서만 신뢰하고 검증을 끄는 옵션이 없어, 현재 이런 환경에서는 https를 쓸 수 없습니다.
 
+### bang으로 LLM API를 부를 수 있나요?
+
+됩니다. bang이 가장 잘하는 일 중 하나입니다 — 질문 여러 개를 `parallel_map`으로 동시에 보내고, 긴 답은 `on_line` 옵션으로 생성되는 대로 받습니다. 응답이 오래 걸리므로 `timeout_ms` 옵션으로 대기 시간을 늘리세요. [네트워킹 → LLM API 부르기](네트워킹#llm-api-부르기-병렬--스트리밍)와 [`examples/llm_fanout.bang`](https://github.com/knoxxr/bang/blob/main/examples/llm_fanout.bang)을 보세요.
+
 ### LLM(ChatGPT, Claude 등)에게 bang 코드를 쓰게 하려면?
 
 저장소의 [`llms.txt`](https://github.com/knoxxr/bang/blob/main/llms.txt) 한 파일을 대화에 붙여 넣으세요. 문법, 동시성 규칙, 내장 함수 전체, "하지 말 것" 목록이 들어 있습니다.

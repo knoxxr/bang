@@ -32,3 +32,19 @@ jobs:
         run: cargo test --no-default-features
       - name: cargo clippy (no default features)
         run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+  # 문서가 실제 동작과 같은지 (Phase 63): 위키의 bang 예제를 실행해 적힌 출력과 비교하고 내부 링크를 검사한다.
+  # (llms.txt·위키 빌트인 목록·VS Code 문법 대조는 cargo test의 tests/docs_test.rs가 맡는다.)
+  docs:
+    name: docs (wiki examples)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build bang
+        run: cargo build
+      - name: verify wiki
+        run: python3 wiki/tools/verify_wiki.py target/debug/bang
+      - name: bang fmt --check (examples·tests·bench)
+        run: ./target/debug/bang fmt --check examples tests bench

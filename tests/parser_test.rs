@@ -49,7 +49,7 @@ fn test_all_examples_parse_without_error() {
         count += 1;
     }
 
-    assert_eq!(count, 20, "examples/ 에 .bang 파일 20개 기대, {count}개 발견");
+    assert_eq!(count, 21, "examples/ 에 .bang 파일 21개 기대, {count}개 발견");
 }
 
 // =============================================================================

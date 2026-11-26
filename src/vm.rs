@@ -2186,7 +2186,7 @@ pub(crate) fn as_int(v: &VmValue, span: Span) -> Result<i64, RuntimeError> {
 }
 
 /// Future 자동 조인 (얕게): 최상위 Future 하나만 resolve.
-fn auto_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
+pub(crate) fn auto_resolve(v: VmValue, span: Span) -> Result<VmValue, RuntimeError> {
     match v {
         // 작업 안에서 난 에러는 원래 위치(작업 쪽 줄·파일)를 유지한다 — 실제로 잘못된 곳을 가리키도록 (Phase 56).
         // 위치가 없는 에러만 값을 쓴 지점으로 채운다.

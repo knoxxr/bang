@@ -1,0 +1,101 @@
+// LLM API 병렬 호출 + 스트리밍 (Phase 63)
+//
+// 실행:  ANTHROPIC_API_KEY=sk-... bang examples/llm_fanout.bang
+// (ANTHROPIC_BASE_URL로 주소를 바꿀 수 있다 — 테스트는 로컬 가짜 서버로 이 파일을 돌린다)
+//
+// 1) parallel_map: 질문 여러 개를 동시에 보내고, 답을 질문 순서대로 받는다.
+// 2) on_line: 답을 생성되는 대로 한 줄(SSE 이벤트)씩 받아 화면에 바로 쓴다.
+
+let key = env_get("ANTHROPIC_API_KEY")
+if key == nil {
+    print("ANTHROPIC_API_KEY 환경 변수가 없어 건너뜁니다.")
+    exit(0)
+}
+let base = env_get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+let MODEL = "claude-opus-5-5"
+
+fn headers() {
+    return {
+        "x-api-key": key,
+        "anthropic-version": "2026-10-21",
+        // 안전 분류기가 요청을 거절하면 같은 호출 안에서 대체 모델로 다시 실행 (fallbacks: "default")
+        "anthropic-beta": "server-side-fallback-2026-07-01",
+    }
+}
+
+fn request_body(question, stream) {
+    return {
+        "model": MODEL,
+        "max_tokens": if stream { 64000 } else { 16000 },
+        "stream": stream,
+        "fallbacks": "default",
+        "output_config": {"effort": "medium"},
+        "messages": [{"role": "user", "content": question}],
+    }
+}
+
+// 응답의 content는 블록 리스트다 (thinking 블록이 앞에 올 수 있다) — text 블록만 모은다.
+fn text_of(msg) {
+    let out = ""
+    for block in msg.content {
+        if block.type == "text" { out += block.text }
+    }
+    return out
+}
+
+fn ask(question) {
+    // 생성이 길면 수십 초~몇 분이 걸린다 — 기본 대기 시간(10초) 대신 5분
+    let r = http_post(base + "/v1/messages", request_body(question, false), headers(), {"timeout_ms": 300000})
+    if r.status != 200 {
+        throw {"status": r.status, "body": r.body}
+    }
+    let msg = json_parse(r.body)
+    if msg.stop_reason == "refusal" {
+        return "(거절됨)"
+    }
+    return trim(text_of(msg))
+}
+
+// ---- 1) 병렬 호출 ----
+let questions = [
+    "Rust의 소유권을 한 문장으로 설명해 줘.",
+    "GIL이 무엇인지 한 문장으로 설명해 줘.",
+    "구조적 동시성을 한 문장으로 설명해 줘.",
+]
+let start = now_ms()
+let answers = parallel_map(questions, ask)
+for i, a in enumerate(answers) {
+    print(f"Q{i + 1}. {questions[i]}")
+    print(f"A{i + 1}. {a}")
+}
+print(f"({len(questions)}개 동시 호출: {now_ms() - start}ms)")
+
+// ---- 2) 스트리밍 ----
+print("")
+print("스트리밍:")
+let pending = ""          // 아직 줄바꿈이 오지 않은 글자
+let stop_reason = nil
+fn on_event(line) {
+    if not starts_with(line, "data: ") { return nil }   // "event: ..." 줄과 빈 줄은 건너뜀
+    let ev = json_parse(line[6:])
+    if ev.type == "content_block_delta" and ev.delta.type == "text_delta" {
+        pending += ev.delta.text
+        // 줄이 완성되는 대로 바로 출력한다 (응답 전체를 기다리지 않음)
+        while "\n" in pending {
+            let i = find(pending, "\n")
+            print(pending[:i])
+            pending = pending[i + 1:]
+        }
+    } else if ev.type == "message_delta" {
+        stop_reason = get(ev.delta, "stop_reason", nil)
+    } else if ev.type == "error" {
+        throw ev.error
+    }
+}
+let r = http_post(base + "/v1/messages", request_body("bang 언어에 어울리는 짧은 시 한 편을 써 줘.", true),
+    headers(), {"timeout_ms": 120000, "on_line": on_event})
+if r.status != 200 {
+    throw {"status": r.status, "body": r.body}
+}
+if pending != "" { print(pending) }
+print(f"(stop_reason: {stop_reason})")

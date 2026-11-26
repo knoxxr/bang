@@ -744,3 +744,19 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              (문서 오류 수정) 빌트인 개수 134→135(llms.txt·VS Code README), TUTORIAL json_stringify 주석, llms.txt contains·min/max.
              문서: SPEC 8.1·10장·16장, llms.txt, README, wiki. 회귀: pkg +1, vm_test +4, cli_test +2, import_test +1.
              (tests: 446 green 양쪽 feature, clippy 0)
+✅ Phase 63 — AI 시대 대응 1차: LLM API를 실제로 부를 수 있게 + 문서 검증 CI — v0.48.0
+             (계기) HTTP 읽기 대기가 10초 고정·스트리밍 불가 → LLM API(응답 수십 초~분, SSE) 호출 불가.
+             옵션 맵(http_post 4번째·http_request 5번째 인자, http_get은 번호 계약상 그대로): timeout_ms(기본 10000,
+               0=무제한 — 연결·전송·읽기 각각의 상한), on_line(2xx 본문을 받는 대로 줄 단위로 콜백, false면 중단, body=nil;
+               2xx 아니면 body에 모음). 모르는 키·잘못된 타입 = argument 에러. 콜백은 같은 작업에서 동기 호출(스레드 없음).
+             본문 수신 재작성(BodyDecoder: chunked 점진 해석·Length·EOF·본문 없음(HEAD/1xx/204/304)) + LineSplitter.
+             (기존 결함 수정) 대기 시간 초과·연결 끊김 시 잘린 본문을 조용히 반환 → io 에러. 데이터 안 "0\r\n\r\n"을
+               chunked 끝으로 오판 → 점진 디코더로 해소. connect_timeout 적용.
+             예제 examples/llm_fanout.bang (Anthropic Messages API: parallel_map 병렬 + SSE 스트리밍, ANTHROPIC_BASE_URL 지원).
+             문서 검증: tests/docs_test.rs — llms.txt 빌트인 개수·이름 양방향·코드 블록 파싱, 위키 전체 목록=BUILTINS,
+               VS Code 문법 빌트인·개수. 바로 발견·수정: llms.txt에 format·log10 누락, `break / continue`·`{ ... }` 파스 불가
+               표기, VS Code 문법 log10 누락. CI docs 작업: verify_wiki.py(위키 예제 실행·링크) + bang fmt --check.
+             문서: SPEC 12장·12.2 신설, llms.txt(옵션·SSE 관용구), README, wiki(네트워킹 옵션·LLM 절, FAQ).
+             회귀: http_stream_test +5(타임아웃·잘린 응답·chunk 데이터·점진 스트리밍·중단/throw/에러 상태/옵션 검증·
+               LLM 예제 종단(가짜 Messages API, 병렬 확인)), docs_test +4. lexer/parser 예제 개수 20→21.
+             (tests: 455 green 양쪽 feature·디버그/릴리스, clippy 0, 위키 77블록)

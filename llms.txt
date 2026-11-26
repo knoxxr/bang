@@ -44,7 +44,7 @@ for item in [1, 2, 3] { print(item) }      // list/str/map(키)/bytes/channel �
 for k, v in m { print(k) }                  // 맵 [키, 값] 쌍
 for i, x in enumerate(xs) { print(i) }      // 원소 분해
 return v
-break / continue
+break                                       // continue도 같음
 ```
 
 ### 에러 처리
@@ -91,7 +91,7 @@ spawn producer(ch)
 send(ch, value)
 let v = recv(ch)           // 블로킹 수신, 닫히면 nil
 close(ch)
-for msg in ch { ... }      // 닫힐 때까지 순회
+for msg in ch { print(msg) }  // 닫힐 때까지 순회
 let r = select([ch1, ch2]) // 먼저 준비된 채널 → [index, value], 모두 닫히면 nil
 ```
 
@@ -115,10 +115,10 @@ let r = select([ch1, ch2]) // 먼저 준비된 채널 → [index, value], 모두
 
 문자열: `split(s,sep)` `join(l,sep)` `trim(s)` `trim_start(s)` `trim_end(s)`
 `replace(s,from,to)` `starts_with(s,p)` `ends_with(s,p)` `upper(s)` `lower(s)`
-`contains(s,sub)`(문자열 전용) `find(s,sub)`→인덱스(-1 없음) `chars(s)` `repeat(s,n)` `ord(s)` `chr(n)`
+`contains(s,sub)`(문자열 전용) `find(s,sub)`→인덱스(-1 없음) `chars(s)` `repeat(s,n)` `ord(s)` `chr(n)` `format(fmt, ...)`
 
 수학: `abs(x)` `sqrt(x)` `floor(x)` `ceil(x)` `round(x)` `pow(b,e)` `min(l)|min(a,b)` `max(l)|max(a,b)` `idiv(a,b)`
-`gcd(a,b)` `clamp(x,lo,hi)` `sign(x)` `sin/cos/tan(x)` `log(x)` `exp(x)` `pi()` `e()`
+`gcd(a,b)` `clamp(x,lo,hi)` `sign(x)` `sin/cos/tan(x)` `log(x)` `log10(x)` `exp(x)` `pi()` `e()`
 (정수 오버플로는 조용히 wrap하지 않고 try/catch로 잡히는 에러)
 
 동시성: `channel()` `send(c,v)` `recv(c)` `close(c)` `wait(f)` `parallel_map(l,f)` `select(chans)`
@@ -149,7 +149,8 @@ JSON/시간/난수: `json_parse(s)`→value `json_stringify(v)`→str `now_ms()`
 `serve_event(addr, handler)` — 단일 스레드 논블로킹 이벤트 루프, handler: fn(req_str)->resp_str
 
 네트워킹(클라이언트): `tcp_connect(addr)`→conn `http_get(url)`→{status,headers,body}
-`http_post(url, body[, headers])` (map/list body → JSON) `http_request(method, url[, body[, headers]])`
+`http_post(url, body[, headers[, options]])` (map/list body → JSON) `http_request(method, url[, body[, headers[, options]]])`
+options: `{"timeout_ms": 120000}`(기본 10000, 0=무제한) `{"on_line": fn(line) {...}}`(2xx 본문을 줄 단위로 받는 대로 — SSE 스트리밍, false 반환 시 중단, body는 nil)
 경로: `path_join(a, b, ...)` `path_basename(p)` `path_dirname(p)` `path_ext(p)`→"gz"(점 없음) `path_abs(p)`
 CSV: `csv_parse(text)`→[[str]] `csv_stringify(rows)`→text
 (http/https 지원. 리다이렉트 안 따라감(status 301 + headers.location). headers 키는 소문자)
@@ -177,6 +178,12 @@ fn new_stack() {
 
 // 병렬 API 팬아웃 (킬러 패턴)
 let pages = parallel_map(urls, fn(u) { return http_get(u) })
+
+// LLM API 스트리밍 (SSE): data: 줄만 골라 파싱 — 전체 예: examples/llm_fanout.bang
+let text = ""
+http_post(url, body, headers, {"timeout_ms": 120000, "on_line": fn(line) {
+    if starts_with(line, "data: ") { text += json_parse(line[6:]).delta.text }
+}})
 
 // 동시성 HTTP 서버 (연결마다 spawn)
 let server = tcp_listen("127.0.0.1:8080")
