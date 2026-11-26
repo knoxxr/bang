@@ -1,0 +1,4 @@
+fn average(xs) {
+    if not xs { return nil }
+    return sum(xs) / len(xs)
+}

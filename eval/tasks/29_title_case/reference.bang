@@ -1,0 +1,8 @@
+fn title_case(text) {
+    let words = []
+    for w in text.split(" ") {
+        if w == "" { continue }
+        words += [upper(w[:1]) + lower(w[1:])]
+    }
+    return join(words, " ")
+}

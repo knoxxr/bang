@@ -1,0 +1,6 @@
+let s = import("solution.bang")
+
+fn test_emails() {
+    assert_eq(s.extract_emails("연락: kim@example.com, lee.j@mail.co.kr 그리고 끝"), ["kim@example.com", "lee.j@mail.co.kr"])
+    assert_eq(s.extract_emails("없음"), [])
+}

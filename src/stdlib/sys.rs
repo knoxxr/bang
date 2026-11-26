@@ -82,7 +82,7 @@ pub(crate) fn proc_run(argv: &VmValue, span: Span) -> Result<VmValue, RuntimeErr
         Some(c) => VmValue::Int(c as i64),
         None => VmValue::Nil,
     };
-    let mut m = HashMap::new();
+    let mut m = crate::omap::OrderedMap::new();
     m.insert("code".to_string(), code);
     m.insert(
         "stdout".to_string(),

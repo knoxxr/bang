@@ -65,6 +65,31 @@ pub const OP_SETUP_TRY:       u8 = 75; // operand: u16 절대 catch ip
 pub const OP_POP_TRY:         u8 = 76; // try 본문 정상 종료 시 핸들러 제거
 pub const OP_THROW:           u8 = 77; // 스택 top 값을 예외로 던짐
 pub const OP_CHECK_TYPE:      u8 = 78; // operand: u8 타입 태그. 스택 top 타입 검증(peek)
+/// 경로 대입 `v[k1][k2].f = val` (Phase 45). operand: u16 slot, u8 kind(0=local,1=upval,2=global), u8 depth,
+/// u8 binop(0=단순 대입, 그 외 OP_ADD..OP_MOD = 복합 대입 `v[k] op= val`, Phase 46).
+/// 스택: [root 복사본, k1..kN, val] → [val]. 변수 슬롯을 제자리 변경해 COW 복사를 피한다.
+pub const OP_SET_PATH:        u8 = 79;
+/// 갱신 대입 `x = push(x, e)` / `x = x + e` (Phase 45). operand: u16 slot, u8 kind, u8 op(0=push,1=add).
+/// 스택: [x 복사본, e] → [새 x]. 슬롯이 같은 값이면 제자리 변경.
+pub const OP_UPDATE_VAR:      u8 = 80;
+/// 슬라이스 `t[s:e]` (Phase 46). 스택: [t, s|nil, e|nil] → [부분]. 음수는 끝에서부터, 범위는 잘라냄.
+pub const OP_SLICE:           u8 = 81;
+/// `for a, b in x` 용 반복자 (Phase 46): 맵은 [키, 값] 쌍, 그 외는 OP_MAKE_ITER와 같다.
+pub const OP_MAKE_ITER_PAIRS: u8 = 82;
+/// 포함 검사 `x in c` (Phase 46). 스택: [x, c] → [bool].
+pub const OP_IN:              u8 = 83;
+/// 분해 (Phase 46). operand: u8 n. 스택: [list(길이 n)] → [e0, .., e(n-1)].
+pub const OP_UNPACK:          u8 = 84;
+/// 기본값 매개변수 (Phase 47). operand: u8 매개변수 인덱스, i16 오프셋.
+/// 호출 시 그 인자가 전달됐으면 점프(기본값 계산 건너뜀).
+pub const OP_JUMP_IF_ARG:     u8 = 85;
+/// 메서드 호출 `x.f(args)` (Phase 47). operand: u16 이름 상수, u8 argc, u8 discarded(문장 위치면 1).
+/// 스택: [x, args..] → [결과]. x가 맵이고 키 f가 있으면 그 값을 호출, 아니면 빌트인 f(x, args..).
+pub const OP_METHOD_CALL:     u8 = 86;
+/// 형식 지정 (Phase 50). operand: u16 형식 문자열 상수. 스택 top 값 → 형식화된 Str.
+pub const OP_FMT:             u8 = 87;
+/// 문자열 조립 (Phase 50). operand: u8 n. 스택의 n개 값을 표시 형식(str())으로 이어 붙인 Str.
+pub const OP_BUILD_STR:       u8 = 88;
 
 // ============================================================================
 // Compile error
@@ -116,6 +141,10 @@ struct FnCompiler {
     chunk: Chunk,
     name: Option<String>,
     arity: usize,
+    /// 기본값 없는(필수) 매개변수 수 (Phase 47)
+    min_arity: usize,
+    file: Option<Arc<str>>,
+    src_dir: Option<Arc<str>>,
     locals: Vec<Local>,
     upvalues: Vec<UpvalueDesc>,
     loops: Vec<LoopInfo>,
@@ -131,6 +160,9 @@ impl FnCompiler {
             chunk: Chunk::new(),
             name,
             arity,
+            min_arity: arity,
+            file: None,
+            src_dir: None,
             locals: Vec::new(),
             upvalues: Vec::new(),
             loops: Vec::new(),
@@ -197,6 +229,9 @@ impl FnCompiler {
         Arc::new(CompiledFn {
             name: self.name,
             arity: self.arity,
+            min_arity: self.min_arity,
+            file: self.file,
+            src_dir: self.src_dir,
             chunk: self.chunk,
             upvalue_count: self.upvalues.len(),
             local_count: self.local_peak,
@@ -209,6 +244,10 @@ impl FnCompiler {
 // ============================================================================
 
 struct Compiler {
+    /// 소스 파일 경로 (Phase 56) — import 모듈이면 그 경로, 메인 프로그램이면 None
+    file: Option<Arc<str>>,
+    /// 소스 파일이 있는 디렉터리 (Phase 62) — 상대 경로 import의 기준. REPL·표준 입력은 None(현재 디렉터리).
+    src_dir: Option<Arc<str>>,
     fn_stack: Vec<FnCompiler>,
     globals: HashMap<String, u16>, // top-level name → global slot index
     global_count: u16,
@@ -218,6 +257,8 @@ struct Compiler {
 impl Compiler {
     fn new() -> Self {
         Self {
+            file: None,
+            src_dir: None,
             fn_stack: Vec::new(),
             globals: HashMap::new(),
             global_count: 0,
@@ -363,7 +404,12 @@ impl Compiler {
 
     fn prescan_globals(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
-            if let StmtKind::Let { name, .. } = &stmt.kind {
+            let names: Vec<&String> = match &stmt.kind {
+                StmtKind::Let { name, .. } => vec![name],
+                StmtKind::LetUnpack { names, .. } => names.iter().collect(),
+                _ => continue,
+            };
+            for name in names {
                 if !self.globals.contains_key(name.as_str()) {
                     let slot = self.global_count;
                     self.globals.insert(name.clone(), slot);
@@ -385,6 +431,23 @@ impl Compiler {
         let sp = stmt.span;
         match &stmt.kind.clone() {
             StmtKind::Let { name, ty, value } => {
+                // 지역 이름 있는 함수(fn f() { ... f() ... })는 본문이 자기 이름을 보도록 슬롯을 먼저
+                // 선언한다 (최상위는 전역 prescan이 이미 처리). 이전에는 중첩 재귀가 컴파일 에러였다.
+                let fn_idx = self.fn_stack.len() - 1;
+                let is_global = fn_idx == 0 && self.globals.contains_key(name.as_str());
+                if !is_global {
+                    if let ExprKind::Function { name: Some(fname), .. } = &value.kind {
+                        if fname == name {
+                            let slot = self.cur_mut().declare_local(name);
+                            self.compile_expr(value);
+                            if let Some(t) = ty {
+                                self.emit_u8(OP_CHECK_TYPE, t.as_u8(), sp);
+                            }
+                            self.emit_u8(OP_STORE_LOCAL, slot, sp);
+                            return;
+                        }
+                    }
+                }
                 self.compile_expr(value);
                 // 선택적 타입 힌트: 값이 스택 top에 있을 때 런타임 검증 (peek)
                 if let Some(t) = ty {
@@ -402,7 +465,36 @@ impl Compiler {
                 }
             }
 
+            StmtKind::LetUnpack { names, value } => {
+                self.compile_expr(value);
+                self.emit_u8(OP_UNPACK, names.len().min(255) as u8, sp);
+                if names.len() > 255 {
+                    self.error("분해 선언의 이름이 너무 많습니다", sp);
+                }
+                // UNPACK은 원소를 순서대로 push → 마지막 이름부터 저장
+                let fn_idx = self.fn_stack.len() - 1;
+                let slots: Vec<VarLocation> = names.iter().map(|name| {
+                    match self.globals.get(name.as_str()) {
+                        Some(&slot) if fn_idx == 0 => VarLocation::Global(slot),
+                        _ => VarLocation::Local(self.cur_mut().declare_local(name)),
+                    }
+                }).collect();
+                for loc in slots.into_iter().rev() {
+                    self.emit_store(loc, sp);
+                }
+            }
+
             StmtKind::Expr(expr) => {
+                // 문장 위치의 메서드 호출은 "결과 버림" 표시 (순수 빌트인이면 VM이 에러)
+                if let ExprKind::Call { callee, args } = &expr.kind {
+                    if let ExprKind::Field { target, name } = &callee.kind {
+                        if builtin_index(name).is_some() {
+                            self.compile_method_call(target, name, args, true, sp);
+                            self.emit(OP_POP, sp);
+                            return;
+                        }
+                    }
+                }
                 self.compile_expr(expr);
                 // Every expression statement discards the result.
                 // Assign leaves the value on stack (via DUP+STORE), so we POP it too.
@@ -471,13 +563,22 @@ impl Compiler {
                 }
             }
 
-            StmtKind::For { var, iter, body } => {
+            StmtKind::For { vars, iter, body } => {
                 self.compile_expr(iter);
-                self.emit(OP_MAKE_ITER, sp);
+                self.emit(if vars.len() > 1 { OP_MAKE_ITER_PAIRS } else { OP_MAKE_ITER }, sp);
 
-                // Declare loop variable as local
+                // Declare loop variable(s) as local. 여러 개면 원소를 숨은 슬롯에 받아 분해한다.
                 self.cur_mut().begin_scope();
-                let var_slot = self.cur_mut().declare_local(var);
+                let var_slot = if vars.len() == 1 {
+                    self.cur_mut().declare_local(&vars[0])
+                } else {
+                    self.cur_mut().declare_local(" for-item")
+                };
+                let var_slots: Vec<u8> = if vars.len() > 1 {
+                    vars.iter().map(|v| self.cur_mut().declare_local(v)).collect()
+                } else {
+                    Vec::new()
+                };
 
                 let loop_start = self.current_pos();
                 let td = self.cur().try_depth;
@@ -495,6 +596,14 @@ impl Compiler {
                 let done_patch = self.cur_mut().chunk.code.len();
                 self.cur_mut().chunk.emit(0xff, sp);
                 self.cur_mut().chunk.emit(0xff, sp);
+
+                if !var_slots.is_empty() {
+                    self.emit_u8(OP_LOAD_LOCAL, var_slot, sp);
+                    self.emit_u8(OP_UNPACK, var_slots.len() as u8, sp);
+                    for &slot in var_slots.iter().rev() {
+                        self.emit_u8(OP_STORE_LOCAL, slot, sp);
+                    }
+                }
 
                 self.cur_mut().begin_scope();
                 self.compile_stmts(&body.stmts);
@@ -651,7 +760,11 @@ impl Compiler {
             ExprKind::Map(entries) => {
                 let count = entries.len() as u16;
                 for (key, val) in entries {
-                    self.emit_const(VmValue::Str(key.as_str().to_string()), sp);
+                    let k = match key {
+                        MapKey::Int(n) => VmValue::Int(*n),
+                        other => VmValue::Str(other.as_str()),
+                    };
+                    self.emit_const(k, sp);
                     self.compile_expr(val);
                 }
                 self.emit_u16(OP_MAKE_MAP, count, sp);
@@ -691,6 +804,11 @@ impl Compiler {
                             BinaryOp::Eq  => OP_EQ,  BinaryOp::Ne  => OP_NE,
                             BinaryOp::Lt  => OP_LT,  BinaryOp::Le  => OP_LE,
                             BinaryOp::Gt  => OP_GT,  BinaryOp::Ge  => OP_GE,
+                            BinaryOp::In => OP_IN,
+                            BinaryOp::NotIn => {
+                                self.emit(OP_IN, sp);
+                                OP_NOT
+                            }
                             BinaryOp::And | BinaryOp::Or => unreachable!(),
                         };
                         self.emit(op_byte, sp);
@@ -699,10 +817,57 @@ impl Compiler {
             }
 
             ExprKind::Call { callee, args } => {
+                // x.f(args) — f가 빌트인 이름이면 메서드 호출(UFCS). 맵의 키 f가 우선.
+                if let ExprKind::Field { target, name } = &callee.kind {
+                    if builtin_index(name).is_some() {
+                        self.compile_method_call(target, name, args, false, sp);
+                        return;
+                    }
+                }
                 self.compile_expr(callee);
                 let argc = args.len() as u8;
                 for arg in args { self.compile_expr(arg); }
                 self.emit_u8(OP_CALL, argc, sp);
+            }
+
+            ExprKind::FString(parts) => {
+                // 조각을 차례로 스택에 쌓고 OP_BUILD_STR로 한 번에 이어 붙인다 (255개씩 묶음)
+                let mut pending = 0u8;
+                let mut have_acc = false;
+                for p in parts {
+                    match p {
+                        FStringPart::Lit(s) => {
+                            let idx = self.add_const(VmValue::Str(s.clone()));
+                            self.emit_u16(OP_CONST, idx, sp);
+                        }
+                        FStringPart::Expr(e, spec) => {
+                            self.compile_expr(e);
+                            if let Some(spec) = spec {
+                                let idx = self.add_const(VmValue::Str(spec.clone()));
+                                self.emit_u16(OP_FMT, idx, sp);
+                            }
+                        }
+                    }
+                    pending += 1;
+                    if pending == 254 {
+                        self.emit_u8(OP_BUILD_STR, pending + have_acc as u8, sp);
+                        have_acc = true;
+                        pending = 0;
+                    }
+                }
+                if pending > 0 || !have_acc {
+                    self.emit_u8(OP_BUILD_STR, pending + have_acc as u8, sp);
+                }
+            }
+
+            ExprKind::IfExpr { cond, then, else_ } => {
+                self.compile_expr(cond);
+                let else_jump = self.emit_jump(OP_JUMP_FALSE, sp);
+                self.compile_block_value(then, sp);
+                let end_jump = self.emit_jump(OP_JUMP, sp);
+                self.patch_jump(else_jump);
+                self.compile_block_value(else_, sp);
+                self.patch_jump(end_jump);
             }
 
             ExprKind::Index { target, index } => {
@@ -717,13 +882,23 @@ impl Compiler {
                 self.emit_u16(OP_FIELD_GET, name_idx, sp);
             }
 
-            ExprKind::Function { name, params, param_types, ret_type, body } => {
-                self.compile_fn(name.clone(), params, param_types, *ret_type, body, sp);
+            ExprKind::Function { name, params, param_types, param_defaults, ret_type, body } => {
+                self.compile_fn(name.clone(), params, param_types, param_defaults, *ret_type, body, sp);
             }
 
             ExprKind::Spawn(inner) => {
                 // Part B: 진짜 spawn — OS 스레드로 실행
-                if let ExprKind::Call { callee, args } = &inner.kind {
+                // 메서드 호출(spawn x.f())은 아래 thunk 경로로 (OP_SPAWN은 클로저 callee만 받음)
+                // 빌트인 직접 호출(spawn len(x))도 thunk 경로로 — OP_SPAWN은 클로저만 받는다
+                let is_method = match &inner.kind {
+                    ExprKind::Call { callee, .. } => match &callee.kind {
+                        ExprKind::Field { name, .. } => builtin_index(name).is_some(),
+                        ExprKind::Ident(name) => matches!(self.resolve_name(name), VarLocation::Builtin(_)),
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                if let (ExprKind::Call { callee, args }, false) = (&inner.kind, is_method) {
                     // spawn foo(a, b) → callee + args + OP_SPAWN(argc)
                     self.compile_expr(callee);
                     let argc = args.len() as u8;
@@ -740,7 +915,7 @@ impl Compiler {
                         }],
                         span: sp,
                     };
-                    self.compile_fn(None, &[], &[], None, &body, sp);
+                    self.compile_fn(None, &[], &[], &[], None, &body, sp);
                     self.emit_u8(OP_SPAWN, 0, sp);
                 }
             }
@@ -748,14 +923,166 @@ impl Compiler {
             ExprKind::Assign { target, value } => {
                 self.compile_assign(target, value, sp);
             }
+
+            ExprKind::CompoundAssign { op, target, value } => {
+                self.compile_compound_assign(*op, target, value, sp);
+            }
+
+            ExprKind::Slice { target, start, end } => {
+                self.compile_expr(target);
+                for b in [start, end] {
+                    match b {
+                        Some(e) => self.compile_expr(e),
+                        None => { self.emit(OP_NIL, sp); }
+                    }
+                }
+                self.emit(OP_SLICE, sp);
+            }
         }
+    }
+
+    /// `x = push(x, e)` → (0, e), `x = x + e` → (1, e). push가 빌트인일 때만.
+    fn update_pattern<'a>(&mut self, name: &str, value: &'a Expr) -> Option<(u8, &'a Expr)> {
+        match &value.kind {
+            ExprKind::Call { callee, args } if args.len() == 2 => {
+                let is_push = matches!(&callee.kind, ExprKind::Ident(c) if c == "push")
+                    && matches!(&args[0].kind, ExprKind::Ident(a) if a == name);
+                if is_push && builtin_index("push").map(|i| VarLocation::Builtin(i as u8))
+                    == Some(self.resolve_name("push"))
+                {
+                    return Some((0, &args[1]));
+                }
+                None
+            }
+            ExprKind::Binary { op: BinaryOp::Add, left, right }
+                if matches!(&left.kind, ExprKind::Ident(a) if a == name) =>
+            {
+                Some((1, right))
+            }
+            _ => None,
+        }
+    }
+
+    /// 메서드 호출 `target.name(args)` → OP_METHOD_CALL (빌트인 이름일 때만).
+    fn compile_method_call(&mut self, target: &Expr, name: &str, args: &[Expr], discarded: bool, sp: Span) {
+        self.compile_expr(target);
+        for arg in args { self.compile_expr(arg); }
+        let name_idx = self.add_const(VmValue::Str(name.to_string()));
+        self.emit_u16(OP_METHOD_CALL, name_idx, sp);
+        self.emit(args.len() as u8, sp);
+        self.emit(discarded as u8, sp);
+    }
+
+    /// 블록을 값으로 컴파일: 마지막 문장은 식이어야 하며 그 값이 스택에 남는다 (if 식용).
+    fn compile_block_value(&mut self, block: &Block, sp: Span) {
+        self.cur_mut().begin_scope();
+        match block.stmts.split_last() {
+            Some((last, init)) => {
+                self.compile_stmts(init);
+                match &last.kind {
+                    StmtKind::Expr(e) => self.compile_expr(e),
+                    _ => {
+                        self.error("if 식의 각 갈래는 값(식)으로 끝나야 합니다", last.span);
+                        self.emit(OP_NIL, sp);
+                    }
+                }
+            }
+            None => {
+                self.error("if 식의 갈래가 비어 있습니다 — 값이 필요합니다", sp);
+                self.emit(OP_NIL, sp);
+            }
+        }
+        self.cur_mut().end_scope();
+    }
+
+    /// `x op= e` → `x = x op e` (변수: 갱신 패턴 재사용), 경로는 OP_SET_PATH의 binop로 (키 1회 평가).
+    fn compile_compound_assign(&mut self, op: BinaryOp, target: &Expr, value: &Expr, sp: Span) {
+        let op_byte = match op {
+            BinaryOp::Add => OP_ADD, BinaryOp::Sub => OP_SUB, BinaryOp::Mul => OP_MUL,
+            BinaryOp::Div => OP_DIV, BinaryOp::Mod => OP_MOD,
+            _ => {
+                self.error("지원하지 않는 복합 대입 연산자", sp);
+                self.emit(OP_NIL, sp);
+                return;
+            }
+        };
+        match &target.kind {
+            ExprKind::Ident(_) => {
+                let desugared = Expr {
+                    kind: ExprKind::Binary {
+                        op,
+                        left: Box::new(target.clone()),
+                        right: Box::new(value.clone()),
+                    },
+                    span: value.span,
+                };
+                self.compile_assign(target, &desugared, sp);
+            }
+            ExprKind::Index { .. } | ExprKind::Field { .. } => {
+                self.compile_path_assign(target, value, op_byte, sp);
+            }
+            _ => {
+                self.error("유효하지 않은 대입 대상", sp);
+                self.emit(OP_NIL, sp);
+            }
+        }
+    }
+
+    /// 경로 대입: 루트는 반드시 변수. v[a][b].c = val (binop≠0이면 v[a][b].c op= val)
+    fn compile_path_assign(&mut self, target: &Expr, value: &Expr, binop: u8, sp: Span) {
+        let mut keys: Vec<PathKey> = Vec::new();
+        let root = match collect_assign_path(target, &mut keys) {
+            Some(r) => r.to_string(),
+            None => {
+                self.error("대입 대상은 변수에서 시작해야 합니다 (예: v[i], v.f, v[i][j])", sp);
+                self.emit(OP_NIL, sp);
+                return;
+            }
+        };
+        let loc = self.resolve_name(&root);
+        let Some((kind, slot)) = var_operand(&loc) else {
+            self.error(format!("정의되지 않은 변수: '{root}'"), sp);
+            self.emit(OP_NIL, sp);
+            return;
+        };
+        if keys.len() > u8::MAX as usize {
+            self.error("대입 경로가 너무 깊습니다", sp);
+            self.emit(OP_NIL, sp);
+            return;
+        }
+        self.emit_load(loc, sp);
+        for key in &keys {
+            match key {
+                PathKey::Expr(e) => self.compile_expr(e),
+                PathKey::Name(n) => {
+                    let idx = self.add_const(VmValue::Str(n.to_string()));
+                    self.emit_u16(OP_CONST, idx, sp);
+                }
+            }
+        }
+        self.compile_expr(value);
+        self.emit_u16(OP_SET_PATH, slot, sp);
+        self.emit(kind, sp);
+        self.emit(keys.len() as u8, sp);
+        self.emit(binop, sp);
     }
 
     fn compile_assign(&mut self, target: &Expr, value: &Expr, sp: Span) {
         match &target.kind.clone() {
             ExprKind::Ident(name) => {
-                self.compile_expr(value);
+                // 갱신 패턴(x = push(x, e) / x = x + e)은 제자리 변경 opcode로 (Phase 45)
                 let loc = self.resolve_name(name);
+                if let Some((kind, slot)) = var_operand(&loc) {
+                    if let Some((op, rhs)) = self.update_pattern(name, value) {
+                        self.emit_load(loc, sp);
+                        self.compile_expr(rhs);
+                        self.emit_u16(OP_UPDATE_VAR, slot, sp);
+                        self.emit(kind, sp);
+                        self.emit(op, sp);
+                        return;
+                    }
+                }
+                self.compile_expr(value);
                 if loc == VarLocation::Unknown {
                     self.error(format!("정의되지 않은 변수: '{name}'"), sp);
                     self.emit(OP_POP, sp);
@@ -765,34 +1092,8 @@ impl Compiler {
                     self.emit_store(loc, sp);
                 }
             }
-            ExprKind::Index { target: container, index } => {
-                if let ExprKind::Ident(name) = &container.kind {
-                    let loc = self.resolve_name(name);
-                    self.emit_load(loc.clone(), sp);
-                    self.compile_expr(index);
-                    self.compile_expr(value);
-                    self.emit(OP_INDEX_SET, sp);
-                    self.emit(OP_DUP, sp);
-                    self.emit_store(loc, sp);
-                } else {
-                    self.error("복잡한 인덱스 대입 미지원", sp);
-                    self.emit(OP_NIL, sp);
-                }
-            }
-            ExprKind::Field { target: container, name: field } => {
-                if let ExprKind::Ident(var_name) = &container.kind {
-                    let loc = self.resolve_name(var_name);
-                    self.emit_load(loc.clone(), sp);
-                    let key_idx = self.add_const(VmValue::Str(field.clone()));
-                    self.emit_u16(OP_CONST, key_idx, sp);
-                    self.compile_expr(value);
-                    self.emit(OP_INDEX_SET, sp);
-                    self.emit(OP_DUP, sp);
-                    self.emit_store(loc, sp);
-                } else {
-                    self.error("복잡한 필드 대입 미지원", sp);
-                    self.emit(OP_NIL, sp);
-                }
+            ExprKind::Index { .. } | ExprKind::Field { .. } => {
+                self.compile_path_assign(target, value, 0, sp);
             }
             _ => {
                 self.error("유효하지 않은 대입 대상", sp);
@@ -805,17 +1106,22 @@ impl Compiler {
     // Function / closure compilation
     // ============================================================
 
+    #[allow(clippy::too_many_arguments)]
     fn compile_fn(
         &mut self,
         name: Option<String>,
         params: &[String],
         param_types: &[Option<TypeAnn>],
+        param_defaults: &[Option<Expr>],
         ret_type: Option<TypeAnn>,
         body: &Block,
         sp: Span,
     ) {
         // Push a new FnCompiler
         let mut fn_comp = FnCompiler::new(name.clone(), params.len());
+        fn_comp.file = self.file.clone();
+        fn_comp.src_dir = self.src_dir.clone();
+        fn_comp.min_arity = param_defaults.iter().take_while(|d| d.is_none()).count().min(params.len());
         fn_comp.ret_type = ret_type;
 
         // Parameters are locals at scope_depth=1
@@ -836,6 +1142,23 @@ impl Compiler {
 
         self.fn_stack.push(fn_comp);
         self.cur_mut().begin_scope(); // body block scope
+
+        // 기본값: 인자가 생략된 매개변수만 호출 시점에 계산해 채운다 (Phase 47)
+        for (i, d) in param_defaults.iter().enumerate() {
+            if let Some(d) = d {
+                self.emit_u8(OP_JUMP_IF_ARG, i as u8, sp);
+                let patch = self.cur_mut().chunk.code.len();
+                self.cur_mut().chunk.emit(0xff, sp);
+                self.cur_mut().chunk.emit(0xff, sp);
+                self.compile_expr(d);
+                self.emit_u8(OP_STORE_LOCAL, i as u8, sp);
+                let target = self.current_pos();
+                let off = (target as isize - patch as isize - 2) as i16;
+                let chunk = &mut self.cur_mut().chunk;
+                chunk.code[patch] = (off as u16 & 0xff) as u8;
+                chunk.code[patch + 1] = (off as u16 >> 8) as u8;
+            }
+        }
 
         // 파라미터 타입 힌트 런타임 검증 (본문 시작 시)
         for (i, pt) in param_types.iter().enumerate() {
@@ -880,7 +1203,9 @@ impl Compiler {
         self.prescan_globals(&prog.stmts);
 
         // Wrap top-level code in a "main" function
-        let main_fn = FnCompiler::new(Some("main".to_string()), 0);
+        let mut main_fn = FnCompiler::new(Some("main".to_string()), 0);
+        main_fn.file = self.file.clone();
+        main_fn.src_dir = self.src_dir.clone();
         self.fn_stack.push(main_fn);
         self.cur_mut().begin_scope();
 
@@ -900,6 +1225,40 @@ impl Compiler {
 // ============================================================================
 // VarLocation
 // ============================================================================
+
+/// 경로 대입의 한 단계: `[식]` 또는 `.이름`.
+enum PathKey<'a> {
+    Expr(&'a Expr),
+    Name(&'a str),
+}
+
+/// `v[a].b[c]` → 루트 변수 이름을 반환하고 keys에 [a, "b", c]를 채운다.
+fn collect_assign_path<'a>(e: &'a Expr, keys: &mut Vec<PathKey<'a>>) -> Option<&'a str> {
+    match &e.kind {
+        ExprKind::Ident(n) => Some(n.as_str()),
+        ExprKind::Index { target, index } => {
+            let root = collect_assign_path(target, keys)?;
+            keys.push(PathKey::Expr(index));
+            Some(root)
+        }
+        ExprKind::Field { target, name } => {
+            let root = collect_assign_path(target, keys)?;
+            keys.push(PathKey::Name(name));
+            Some(root)
+        }
+        _ => None,
+    }
+}
+
+/// 변수 위치 → (kind, slot) operand. kind: 0=local, 1=upval, 2=global.
+fn var_operand(loc: &VarLocation) -> Option<(u8, u16)> {
+    match loc {
+        VarLocation::Local(s) => Some((0, *s as u16)),
+        VarLocation::Upval(i) => Some((1, *i as u16)),
+        VarLocation::Global(s) => Some((2, *s)),
+        _ => None,
+    }
+}
 
 #[derive(Clone, PartialEq, Debug)]
 enum VarLocation {
@@ -923,7 +1282,32 @@ pub struct CompileOutput {
 /// Compile a parsed program into a main CompiledFn.
 /// Returns Err if any compile errors occurred.
 pub fn compile(prog: &Program) -> Result<CompileOutput, Vec<CompileError>> {
+    compile_with_file(prog, None)
+}
+
+/// 소스 파일 경로를 기록하며 컴파일 (import 모듈용 — 런타임 에러가 모듈 파일 위치를 가리키게).
+pub fn compile_with_file(prog: &Program, file: Option<&str>) -> Result<CompileOutput, Vec<CompileError>> {
+    compile_inner(prog, file, file.map(dir_of))
+}
+
+/// 메인 스크립트 컴파일 (Phase 62): 에러 표시는 메인 파일 형식(파일 이름 없음) 그대로 두고,
+/// 상대 경로 import의 기준 디렉터리만 스크립트 위치로 기록한다.
+pub fn compile_main(prog: &Program, script_path: &str) -> Result<CompileOutput, Vec<CompileError>> {
+    compile_inner(prog, None, Some(dir_of(script_path)))
+}
+
+/// 파일 경로의 디렉터리 ("main.bang" → "", "lib/a.bang" → "lib").
+fn dir_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn compile_inner(prog: &Program, file: Option<&str>, src_dir: Option<String>) -> Result<CompileOutput, Vec<CompileError>> {
     let mut compiler = Compiler::new();
+    compiler.file = file.map(Arc::from);
+    compiler.src_dir = src_dir.map(Arc::from);
     compiler.compile_program(prog);
 
     if !compiler.errors.is_empty() {
@@ -979,12 +1363,8 @@ fn const_fold_value(op: &BinaryOp, l: VmValue, r: VmValue) -> Option<VmValue> {
         (BinaryOp::Mul, VmValue::Int(a),   VmValue::Float(b)) => Some(VmValue::Float(a as f64 * b)),
         (BinaryOp::Mul, VmValue::Float(a), VmValue::Int(b))   => Some(VmValue::Float(a * b as f64)),
         (BinaryOp::Div, VmValue::Int(a),   VmValue::Int(b)) if b != 0 => {
-            // i64::MIN % -1 / MIN / -1 도 오버플로 → checked, 실패 시 폴딩 포기
-            match a.checked_rem(b) {
-                Some(0) => a.checked_div(b).map(VmValue::Int),
-                Some(_) => Some(VmValue::Float(a as f64 / b as f64)),
-                None => None,
-            }
+            // `/`는 항상 float (Phase 57 — VM과 같게)
+            Some(VmValue::Float(a as f64 / b as f64))
         }
         (BinaryOp::Div, VmValue::Float(a), VmValue::Float(b)) => Some(VmValue::Float(a / b)),
         (BinaryOp::Div, VmValue::Int(a),   VmValue::Float(b)) => Some(VmValue::Float(a as f64 / b)),

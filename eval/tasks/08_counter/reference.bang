@@ -1,0 +1,10 @@
+fn make_counter(start) {
+    let n = start
+    return {
+        "inc": fn() {
+            n += 1
+            return n
+        },
+        "get": fn() { return n },
+    }
+}

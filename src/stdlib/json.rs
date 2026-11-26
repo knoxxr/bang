@@ -226,7 +226,7 @@ impl JsonParser<'_> {
     }
     fn parse_object(&mut self) -> Result<VmValue, RuntimeError> {
         self.pos += 1; // {
-        let mut map = HashMap::new();
+        let mut map = crate::omap::OrderedMap::new();
         self.skip_ws();
         if self.peek() == Some('}') {
             self.pos += 1;
@@ -244,7 +244,7 @@ impl JsonParser<'_> {
             }
             self.pos += 1;
             let val = self.parse_value()?;
-            map.insert(key, val);
+            map.insert(encode_str_key(&key), val);
             self.skip_ws();
             match self.peek() {
                 Some(',') => {
@@ -272,7 +272,7 @@ pub(crate) fn json_stringify(
             out.push_str(&n.to_string());
         }
         VmValue::Float(n) => {
-            out.push_str(&n.to_string());
+            out.push_str(&fmt_float(*n));
         }
         VmValue::Bool(b) => {
             out.push_str(if *b { "true" } else { "false" });
@@ -293,16 +293,14 @@ pub(crate) fn json_stringify(
         }
         VmValue::Map(m) => {
             out.push('{');
-            // 안정적 출력을 위해 키 정렬
-            let mut keys: Vec<&String> = m.keys().collect();
-            keys.sort();
-            for (i, k) in keys.iter().enumerate() {
+            // 삽입 순서 그대로 (Phase 51 — 이전에는 키 정렬). json_parse → stringify가 순서를 보존한다.
+            for (i, (k, val)) in m.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                json_escape(k, out);
+                json_escape(&key_display(k), out);
                 out.push(':');
-                json_stringify(&m[*k], out, span)?;
+                json_stringify(val, out, span)?;
             }
             out.push('}');
         }

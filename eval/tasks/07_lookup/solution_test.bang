@@ -1,0 +1,8 @@
+let s = import("solution.bang")
+
+fn test_lookup() {
+    let m = {"a": 1, "b": nil}
+    assert_eq(s.lookup(m, "a"), 1)
+    assert_eq(s.lookup(m, "zz"), "없음")
+    assert_eq(s.lookup(m, "b"), nil)
+}

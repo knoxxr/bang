@@ -1,0 +1,6 @@
+let s = import("solution.bang")
+
+fn test_title() {
+    assert_eq(s.title_case("hello  wORLD from bang"), "Hello World From Bang")
+    assert_eq(s.title_case(""), "")
+}

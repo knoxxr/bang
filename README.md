@@ -27,8 +27,8 @@ bang에는 그게 없다. `spawn`/`parallel_map`만 있으면 된다.
 
 - **투명 동시성** — 함수 색칠(async/await) 없이 `spawn`/`parallel`만으로 병렬 실행.
   Future는 값이 필요한 시점에 자동 조인된다(`await` 키워드 없음).
-- **값 의미론** — list/map/string은 복제되어 전달된다. 공유 가변 상태가 없으니
-  데이터 레이스가 문법적으로 불가능하다.
+- **값 의미론** — list/map/string은 복제되어 전달된다. 작업 사이에 공유되는 가변 값이 없으니
+  언어 안의 값에서는 데이터 레이스가 생길 수 없다. (파일·소켓 같은 외부 자원은 본래 공유된다.)
 - **구조적 동시성** — 모든 작업은 스코프에 뿌리내리고 자동 조인된다. 작업 누수가 없다.
 - **사람이 읽기 좋은 에러** — 모든 오류에 `(line, col)`과 소스 컨텍스트가 붙는다.
 
@@ -119,14 +119,31 @@ bang                      REPL 진입
 bang run     [--dump-ast] <파일|->   실행 (바이트코드 VM — 유일한 실행 엔진)
 bang compile -o <출력> <파일>   [실험적] AOT 컴파일 (C 트랜스파일 + cc/clang/gcc -O2)
                           정수·문자열·함수만 지원. 미지원 기능은 컴파일 에러
-bang check   <파일>       오류 검사 + 정적 타입 검사 (실행 없음)
+bang check   [--json] <파일>  오류 검사 + 정적 타입 검사 (실행 없음, --json: 기계가 읽는 진단)
 bang build   <파일>       컴파일 검증 + 통계
 bang parse   <파일>       AST 출력
 bang tokenize <파일>      토큰 출력 (디버그)
+bang test   [경로...]     테스트 실행 (*_test.bang / test_*.bang 의 test_* 함수, 실패 시 exit 1)
+bang fmt     [--check] [경로...]   들여쓰기 정규화 (줄 안 내용은 바꾸지 않음)
 bang repl                 대화형 셸
 bang version              버전 출력
 bang help                 도움말
 ```
+
+### 권한 모드 — AI가 쓴 코드를 안심하고 실행
+
+`--sandbox`나 `--allow-*`를 하나라도 주면 허가한 것만 할 수 있습니다. 나머지 파일·네트워크·프로세스·환경 변수
+접근은 `permission` 에러가 됩니다(플래그가 없으면 지금처럼 모두 허용).
+
+```
+bang --sandbox generated.bang                                    # 아무것도 허가하지 않음
+bang run --allow-read=./data --allow-write=./out \
+         --allow-net=api.anthropic.com --allow-env=ANTHROPIC_API_KEY agent.bang
+bang test --sandbox                                               # 테스트도 같은 플래그
+```
+
+경로는 심볼릭 링크·`..`를 풀어 비교하고, `spawn`·콜백 등 어떤 경로로 불러도 같은 검사를 받습니다.
+OS 수준 격리는 아니므로 `--allow-run=sh`처럼 범용 실행기는 허가하지 마세요 (SPEC 17장).
 
 ## 예제
 
@@ -184,20 +201,23 @@ let sorted = sort(xs)  // sorted = [1, 2, 3], xs 는 그대로
 | 리스트 | `push(l,x)` `pop(l)` `sort(l)` `sort_by(l,keyfn)` `reverse(l)` `map(l,f)` `filter(l,f)` `reduce(l,f,init)` `any(l,f)` `all(l,f)` `sum(l)` `flat(l)` `enumerate(l)` `zip(a,b)` `range(...)` `slice(l,s,e)` `index_of(l,x)` `unique(l)` |
 | 맵 | `keys(m)` `values(m)` `has(m,k)` `get(m,k,default)` `merge(m1,m2)` |
 | 문자열 | `split(s,sep)` `join(l,sep)` `trim(s)` `trim_start(s)` `trim_end(s)` `replace(s,a,b)` `contains(s,sub)` `starts_with(s,p)` `ends_with(s,p)` `upper(s)` `lower(s)` `find(s,sub)` `chars(s)` `slice(s,start,end)` `repeat(s,n)` |
-| 수학 | `abs(x)` `sqrt(x)` `floor(x)` `ceil(x)` `round(x)` `pow(b,e)` `min(...)` `max(...)` `gcd(a,b)` `clamp(x,lo,hi)` `sign(x)` `sin(x)` `cos(x)` `tan(x)` `log(x)` `log10(x)` `exp(x)` `pi()` `e()` |
+| 수학 | `idiv(a,b)`(정수 몫 — `/`는 항상 float) `abs(x)` `sqrt(x)` `floor(x)` `ceil(x)` `round(x)` `pow(b,e)` `min(...)` `max(...)` `gcd(a,b)` `clamp(x,lo,hi)` `sign(x)` `sin(x)` `cos(x)` `tan(x)` `log(x)` `log10(x)` `exp(x)` `pi()` `e()` |
 | 집합(리스트) | `union(a,b)` `intersect(a,b)` `difference(a,b)` (중복 제거) |
 | 동시성 | `channel(...)` `send(c,v)` `recv(c)` `select(chans)` `close(c)` `wait(f)` `parallel_map(l,f)` |
 | 네트워킹(서버) | `tcp_listen(addr)` `tcp_accept(s)` `tcp_read(c)` `tcp_read_until(c,marker)` `tcp_write(c,s)` `tcp_send_file(c,path)` `tcp_set_timeout(c,ms)` `tcp_close(c)` |
-| 네트워킹(클라이언트) | `tcp_connect(addr)` `http_get(url)` → `{status, headers, body}` (http/https, 리다이렉트는 따라가지 않음) |
+| 네트워킹(클라이언트) | `tcp_connect(addr)` `http_get(url)` `http_post(url, body[, headers[, options]])` `http_request(method, url[, body[, headers[, options]]])` → `{status, headers, body}` (http/https, 리다이렉트는 따라가지 않음, map/list body는 JSON, options: `timeout_ms`·줄 단위 스트리밍 `on_line` — LLM API 예제 `examples/llm_fanout.bang`) |
+| 경로 | `path_join(a, b, ...)` `path_basename(p)` `path_dirname(p)` `path_ext(p)` `path_abs(p)` |
+| CSV | `csv_parse(text)` → `[[str]]` `csv_stringify(rows)` |
 | 이벤트 서버 | `serve_event(addr, handler)` — 논블로킹 이벤트 루프(단일 스레드 멀티플렉싱). `handler: fn(req)->resp_str` ⚠️ 단일 스레드라 CPU 무거운/블로킹 핸들러는 루프를 막음(상세·한계는 docs/SPEC.md 6.4-3) |
 | JSON | `json_parse(s)` `json_stringify(v)` |
 | 정규식 | `regex_match(s,pat)` `regex_find(s,pat)` `regex_find_all(s,pat)` `regex_replace(s,pat,repl)` `regex_groups(s,pat)` |
 | 시간/난수 | `now_ms()` `format_time(ms)` `random()` `random_int(lo,hi)` |
-| 문자열/문자 | `ord(s)` `chr(n)` (그 외 위 문자열 행 참고) |
+| 문자열/문자 | `ord(s)` `chr(n)` `format(fmt, ...)` (그 외 위 문자열 행 참고) — 보간은 `f"{x:.2f}"` |
 | 파일시스템 | `read_file(p)` `write_file(p,s)` `file_append(p,s)` `file_size(p)` `list_dir(p)` `file_exists(p)` `is_dir(p)` `file_remove(p)` `file_move(src,dst)` `dir_create(p)` |
 | 바이트(불변) | `bytes_from_str(s)` `bytes_to_str(b)` `bytes_from_hex(s)` `bytes_to_hex(b)` `file_read_bytes(p)` `tcp_read_bytes(c)` + `len` `b[i]` `slice` `+` `==` (쓰기 빌트인은 str/bytes 모두 받음) |
 | 프로세스/환경 | `proc_run([prog, args...])` → `{code, stdout, stderr}` (셸 미경유) `env_get(name)` `env_cwd()` `sleep(ms)` |
 | I/O | `print(...)` `print_err(...)` `input(...)` `args()` |
+| 테스트 | `assert(cond[,msg])` `assert_eq(actual, expected)` — `bang test`와 함께 |
 
 ```
 // 고차 함수 — 함수를 값으로 넘긴다
@@ -213,7 +233,7 @@ print(max(3, 7))        // 7
 // 문자열·수학
 print(upper(trim("  hi  ")))          // HI
 print(join(["a", "b", "c"], "-"))     // a-b-c
-print(sqrt(16.0))                     // 4
+print(sqrt(16.0))                     // 4.0
 ```
 
 전체 함수의 정확한 시그니처·의미는 [`docs/SPEC.md`](docs/SPEC.md) 참고.
@@ -262,9 +282,9 @@ bang install
 mathutils = "https://github.com/user/mathutils@v1.0.0"
 ```
 
-설치된 패키지는 **바레 이름**으로 import한다 — 검색 순서:
-`./<name>.bang` → `bang_modules/<name>/<name>.bang` (또는 `main.bang`/`lib.bang`) →
-`BANG_PATH` 의 디렉토리.
+설치된 패키지는 **바레 이름**으로 import한다 — import를 쓴 파일의 디렉터리를 기준으로
+`<name>.bang` → `bang_modules/<name>/<name>.bang` (또는 `main.bang`/`lib.bang`, 상위 디렉터리로 올라가며) →
+`BANG_PATH` 의 디렉토리 순서로 찾는다 (SPEC 16장).
 
 ```
 let math = import("mathutils")   // bang_modules/mathutils/ 에서 해석
@@ -284,11 +304,11 @@ try {
     print("잡음: " + e)
 }
 
-// 내장 런타임 에러(0 나눗셈 등)도 잡힌다 — 메시지가 문자열로 바인딩
+// 내장 런타임 에러(0 나눗셈 등)도 잡힌다 — {kind, message, line, col} 맵
 try {
     let x = 1 / 0
 } catch e {
-    print(e)              // "0으로 나눌 수 없음"
+    print(e.message)      // "0으로 나눌 수 없음" (e.kind == "zero_division")
 }
 
 // 중첩 함수에서 던진 예외가 호출자의 try로 전파
@@ -314,7 +334,9 @@ try {
 
 - `throw <식>`은 문자열·맵·숫자 등 **임의의 값**을 던지며, 가장 가까운 바깥
   `try`의 `catch`로 (호출 스택을 가로질러) 전파된다.
-- 내장 런타임 에러도 `catch`로 잡히며, catch 변수엔 에러 **메시지 문자열**이 바인딩된다.
+- 내장 런타임 에러도 `catch`로 잡히며, catch 변수엔 맵 **`{kind, message, line, col}`**이
+  바인딩된다 (`e.kind`로 종류 구별 — `zero_division`/`index`/`key`/`type`/`io` 등, SPEC 8.2).
+- 맵에 없는 키를 읽으면 `key` 에러다 — 없을 수 있는 키는 `get(m, k, 기본값)`/`has(m, k)`.
 - `catch` 안에서 다시 `throw`하면 더 바깥 `try`로 전파된다(re-throw).
 - 잡히지 않은 예외는 프로그램을 종료시킨다.
 - 실험적 AOT 컴파일(`bang compile`)에서는 지원하지 않는다(컴파일 에러).
@@ -336,7 +358,7 @@ print(area(3, 4))        // 12
 try {
     let n: int = "oops"
 } catch e {
-    print(e)             // "타입 불일치: int 기대, Str 받음"
+    print(e.message)     // "타입 불일치: int 기대, Str 받음"
 }
 
 // any 는 모두 허용, 힌트 없는 코드는 완전 동적
@@ -385,3 +407,33 @@ TLS(`rustls`+`webpki-roots`, `--no-default-features`로 제외 가능)뿐이다.
 ## 라이선스
 
 [MIT](LICENSE)
+
+---
+
+## English summary
+
+**bang** is a small, dynamically typed scripting language where you think sequentially and run in parallel.
+There is no async/await (no function coloring), no GIL, and no locks: `spawn` makes an ordinary function call
+run on another core, and values (lists, maps, strings) are copied across task boundaries, so tasks cannot
+race on shared language values.
+
+```bang
+// Fetch URLs concurrently — no async, no callbacks, no locks.
+let pages = parallel_map(urls, fn(url) { return http_get(url) })
+print(f"fetched {len(pages)} pages")
+```
+
+- **Install**: `brew install knoxxr/tap/bang`, or the shell / PowerShell installers above.
+- **Structured concurrency**: every task is joined before the function that spawned it returns; unhandled task
+  errors propagate to the caller.
+- **Permission mode** for running AI-generated or untrusted scripts: `bang --sandbox x.bang` denies file, network,
+  process and environment access; grant only what is needed with `--allow-read=./data --allow-net=api.example.com`
+  (also `--allow-write`, `--allow-run`, `--allow-env`). Not OS-level isolation (SPEC §17).
+- **LLM APIs**: `http_post(url, body, headers, {"timeout_ms": 120000, "on_line": fn(line) {...}})` streams
+  responses line by line; see [`examples/llm_fanout.bang`](examples/llm_fanout.bang).
+- **Honest limits**: sequential execution is about 3–4× slower than CPython ([benchmarks](bench/README.md));
+  memory is reference-counted with a generational cycle collector (see SPEC §15); the experimental native compiler
+  (`bang compile`) supports only a small subset.
+- **Docs** are written in Korean first: [TUTORIAL](docs/TUTORIAL.md), [SPEC](docs/SPEC.md),
+  [PHILOSOPHY](docs/PHILOSOPHY.md). [`llms.txt`](llms.txt) gives an LLM enough context to write bang.
+

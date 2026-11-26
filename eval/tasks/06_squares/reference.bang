@@ -1,0 +1,7 @@
+fn squares(n) {
+    let out = []
+    for i in range(1, n + 1) {
+        out += [i * i]
+    }
+    return out
+}

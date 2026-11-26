@@ -1,0 +1,6 @@
+let s = import("solution.bang")
+
+fn test_first() {
+    assert_eq(s.first_ready([300, 30, 200]), 1)
+    assert_eq(s.first_ready([10]), 0)
+}

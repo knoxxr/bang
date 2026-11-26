@@ -1,0 +1,7 @@
+let s = import("solution.bang")
+
+fn test_greet() {
+    assert_eq(s.greet("방"), "안녕, 방!")
+    assert_eq(s.greet("bang", "hi"), "hi, bang!")
+    assert_eq(s.greet("bang", "hi", "?"), "hi, bang?")
+}

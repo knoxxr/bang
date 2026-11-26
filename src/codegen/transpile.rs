@@ -53,6 +53,11 @@ const C_RUNTIME: &str = r#"/* Bang Language C Runtime — 자동 생성 */
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+#include <errno.h>
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#endif
 
 typedef enum { BT_INT=0, BT_FLOAT=1, BT_BOOL=2, BT_NIL=3, BT_STR=4 } BT;
 typedef struct { BT tag; union { int64_t i; double f; int b; char* s; }; } BV;
@@ -69,16 +74,87 @@ static BV BV_str(const char* s){ BV v; v.tag=BT_STR; v.s=(char*)s; return v; }
 #define BNIL     BV_nil()
 #define BSTR(s)  BV_str(s)
 
+/* VM과 같은 의미를 지키는 런타임 (Phase 58). 에러는 VM의 "잡히지 않은 에러"와 같이 stderr + exit 1. */
+/* 에러 위치 (Phase 61): 실패할 수 있는 연산 직전에 소스 위치를 기록하고, 원본 줄을 VM처럼 보여 준다 */
+static int bv_pos_l = 0, bv_pos_c = 0;
+static const char* const* bv_src = NULL;
+static int bv_src_n = 0;
+static void bv_fail(const char* msg) {
+    fflush(stdout); /* 에러 전에 찍은 출력이 에러보다 먼저 보이게 (VM과 같은 순서) */
+    if (bv_pos_l <= 0) { fprintf(stderr, "런타임 오류: %s\n", msg); exit(1); }
+    const char* line = (bv_src && bv_pos_l <= bv_src_n) ? bv_src[bv_pos_l - 1] : NULL;
+    if (!line) { fprintf(stderr, "[%d:%d] 런타임 오류: %s\n", bv_pos_l, bv_pos_c, msg); exit(1); }
+    fprintf(stderr, "[%d:%d] 런타임 오류: %s\n  |\n%3d | %s\n  | %*s^\n",
+            bv_pos_l, bv_pos_c, msg, bv_pos_l, line, bv_pos_c - 1, "");
+    exit(1);
+}
+static const char* bv_tname(BV v) {
+    switch (v.tag) {
+        case BT_INT: return "Int"; case BT_FLOAT: return "Float"; case BT_BOOL: return "Bool";
+        case BT_NIL: return "Nil"; case BT_STR: return "Str";
+    }
+    return "?";
+}
+/* "{op}: L {op} R 연산 불가" — VM 문구와 같음 */
+static void bv_fail_binop(const char* op, BV a, BV b) {
+    char m[160]; snprintf(m, sizeof m, "%s: %s %s %s 연산 불가", op, bv_tname(a), op, bv_tname(b)); bv_fail(m);
+}
+
+/* 참거짓 — Python 규칙 (VM is_truthy와 같음) */
 static int bv_truthy(BV v) {
-    if (v.tag==BT_BOOL) return v.b;
-    if (v.tag==BT_NIL)  return 0;
+    switch (v.tag) {
+        case BT_BOOL:  return v.b;
+        case BT_NIL:   return 0;
+        case BT_INT:   return v.i != 0;
+        case BT_FLOAT: return v.f != 0.0;
+        case BT_STR:   return v.s[0] != '\0';
+    }
     return 1;
 }
 
+/* float 표시 — VM fmt_float와 같음: 가장 짧게 왕복되는 자릿수를 지수 없이, 정수 값이면 ".0" (|x| < 1e16) */
+static void bv_fmt_float(double x, char* out, size_t cap) {
+    if (isnan(x)) { snprintf(out, cap, "NaN"); return; }
+    if (isinf(x)) { snprintf(out, cap, x < 0 ? "-inf" : "inf"); return; }
+    char tmp[64];
+    int prec;
+    for (prec = 1; prec <= 17; prec++) {
+        snprintf(tmp, sizeof tmp, "%.*e", prec - 1, x);
+        if (strtod(tmp, NULL) == x) break;
+    }
+    /* tmp = [-]d[.ddd]e[+-]XX */
+    const char* p = tmp;
+    int neg = 0;
+    if (*p == '-') { neg = 1; p++; }
+    char digits[32]; int n = 0;
+    while (*p && *p != 'e') { if (*p != '.') digits[n++] = *p; p++; }
+    digits[n] = '\0';
+    int e = (*p == 'e') ? atoi(p + 1) : 0;
+    while (n > 1 && digits[n - 1] == '0') digits[--n] = '\0';   /* 꼬리 0 제거 */
+    int point = e + 1;               /* 소수점 앞 자릿수 */
+    char body[400]; int k = 0;
+    if (point <= 0) {
+        body[k++] = '0'; body[k++] = '.';
+        for (int i = 0; i < -point; i++) body[k++] = '0';
+        for (int i = 0; i < n; i++) body[k++] = digits[i];
+    } else if (point >= n) {
+        for (int i = 0; i < n; i++) body[k++] = digits[i];
+        for (int i = 0; i < point - n; i++) body[k++] = '0';
+        if (fabs(x) < 1e16) { body[k++] = '.'; body[k++] = '0'; }
+    } else {
+        for (int i = 0; i < point; i++) body[k++] = digits[i];
+        body[k++] = '.';
+        for (int i = point; i < n; i++) body[k++] = digits[i];
+    }
+    body[k] = '\0';
+    snprintf(out, cap, "%s%s", neg ? "-" : "", body);
+}
+
 static void bv_display(BV v) {
+    char buf[420];
     switch (v.tag) {
         case BT_INT:   printf("%lld", (long long)v.i); break;
-        case BT_FLOAT: printf("%g",   v.f); break;
+        case BT_FLOAT: bv_fmt_float(v.f, buf, sizeof buf); printf("%s", buf); break;
         case BT_BOOL:  printf("%s",   v.b ? "true" : "false"); break;
         case BT_NIL:   printf("nil"); break;
         case BT_STR:   printf("%s",   v.s); break;
@@ -91,85 +167,167 @@ static void bv_print_n(BV* a, int n) {
     printf("\n");
 }
 
+static int bv_is_num(BV v) { return v.tag == BT_INT || v.tag == BT_FLOAT; }
+/* 빌트인의 숫자 인자 (VM as_float와 같은 문구) */
 static double bv_to_f(BV v, const char* op) {
+    (void)op;
     if (v.tag==BT_FLOAT) return v.f;
     if (v.tag==BT_INT)   return (double)v.i;
-    fprintf(stderr, "runtime: %s expects number\n", op); exit(1);
+    char m[96]; snprintf(m, sizeof m, "부동소수점 필요, %s 발견", bv_tname(v)); bv_fail(m); return 0;
+}
+static void bv_overflow(const char* op) {
+    char m[96]; snprintf(m, sizeof m, "정수 오버플로: %s 결과가 64비트 범위를 벗어남", op); bv_fail(m);
+}
+/* float → int: Rust `as i64`와 같이 범위 밖은 포화, NaN은 0 */
+static int64_t bv_f2i(double f) {
+    if (isnan(f)) return 0;
+    if (f >= 9223372036854775807.0) return INT64_MAX;
+    if (f <= -9223372036854775808.0) return INT64_MIN;
+    return (int64_t)f;
 }
 
 static BV bv_add(BV a, BV b) {
-    if (a.tag==BT_INT && b.tag==BT_INT) return BINT(a.i + b.i);
-    if ((a.tag==BT_INT||a.tag==BT_FLOAT) && (b.tag==BT_INT||b.tag==BT_FLOAT))
-        return BFLT(bv_to_f(a,"+")+bv_to_f(b,"+"));
+    if (a.tag==BT_INT && b.tag==BT_INT) { int64_t r; if (__builtin_add_overflow(a.i, b.i, &r)) bv_overflow("+"); return BINT(r); }
+    if (bv_is_num(a) && bv_is_num(b)) return BFLT(bv_to_f(a,"+")+bv_to_f(b,"+"));
     if (a.tag==BT_STR && b.tag==BT_STR) {
         size_t la=strlen(a.s), lb=strlen(b.s);
         char* r=(char*)malloc(la+lb+1);
-        if (!r){fprintf(stderr,"OOM\n");exit(1);}
+        if (!r) bv_fail("메모리 부족");
         memcpy(r,a.s,la); memcpy(r+la,b.s,lb+1);
         return BSTR(r);
     }
-    fprintf(stderr,"runtime: cannot add\n"); exit(1);
+    bv_fail_binop("+", a, b); return BNIL;
 }
-static BV bv_sub(BV a,BV b){if(a.tag==BT_INT&&b.tag==BT_INT)return BINT(a.i-b.i);return BFLT(bv_to_f(a,"-")-bv_to_f(b,"-"));}
-static BV bv_mul(BV a,BV b){if(a.tag==BT_INT&&b.tag==BT_INT)return BINT(a.i*b.i);return BFLT(bv_to_f(a,"*")*bv_to_f(b,"*"));}
+static BV bv_sub(BV a,BV b){
+    if(a.tag==BT_INT&&b.tag==BT_INT){int64_t r;if(__builtin_sub_overflow(a.i,b.i,&r))bv_overflow("-");return BINT(r);}
+    if(!bv_is_num(a)||!bv_is_num(b)) bv_fail_binop("-",a,b);
+    return BFLT(bv_to_f(a,"-")-bv_to_f(b,"-"));
+}
+static BV bv_mul(BV a,BV b){
+    if(a.tag==BT_INT&&b.tag==BT_INT){int64_t r;if(__builtin_mul_overflow(a.i,b.i,&r))bv_overflow("*");return BINT(r);}
+    if(!bv_is_num(a)||!bv_is_num(b)) bv_fail_binop("*",a,b);
+    return BFLT(bv_to_f(a,"*")*bv_to_f(b,"*"));
+}
+/* `/`는 항상 float. int/int에서 나누는 수가 0이면 에러, float이 섞이면 IEEE(inf/NaN) — VM과 같음 */
 static BV bv_div(BV a,BV b){
-    if(a.tag==BT_INT&&b.tag==BT_INT){if(!b.i){fprintf(stderr,"div by zero\n");exit(1);}return BINT(a.i/b.i);}
-    double db=bv_to_f(b,"/"); if(!db){fprintf(stderr,"div by zero\n");exit(1);}
-    return BFLT(bv_to_f(a,"/")/db);
+    if(a.tag==BT_INT&&b.tag==BT_INT){ if(!b.i) bv_fail("0으로 나눌 수 없음"); return BFLT((double)a.i/(double)b.i); }
+    if(!bv_is_num(a)||!bv_is_num(b)) bv_fail_binop("/",a,b);
+    return BFLT(bv_to_f(a,"/")/bv_to_f(b,"/"));
 }
-static BV bv_mod(BV a,BV b){if(a.tag==BT_INT&&b.tag==BT_INT){if(!b.i){fprintf(stderr,"mod by zero\n");exit(1);}return BINT(a.i%b.i);}fprintf(stderr,"mod: int required\n");exit(1);}
-static BV bv_neg(BV a){if(a.tag==BT_INT)return BINT(-a.i);if(a.tag==BT_FLOAT)return BFLT(-a.f);fprintf(stderr,"neg: number required\n");exit(1);}
+static BV bv_mod(BV a,BV b){
+    if(a.tag==BT_INT&&b.tag==BT_INT){
+        if(!b.i) bv_fail("나머지: 0으로 나눌 수 없음");
+        if(a.i==INT64_MIN && b.i==-1) bv_overflow("%");
+        return BINT(a.i%b.i);
+    }
+    if(!bv_is_num(a)||!bv_is_num(b)) bv_fail_binop("%",a,b);
+    return BFLT(fmod(bv_to_f(a,"%"),bv_to_f(b,"%")));
+}
+static BV bv_neg(BV a){
+    if(a.tag==BT_INT){ if(a.i==INT64_MIN) bv_overflow("단항 -"); return BINT(-a.i); }
+    if(a.tag==BT_FLOAT)return BFLT(-a.f);
+    {char m[96]; snprintf(m,sizeof m,"단항 -: 숫자 필요, %s 발견",bv_tname(a)); bv_fail(m);} return BNIL;
+}
 static BV bv_not_v(BV a){return BBOOL(!bv_truthy(a));}
 static BV bv_and_v(BV a,BV b){return bv_truthy(a)?b:a;}
 static BV bv_or_v(BV a,BV b){ return bv_truthy(a)?a:b;}
 
 static int bv_eq(BV a,BV b){
     if(a.tag==BT_INT&&b.tag==BT_INT)return a.i==b.i;
-    if((a.tag==BT_INT||a.tag==BT_FLOAT)&&(b.tag==BT_INT||b.tag==BT_FLOAT))return bv_to_f(a,"==")==bv_to_f(b,"==");
+    if(bv_is_num(a)&&bv_is_num(b))return bv_to_f(a,"==")==bv_to_f(b,"==");
     if(a.tag==BT_BOOL&&b.tag==BT_BOOL)return a.b==b.b;
     if(a.tag==BT_NIL&&b.tag==BT_NIL)return 1;
     if(a.tag==BT_STR&&b.tag==BT_STR)return strcmp(a.s,b.s)==0;
     return 0;
 }
-static int bv_lt(BV a,BV b){if(a.tag==BT_INT&&b.tag==BT_INT)return a.i<b.i;return bv_to_f(a,"<")<bv_to_f(b,"<");}
-static int bv_le(BV a,BV b){if(a.tag==BT_INT&&b.tag==BT_INT)return a.i<=b.i;return bv_to_f(a,"<=")<= bv_to_f(b,"<=");}
-static int bv_gt(BV a,BV b){return bv_lt(b,a);}
-static int bv_ge(BV a,BV b){return bv_le(b,a);}
+/* 비교: 숫자끼리, 문자열끼리(바이트 순 — VM의 Rust String 비교와 같음). 그 밖은 에러 */
+static int bv_cmp(BV a,BV b,const char* op){
+    if(a.tag==BT_INT&&b.tag==BT_INT)return (a.i>b.i)-(a.i<b.i);
+    if(bv_is_num(a)&&bv_is_num(b)){double x=bv_to_f(a,op),y=bv_to_f(b,op);return (x>y)-(x<y);}
+    if(a.tag==BT_STR&&b.tag==BT_STR){int c=strcmp(a.s,b.s);return (c>0)-(c<0);}
+    {char m[128]; snprintf(m,sizeof m,"비교: %s 와 %s 비교 불가",bv_tname(a),bv_tname(b)); bv_fail(m);} return 0;
+}
+static int bv_lt(BV a,BV b){return bv_cmp(a,b,"<")<0;}
+static int bv_le(BV a,BV b){return bv_cmp(a,b,"<=")<=0;}
+static int bv_gt(BV a,BV b){return bv_cmp(a,b,">")>0;}
+static int bv_ge(BV a,BV b){return bv_cmp(a,b,">=")>=0;}
 
 static BV bv_str_cast(BV v){
-    char buf[64];
+    char buf[420];
     switch(v.tag){
         case BT_STR: return v;
-        case BT_INT: snprintf(buf,64,"%lld",(long long)v.i); break;
-        case BT_FLOAT: snprintf(buf,64,"%g",v.f); break;
+        case BT_INT: snprintf(buf,sizeof buf,"%lld",(long long)v.i); break;
+        case BT_FLOAT: bv_fmt_float(v.f,buf,sizeof buf); break;
         case BT_BOOL: return BSTR(v.b?"true":"false");
         case BT_NIL: return BSTR("nil");
         default: return BSTR("");
     }
-    char*r=strdup(buf); if(!r){fprintf(stderr,"OOM\n");exit(1);} return BSTR(r);
+    char*r=strdup(buf); if(!r) bv_fail("메모리 부족"); return BSTR(r);
+}
+/* 앞뒤 공백을 뺀 문자열 전체가 숫자여야 변환 (VM의 trim + parse와 같음) */
+static const char* bv_trim_copy(const char* s, char* buf, size_t cap){
+    while(*s==' '||*s=='\t'||*s=='\n'||*s=='\r') s++;
+    size_t n=strlen(s); while(n>0&&(s[n-1]==' '||s[n-1]=='\t'||s[n-1]=='\n'||s[n-1]=='\r')) n--;
+    if(n>=cap) n=cap-1; memcpy(buf,s,n); buf[n]='\0'; return buf;
 }
 static BV bv_int_cast(BV v){
     if(v.tag==BT_INT)return v;
-    if(v.tag==BT_FLOAT)return BINT((int64_t)v.f);
+    if(v.tag==BT_FLOAT)return BINT(bv_f2i(v.f));
     if(v.tag==BT_BOOL)return BINT(v.b?1:0);
-    if(v.tag==BT_STR)return BINT(atoll(v.s));
-    return BINT(0);
+    if(v.tag==BT_STR){
+        char t[128]; const char* s=bv_trim_copy(v.s,t,sizeof t); char* end; errno=0;
+        long long n=strtoll(s,&end,10);
+        if(!*s||*end||errno){char m[200];snprintf(m,sizeof m,"int 변환 실패: '%s'",v.s);bv_fail(m);}
+        return BINT(n);
+    }
+    {char m[96]; snprintf(m,sizeof m,"int(): %s 변환 불가",bv_tname(v)); bv_fail(m);} return BNIL;
 }
 static BV bv_float_cast(BV v){
     if(v.tag==BT_FLOAT)return v;
     if(v.tag==BT_INT)return BFLT((double)v.i);
-    if(v.tag==BT_BOOL)return BFLT(v.b?1.0:0.0);
-    if(v.tag==BT_STR)return BFLT(atof(v.s));
-    return BFLT(0.0);
+    if(v.tag==BT_STR){
+        char t[128]; const char* s=bv_trim_copy(v.s,t,sizeof t); char* end;
+        double f=strtod(s,&end);
+        if(!*s||*end||(s[0]=='0'&&(s[1]=='x'||s[1]=='X'))){char m[200];snprintf(m,sizeof m,"float 변환 실패: '%s'",v.s);bv_fail(m);}
+        return BFLT(f);
+    }
+    {char m[96]; snprintf(m,sizeof m,"float(): %s 변환 불가",bv_tname(v)); bv_fail(m);} return BNIL;
 }
 static BV bv_bool_cast(BV v){ return BBOOL(bv_truthy(v)); }
-static BV bv_len_f(BV v){if(v.tag==BT_STR)return BINT((int64_t)strlen(v.s));fprintf(stderr,"len: str required\n");exit(1);}
-static BV bv_abs_f(BV v){if(v.tag==BT_INT)return BINT(v.i<0?-v.i:v.i);return BFLT(fabs(bv_to_f(v,"abs")));}
+/* len: 문자 수 (UTF-8 바이트가 아니라 — VM과 같음) */
+static BV bv_len_f(BV v){
+    if(v.tag!=BT_STR){char m[96]; snprintf(m,sizeof m,"len(): %s 지원 안 됨",bv_tname(v)); bv_fail(m);}
+    int64_t n=0; for(const unsigned char* p=(const unsigned char*)v.s;*p;p++) if((*p&0xC0)!=0x80) n++;
+    return BINT(n);
+}
+static BV bv_abs_f(BV v){
+    if(v.tag==BT_INT){ if(v.i==INT64_MIN) bv_overflow("abs"); return BINT(v.i<0?-v.i:v.i); }
+    if(v.tag!=BT_FLOAT){char m[96]; snprintf(m,sizeof m,"abs(): 숫자 필요, %s 발견",bv_tname(v)); bv_fail(m);}
+    return BFLT(fabs(v.f));
+}
 static BV bv_sqrt_f(BV v){return BFLT(sqrt(bv_to_f(v,"sqrt")));}
-static BV bv_floor_f(BV v){return BFLT(floor(bv_to_f(v,"floor")));}
-static BV bv_ceil_f(BV v){return BFLT(ceil(bv_to_f(v,"ceil")));}
-static BV bv_round_f(BV v){return BFLT(round(bv_to_f(v,"round")));}
-static BV bv_pow_f(BV a,BV b){return BFLT(pow(bv_to_f(a,"pow"),bv_to_f(b,"pow")));}
+/* floor/ceil/round는 int를 돌려준다 (VM과 같음). round는 0에서 먼 쪽으로 반올림 */
+static BV bv_floor_f(BV v){return BINT(bv_f2i(floor(bv_to_f(v,"floor"))));}
+static BV bv_ceil_f(BV v){return BINT(bv_f2i(ceil(bv_to_f(v,"ceil"))));}
+static BV bv_round_f(BV v){return BINT(bv_f2i(round(bv_to_f(v,"round"))));}
+/* pow: int^int(지수 ≥ 0)이고 결과가 정수 범위면 int, 그 외 float (VM과 같음) */
+static BV bv_pow_f(BV a,BV b){
+    double r=pow(bv_to_f(a,"pow"),bv_to_f(b,"pow"));
+    if(a.tag==BT_INT&&b.tag==BT_INT&&b.i>=0&&r==floor(r)&&fabs(r)<9223372036854775807.0) return BINT((int64_t)r);
+    return BFLT(r);
+}
+static void bv_exit_f(BV v){
+    if(v.tag!=BT_INT){char m[96]; snprintf(m,sizeof m,"exit(): 정수 필요, %s 발견",bv_tname(v)); bv_fail(m);}
+    exit((int)v.i);
+}
+static void bv_assert_f(BV cond, int has_msg, BV msg){
+    if(bv_truthy(cond)) return;
+    if(!has_msg) bv_fail("assertion 실패");
+    BV s = bv_str_cast(msg);
+    size_t n = strlen(s.s) + 32; char* m = (char*)malloc(n);
+    if(!m) bv_fail("메모리 부족");
+    snprintf(m, n, "assertion 실패: %s", s.s); bv_fail(m);
+}
 static BV bv_min_f(BV a,BV b){return bv_lt(a,b)?a:b;}
 static BV bv_max_f(BV a,BV b){return bv_gt(a,b)?a:b;}
 "#;
@@ -186,6 +344,8 @@ pub struct Transpiler {
     user_fns: HashSet<String>,
     /// 현재 스코프에서 이미 선언된 변수 이름 (C 재선언 방지)
     scope_stack: Vec<HashSet<String>>,
+    /// 원본 소스 (에러 문맥 표시용, Phase 61)
+    source: Option<String>,
 }
 
 impl Transpiler {
@@ -196,6 +356,7 @@ impl Transpiler {
             errors:      Vec::new(),
             user_fns:    HashSet::new(),
             scope_stack: Vec::new(),
+            source: None,
         }
     }
 
@@ -276,7 +437,10 @@ impl Transpiler {
     fn emit_fn_defs(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             if let StmtKind::Let { name, value, .. } = &stmt.kind {
-                if let ExprKind::Function { params, body, param_types, ret_type, .. } = &value.kind {
+                if let ExprKind::Function { params, body, param_types, param_defaults, ret_type, .. } = &value.kind {
+                    if param_defaults.iter().any(Option::is_some) {
+                        self.err("AOT: 매개변수 기본값 미지원", stmt.span);
+                    }
                     // VM은 타입 힌트를 런타임 검증한다. AOT가 무시하면 같은 프로그램의 결과가
                     // 달라지므로(조용한 불일치) 명확한 에러로 거절한다.
                     if param_types.iter().any(Option::is_some) || ret_type.is_some() {
@@ -321,6 +485,9 @@ impl Transpiler {
     fn emit_stmt(&mut self, stmt: &Stmt) {
         let sp = stmt.span;
         match &stmt.kind {
+            StmtKind::LetUnpack { .. } => {
+                self.err("AOT: 분해 선언(let [a, b] = ...) 미지원", sp);
+            }
             StmtKind::Let { name, value, ty } => {
                 if ty.is_some() {
                     self.err("AOT: 타입 힌트 미지원 (VM은 런타임 검증 — 힌트를 지우거나 bang run 사용)", sp);
@@ -461,11 +628,25 @@ impl Transpiler {
 
     // ---- 식 emit → C 표현식 문자열 반환 ----
 
+    /// 실패할 수 있는 호출: 인자를 먼저 모두 계산한 뒤 소스 위치를 기록하고 호출한다 (Phase 61).
+    /// (인자 안의 다른 연산이 위치를 덮어쓰지 않도록 GNU 문장식으로 순서를 고정)
+    /// `call`은 `_t0`, `_t1`… 로 인자를 쓰는 C 식.
+    fn at(sp: Span, args: &[String], call: &str) -> String {
+        let mut s = String::from("({ ");
+        for (i, a) in args.iter().enumerate() {
+            s.push_str(&format!("BV _t{i} = {a}; "));
+        }
+        s.push_str(&format!("bv_pos_l = {}; bv_pos_c = {}; {call}; }})", sp.line, sp.col));
+        s
+    }
+
     fn emit_expr(&mut self, expr: &Expr) -> String {
         let sp = expr.span;
         match &expr.kind {
             ExprKind::Int(n)    => format!("BINT({n})"),
-            ExprKind::Float(n)  => format!("BFLT({n})"),
+            // 지수 표기({:e})로 써야 C가 항상 double 리터럴로 읽는다 ("1e21"; 이전엔 정수 상수로 넘침)
+            ExprKind::Float(n) if n.is_finite() => format!("BFLT({n:e})"),
+            ExprKind::Float(n) => format!("BFLT({})", if n.is_nan() { "NAN" } else if *n > 0.0 { "INFINITY" } else { "-INFINITY" }),
             ExprKind::Bool(b)   => if *b { "BBOOL(1)".into() } else { "BBOOL(0)".into() },
             ExprKind::Nil       => "BNIL".into(),
             ExprKind::Str(s)    => format!("BSTR({})", c_str_literal(s)),
@@ -475,7 +656,7 @@ impl Transpiler {
             ExprKind::Unary { op, expr } => {
                 let inner = self.emit_expr(expr);
                 match op {
-                    UnaryOp::Neg => format!("bv_neg({inner})"),
+                    UnaryOp::Neg => Self::at(sp, &[inner], "bv_neg(_t0)"),
                     UnaryOp::Not => format!("bv_not_v({inner})"),
                 }
             }
@@ -483,21 +664,64 @@ impl Transpiler {
             ExprKind::Binary { op, left, right } => {
                 let l = self.emit_expr(left);
                 let r = self.emit_expr(right);
+                let lr = [l.clone(), r.clone()];
                 match op {
-                    BinaryOp::Add => format!("bv_add({l},{r})"),
-                    BinaryOp::Sub => format!("bv_sub({l},{r})"),
-                    BinaryOp::Mul => format!("bv_mul({l},{r})"),
-                    BinaryOp::Div => format!("bv_div({l},{r})"),
-                    BinaryOp::Mod => format!("bv_mod({l},{r})"),
+                    BinaryOp::Add => Self::at(sp, &lr, "bv_add(_t0,_t1)"),
+                    BinaryOp::Sub => Self::at(sp, &lr, "bv_sub(_t0,_t1)"),
+                    BinaryOp::Mul => Self::at(sp, &lr, "bv_mul(_t0,_t1)"),
+                    BinaryOp::Div => Self::at(sp, &lr, "bv_div(_t0,_t1)"),
+                    BinaryOp::Mod => Self::at(sp, &lr, "bv_mod(_t0,_t1)"),
                     BinaryOp::Eq  => format!("BBOOL(bv_eq({l},{r}))"),
                     BinaryOp::Ne  => format!("BBOOL(!bv_eq({l},{r}))"),
-                    BinaryOp::Lt  => format!("BBOOL(bv_lt({l},{r}))"),
-                    BinaryOp::Le  => format!("BBOOL(bv_le({l},{r}))"),
-                    BinaryOp::Gt  => format!("BBOOL(bv_gt({l},{r}))"),
-                    BinaryOp::Ge  => format!("BBOOL(bv_ge({l},{r}))"),
+                    BinaryOp::Lt  => Self::at(sp, &lr, "BBOOL(bv_lt(_t0,_t1))"),
+                    BinaryOp::Le  => Self::at(sp, &lr, "BBOOL(bv_le(_t0,_t1))"),
+                    BinaryOp::Gt  => Self::at(sp, &lr, "BBOOL(bv_gt(_t0,_t1))"),
+                    BinaryOp::Ge  => Self::at(sp, &lr, "BBOOL(bv_ge(_t0,_t1))"),
                     BinaryOp::And => format!("bv_and_v({l},{r})"),
                     BinaryOp::Or  => format!("bv_or_v({l},{r})"),
+                    BinaryOp::In | BinaryOp::NotIn => {
+                        self.err("AOT: in / not in 연산자 미지원", sp);
+                        "BNIL".into()
+                    }
                 }
+            }
+
+            ExprKind::CompoundAssign { op, target, value } => {
+                let val_e = self.emit_expr(value);
+                let f = match op {
+                    BinaryOp::Add => "bv_add", BinaryOp::Sub => "bv_sub",
+                    BinaryOp::Mul => "bv_mul", BinaryOp::Div => "bv_div",
+                    BinaryOp::Mod => "bv_mod",
+                    _ => {
+                        self.err("AOT: 지원하지 않는 복합 대입", sp);
+                        return "BNIL".into();
+                    }
+                };
+                match &target.kind {
+                    ExprKind::Ident(name) => {
+                        let call = format!("b_{name} = {f}(_t0,_t1)");
+                        format!("({}, b_{name})", Self::at(sp, &[format!("b_{name}"), val_e], &call))
+                    }
+                    _ => {
+                        self.err("AOT: 지원하지 않는 대입 대상", sp);
+                        "BNIL".into()
+                    }
+                }
+            }
+
+            ExprKind::Slice { .. } => {
+                self.err("AOT: 슬라이스 미지원", sp);
+                "BNIL".into()
+            }
+
+            ExprKind::FString(_) => {
+                self.err("AOT: f-문자열 미지원 (+ 와 str() 사용)", sp);
+                "BNIL".into()
+            }
+
+            ExprKind::IfExpr { .. } => {
+                self.err("AOT: if 식 미지원 (if 문 사용)", sp);
+                "BNIL".into()
             }
 
             ExprKind::Call { callee, args } => {
@@ -567,24 +791,28 @@ impl Transpiler {
                     }
                 }
                 "str"   => return format!("bv_str_cast({})", a0()),
-                "int"   => return format!("bv_int_cast({})", a0()),
-                "float" => return format!("bv_float_cast({})", a0()),
                 "bool"  => return format!("bv_bool_cast({})", a0()),
-                "len"   => return format!("bv_len_f({})", a0()),
-                "abs"   => return format!("bv_abs_f({})", a0()),
-                "sqrt"  => return format!("bv_sqrt_f({})", a0()),
-                "floor" => return format!("bv_floor_f({})", a0()),
-                "ceil"  => return format!("bv_ceil_f({})", a0()),
-                "round" => return format!("bv_round_f({})", a0()),
-                "pow"   => return format!("bv_pow_f({},{})", a0(), a1()),
-                "min"   => return format!("bv_min_f({},{})", a0(), a1()),
-                "max"   => return format!("bv_max_f({},{})", a0(), a1()),
-                "exit"  => return format!("((void)exit((int)bv_int_cast({}).i), BNIL)", a0()),
+                "int"   => return Self::at(sp, &[a0()], "bv_int_cast(_t0)"),
+                "float" => return Self::at(sp, &[a0()], "bv_float_cast(_t0)"),
+                "len"   => return Self::at(sp, &[a0()], "bv_len_f(_t0)"),
+                "abs"   => return Self::at(sp, &[a0()], "bv_abs_f(_t0)"),
+                "sqrt"  => return Self::at(sp, &[a0()], "bv_sqrt_f(_t0)"),
+                "floor" => return Self::at(sp, &[a0()], "bv_floor_f(_t0)"),
+                "ceil"  => return Self::at(sp, &[a0()], "bv_ceil_f(_t0)"),
+                "round" => return Self::at(sp, &[a0()], "bv_round_f(_t0)"),
+                "pow"   => return Self::at(sp, &[a0(), a1()], "bv_pow_f(_t0,_t1)"),
+                "min" | "max" if arg_exprs.len() != 2 => {
+                    self.err("AOT: min/max는 인자 2개만 지원 (리스트 인자 미지원)", sp);
+                    return "BNIL".into();
+                }
+                "min"   => return Self::at(sp, &[a0(), a1()], "bv_min_f(_t0,_t1)"),
+                "max"   => return Self::at(sp, &[a0(), a1()], "bv_max_f(_t0,_t1)"),
+                "exit" if arg_exprs.is_empty() => return "((void)exit(0), BNIL)".into(),
+                "exit"  => return Self::at(sp, &[a0()], "bv_exit_f(_t0), BNIL"),
                 "assert" => {
-                    let cond = a0();
-                    return format!(
-                        "((void)(bv_truthy({cond})||(fprintf(stderr,\"assertion failed\\n\"),exit(1),0)), BNIL)"
-                    );
+                    // VM과 같은 메시지·위치: "[줄:열] 런타임 오류: assertion 실패[: <메시지>]"
+                    let (has, msg) = if arg_exprs.len() >= 2 { ("1", a1()) } else { ("0", "BNIL".to_string()) };
+                    return Self::at(sp, &[a0(), msg], &format!("bv_assert_f(_t0,{has},_t1), BNIL"));
                 }
                 _ if self.user_fns.contains(name.as_str()) => {
                     let args_s = arg_exprs.join(", ");
@@ -618,10 +846,22 @@ impl Transpiler {
         // 4. 함수 정의
         self.emit_fn_defs(&prog.stmts);
 
+        // 4-1. 원본 소스 줄 (에러 문맥)
+        if let Some(src) = self.source.clone() {
+            let lines: Vec<String> = src.split('\n').map(c_string_literal).collect();
+            self.push_raw(&format!("static const char* const bv_src_data[] = {{{}}};\n", lines.join(", ")));
+        }
+
         // 5. main()
         self.push_raw("int main(void) {\n");
+        // Windows C 런타임은 텍스트 모드에서 \n을 \r\n으로 바꿔 쓴다 — VM(Rust)과 같은 바이트를 내도록 바이너리 모드로
+        self.push_raw("#ifdef _WIN32\n    _setmode(_fileno(stdout), _O_BINARY);\n    _setmode(_fileno(stderr), _O_BINARY);\n#endif\n");
         self.indent = 1;
         self.enter_scope();
+        if let Some(src) = &self.source {
+            let n = src.split('\n').count();
+            self.push_line(&format!("bv_src = bv_src_data; bv_src_n = {n};"));
+        }
 
         for stmt in &prog.stmts {
             // 최상위 함수 let 바인딩은 이미 처리됐으므로 건너뜀
@@ -645,7 +885,13 @@ impl Transpiler {
 
 /// Bang AST를 C11 소스 코드로 변환한다.
 pub fn transpile(prog: &Program) -> Result<String, Vec<TranspileError>> {
+    transpile_with_source(prog, None)
+}
+
+/// 소스 텍스트를 함께 넘기면 런타임 에러가 VM처럼 원본 줄을 보여 준다 (Phase 61).
+pub fn transpile_with_source(prog: &Program, source: Option<&str>) -> Result<String, Vec<TranspileError>> {
     let mut t = Transpiler::new();
+    t.source = source.map(|s| s.replace("\r\n", "\n"));
     t.run(prog);
     if t.errors.is_empty() {
         Ok(t.out)
@@ -682,6 +928,23 @@ fn c_str_literal(s: &str) -> String {
 // ============================================================================
 // 단위 테스트
 // ============================================================================
+
+/// Rust 문자열 → C 문자열 리터럴 (UTF-8 바이트를 그대로, 특수 문자는 이스케이프)
+fn c_string_literal(s: &str) -> String {
+    let mut out = String::from("\"");
+    for b in s.bytes() {
+        match b {
+            b'\\' => out.push_str("\\\\"),
+            b'"' => out.push_str("\\\""),
+            b'\t' => out.push_str("\\t"),
+            b'\r' => {}
+            0x20..=0x7e => out.push(b as char),
+            _ => out.push_str(&format!("\\{b:03o}")),
+        }
+    }
+    out.push('"');
+    out
+}
 
 #[cfg(test)]
 mod tests {

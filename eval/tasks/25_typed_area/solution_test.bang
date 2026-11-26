@@ -1,0 +1,15 @@
+let s = import("solution.bang")
+
+fn kind_of(f) {
+    try {
+        f()
+        return "ok"
+    } catch e {
+        return e.kind
+    }
+}
+fn test_area() {
+    assert_eq(s.area(3, 4), 12)
+    assert_eq(kind_of(fn() { return s.area("3", 4) }), "type")
+    assert_eq(kind_of(fn() { return s.area(3, 4.0) }), "type")
+}

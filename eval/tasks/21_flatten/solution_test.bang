@@ -1,0 +1,6 @@
+let s = import("solution.bang")
+
+fn test_flatten() {
+    assert_eq(s.flatten_deep([1, [2, [3, [4, []]]], 5]), [1, 2, 3, 4, 5])
+    assert_eq(s.flatten_deep([]), [])
+}

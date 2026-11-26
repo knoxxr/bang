@@ -80,7 +80,7 @@ print(m.area(2))
 ";
     // square(5)=25, area(2)=pi*square(2)=3.0*4=12
     let out = run_with_module(module, main);
-    assert_eq!(out, "25\n12\n");
+    assert_eq!(out, "25\n12.0\n");
 }
 
 /// 모듈 상수 직접 접근.
@@ -149,4 +149,46 @@ print(m.get())
 print(m.total())
 ";
     assert_eq!(run_with_module(module, main), "[1, 2, 3]\n6\n");
+}
+
+/// Phase 56: import한 모듈 안에서 난 런타임 에러는 그 모듈 파일 이름과 그 파일의 줄을 보여 준다.
+/// (이전: 메인 파일의 같은 줄 번호를 보여 줘서 엉뚱한 줄(빈 줄)을 가리켰다)
+#[test]
+fn test_runtime_error_in_module_shows_module_file_and_line() {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("bang_import_err_{}_{n}", std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    fs::write(dir.join("mathx.bang"), "// 모듈\n\n\nfn risky(x) {\n    return 10 / x\n}\n").unwrap();
+    fs::write(dir.join("main.bang"), "let m = import(\"mathx\")\nprint(m.risky(0))\n").unwrap();
+    let out = Command::new(BANG).arg("main.bang").current_dir(&dir).output().expect("실행 실패");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr.contains("mathx.bang 5:12"), "{stderr}");
+    assert!(stderr.contains("return 10 / x"), "모듈의 소스 줄을 보여야 함: {stderr}");
+}
+
+/// Phase 62: 상대 경로 import는 import를 쓴 파일의 디렉터리 기준 (이전: 실행한 현재 디렉터리 기준),
+/// 바레 이름은 위쪽 디렉터리의 bang_modules/까지 찾는다 (패키지 안에서 프로젝트 의존성 사용).
+#[test]
+fn test_import_relative_to_importing_file() {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("bang_import_rel_{}_{n}", std::process::id()));
+    let app = root.join("app");
+    fs::create_dir_all(app.join("lib")).unwrap();
+    fs::create_dir_all(app.join("bang_modules/util")).unwrap();
+    fs::create_dir_all(app.join("bang_modules/pkg")).unwrap();
+    fs::write(app.join("lib/geometry.bang"), "let PI = 3\n").unwrap();
+    // lib/shapes.bang이 같은 폴더의 geometry.bang을 그냥 이름으로 가져온다
+    fs::write(app.join("lib/shapes.bang"), "let geo = import(\"geometry.bang\")\nlet util = import(\"util\")\nfn area(r) { return geo.PI * r * r }\n").unwrap();
+    fs::write(app.join("bang_modules/util/util.bang"), "fn twice(x) { return x * 2 }\n").unwrap();
+    fs::write(app.join("bang_modules/pkg/pkg.bang"), "let u = import(\"util\")\nfn go() { return u.twice(21) }\n").unwrap();
+    fs::write(app.join("main.bang"), "let s = import(\"lib/shapes.bang\")\nprint(s.area(2), s.util.twice(5))\nprint(import(\"pkg\").go())\n").unwrap();
+    // 프로젝트 루트, 상위 디렉터리, 하위 디렉터리 어디서 실행해도 같다
+    for (cwd, script) in [(app.clone(), "main.bang"), (root.clone(), "app/main.bang"), (app.join("lib"), "../main.bang")] {
+        let out = Command::new(BANG).arg(script).current_dir(&cwd).output().expect("실행 실패");
+        assert!(out.status.success(), "{cwd:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "12 10\n42\n", "{cwd:?}");
+    }
+    let _ = fs::remove_dir_all(&root);
 }

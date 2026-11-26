@@ -148,3 +148,167 @@ fn test_removed_backend_flags_error_clearly() {
     }
     let _ = fs::remove_file(&path);
 }
+
+// ---- Phase 49: bang test / bang fmt ----
+
+fn temp_dir(tag: &str) -> PathBuf {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("bang_cli_{tag}_{}_{n}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("임시 디렉터리 생성 실패");
+    dir
+}
+
+#[test]
+fn test_bang_test_runs_test_functions_isolated() {
+    let dir = temp_dir("test");
+    fs::create_dir_all(dir.join("bang_modules/dep")).unwrap();
+    // bang_modules 안의 테스트는 발견하지 않는다
+    fs::write(dir.join("bang_modules/dep/x_test.bang"), "fn test_never() { assert(false) }\n").unwrap();
+    fs::write(dir.join("helper.bang"), "fn test_ignored() { assert(false) }\n").unwrap();
+    fs::write(
+        dir.join("math_test.bang"),
+        "let counter = 0\nfn test_one() {\n    counter += 1\n    assert_eq(counter, 1)\n}\n\
+         fn test_two() {\n    counter += 1\n    assert_eq(counter, 1)\n}\n",
+    )
+    .unwrap();
+    let out = Command::new(BANG).arg("test").arg(&dir).output().expect("실행 실패");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("ok    test_one") && stdout.contains("ok    test_two"), "{stdout}");
+    assert!(stdout.contains("2개 통과, 0개 실패"), "{stdout}");
+    assert!(!stdout.contains("test_never") && !stdout.contains("test_ignored"), "{stdout}");
+
+    // 실패하면 exit 1 + 실패 위치
+    fs::write(dir.join("fail_test.bang"), "fn test_bad() {\n    assert_eq(1 + 1, 3)\n}\n").unwrap();
+    let out = Command::new(BANG).arg("test").arg(&dir).output().expect("실행 실패");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("FAIL  test_bad") && stdout.contains("assert_eq 실패: 기대 3, 실제 2"), "{stdout}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_bang_fmt_check_and_write() {
+    let dir = temp_dir("fmt");
+    let file = dir.join("messy.bang");
+    fs::write(&file, "fn f(x) {\nif x {\n      return 1\n}\nreturn 2   \n}\n\n\nprint(f(true))\n").unwrap();
+    let out = Command::new(BANG).args(["fmt", "--check"]).arg(&dir).output().expect("실행 실패");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("포맷 필요"));
+    let out = Command::new(BANG).arg("fmt").arg(&file).output().expect("실행 실패");
+    assert!(out.status.success());
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "fn f(x) {\n    if x {\n        return 1\n    }\n    return 2\n}\n\nprint(f(true))\n"
+    );
+    let out = Command::new(BANG).args(["fmt", "--check"]).arg(&dir).output().expect("실행 실패");
+    assert!(out.status.success(), "포맷 후에는 --check 통과");
+    // 렉싱 오류 파일은 건드리지 않는다
+    let bad = dir.join("bad.bang");
+    fs::write(&bad, "let s = \"open\n").unwrap();
+    let out = Command::new(BANG).arg("fmt").arg(&bad).output().expect("실행 실패");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&bad).unwrap(), "let s = \"open\n");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// 읽는 쪽이 파이프를 닫으면(bang x | head) 에러 메시지 없이 141(128+SIGPIPE)로 조용히 끝난다.
+#[cfg(unix)]
+#[test]
+fn test_broken_pipe_exits_quietly() {
+    use std::io::{BufRead, BufReader};
+    let script = temp_bang("for i in range(1000000) { print(i) }\n");
+    let mut child = Command::new(BANG)
+        .arg(&script)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("실행 실패");
+    {
+        let stdout = child.stdout.take().unwrap();
+        let mut first = String::new();
+        BufReader::new(stdout).read_line(&mut first).unwrap();
+        assert_eq!(first, "0\n");
+    } // 여기서 파이프가 닫힘
+    let out = child.wait_with_output().expect("대기 실패");
+    assert_eq!(out.status.code(), Some(141));
+    assert!(out.stderr.is_empty(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// Phase 62: 스크립트 뒤의 인자는 스크립트의 것 — args()는 [스크립트, 인자...] (이전: 마지막 인자를 파일로 오인).
+#[test]
+fn test_script_args_passed_to_script() {
+    let p = temp_bang("print(args())\nprint(len(args()))\n");
+    let ps = p.to_str().unwrap();
+    assert_eq!(stdout_of(&[ps, "x", "y z", "--flag"]), format!("[{ps}, x, y z, --flag]\n4\n"));
+    assert_eq!(stdout_of(&["run", ps, "-v"]), format!("[{ps}, -v]\n2\n"));
+    let _ = fs::remove_file(&p);
+}
+
+/// Phase 62: input()은 입력 끝(EOF)에서 nil — 빈 줄("")과 구별된다.
+#[test]
+fn test_input_returns_nil_at_eof() {
+    let p = temp_bang("let lines = []\nwhile true {\n    let l = input()\n    if l == nil { break }\n    lines += [l]\n}\nprint(lines, len(lines))\n");
+    let mut child = Command::new(BANG)
+        .arg(&p)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn 실패");
+    child.stdin.take().unwrap().write_all(b"a\n\nb\n").expect("stdin 쓰기 실패");
+    let out = child.wait_with_output().expect("대기 실패");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "[a, , b] 3\n");
+    let _ = fs::remove_file(&p);
+}
+
+/// Phase 65: bang check --json — 진단을 JSON Lines로 stdout에. 문제 없으면 출력 없이 exit 0.
+#[test]
+fn test_check_json_diagnostics() {
+    let bad = temp_bang("fn f() {\n    let unused = 2\n    return 1\n}\nlet y = None\n");
+    let out = Command::new(BANG).args(["check", "--json"]).arg(&bad).output().expect("실행 실패");
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    // 경고(사용되지 않은 변수)와 오류(None)가 한 줄씩 — 필드 순서 고정
+    assert!(lines.iter().any(|l| l.starts_with("{\"severity\":\"warning\",\"stage\":\"resolve\"")), "{text}");
+    let err = lines.iter().find(|l| l.contains("\"severity\":\"error\"")).expect("오류 줄");
+    assert!(err.contains("\"stage\":\"resolve\",\"kind\":null,\"message\":\"정의되지 않은 변수: 'None'\""), "{err}");
+    assert!(err.contains("\"line\":5,\"col\":9,\"hint\":\"값이 없음은 `nil`\"}"), "{err}");
+    assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let ok = temp_bang("print(1)\n");
+    let out = Command::new(BANG).args(["check", "--json"]).arg(&ok).output().expect("실행 실패");
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    let _ = fs::remove_file(&bad);
+    let _ = fs::remove_file(&ok);
+}
+
+/// Phase 65: bang run --json — 런타임 에러를 kind와 함께 JSON 한 줄로 stderr에. 프로그램 출력(stdout)은 그대로.
+#[test]
+fn test_run_json_runtime_error() {
+    let p = temp_bang("print(\"before\")\nlet xs = [1]\nxs.append(2)\n");
+    let ps = p.to_str().unwrap();
+    let out = Command::new(BANG).args(["run", "--json", ps]).output().expect("실행 실패");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "before\n");
+    let err = String::from_utf8_lossy(&out.stderr);
+    let expected = format!(
+        "{{\"severity\":\"error\",\"stage\":\"runtime\",\"kind\":\"type\",\"message\":\"필드 접근: List 에 필드 'append' 없음\",\"file\":{ps:?},\"line\":3,\"col\":1,\"hint\":\"리스트에 추가는 `xs += [v]` (또는 `xs = xs.push(v)`) — 리스트는 값이라 제자리에서 바뀌지 않습니다\"}}"
+    );
+    assert_eq!(err.trim_end(), expected);
+    let _ = fs::remove_file(&p);
+}
+
+/// Phase 65: 사람용 출력에도 다른 언어 습관 힌트가 붙는다 (같은 줄의 연쇄 에러에는 한 번만).
+#[test]
+fn test_human_errors_show_habit_hints() {
+    let p = temp_bang("let x = 1\nif x == 1 {\n} elif x == 2 {\n}\n");
+    let out = Command::new(BANG).arg(&p).output().expect("실행 실패");
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.matches("= 힌트: `elif` 대신 `else if`").count(), 1, "{err}");
+    let _ = fs::remove_file(&p);
+}

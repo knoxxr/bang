@@ -1,0 +1,11 @@
+fn parse_config(text) {
+    let out = {}
+    for line in text.split("\n") {
+        let t = trim(line)
+        if t == "" or starts_with(t, "#") { continue }
+        let i = find(t, "=")
+        if i < 0 { continue }
+        out[trim(t[:i])] = trim(t[i + 1:])
+    }
+    return out
+}

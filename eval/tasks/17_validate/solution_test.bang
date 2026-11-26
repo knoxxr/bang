@@ -1,0 +1,17 @@
+let s = import("solution.bang")
+
+fn reason(x) {
+    try {
+        s.validate_age(x)
+        return "ok"
+    } catch e {
+        return e.field + ":" + e.reason
+    }
+}
+fn test_validate() {
+    assert_eq(s.validate_age(30), 30)
+    assert_eq(reason("30"), "age:not_int")
+    assert_eq(reason(3.5), "age:not_int")
+    assert_eq(reason(-1), "age:out_of_range")
+    assert_eq(reason(151), "age:out_of_range")
+}

@@ -144,7 +144,7 @@ fn test_arithmetic() {
     assert_eq!(run_source("print(1 + 2)"), vec!["3"]);
     assert_eq!(run_source("print(10 - 3)"), vec!["7"]);
     assert_eq!(run_source("print(4 * 5)"), vec!["20"]);
-    assert_eq!(run_source("print(10 / 2)"), vec!["5"]);
+    assert_eq!(run_source("print(10 / 2)"), vec!["5.0"]);
     assert_eq!(run_source("print(7 / 2)"), vec!["3.5"]);
     assert_eq!(run_source("print(10 % 3)"), vec!["1"]);
 }

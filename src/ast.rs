@@ -128,8 +128,11 @@ pub enum StmtKind {
     If { cond: Expr, then: Block, else_: Option<Block> },
     /// `while cond { body }`
     While { cond: Expr, body: Block },
-    /// `for var in iter { body }`
-    For { var: String, iter: Expr, body: Block },
+    /// `let [a, b] = expr` — 리스트 분해 선언 (Phase 47). 길이가 다르면 런타임 에러.
+    LetUnpack { names: Vec<String>, value: Expr },
+    /// `for var in iter { body }` / `for a, b in iter { body }` (vars ≥ 1; 2개 이상이면 원소 분해,
+    /// 맵은 [키, 값] 쌍으로 순회 — Phase 46)
+    For { vars: Vec<String>, iter: Expr, body: Block },
     /// 독립 블록 `{ ... }`
     Block(Block),
     /// `parallel { ... }`
@@ -157,12 +160,16 @@ pub struct Expr {
 pub enum MapKey {
     Str(String),
     Ident(String),
+    /// 정수 키 `{1: "a"}` (Phase 57)
+    Int(i64),
 }
 
 impl MapKey {
-    pub fn as_str(&self) -> &str {
+    /// 표시용 문자열 (정수 키는 숫자 표기).
+    pub fn as_str(&self) -> String {
         match self {
-            MapKey::Str(s) | MapKey::Ident(s) => s,
+            MapKey::Str(s) | MapKey::Ident(s) => s.clone(),
+            MapKey::Int(n) => n.to_string(),
         }
     }
 }
@@ -187,6 +194,8 @@ pub enum BinaryOp {
     Add, Sub, Mul, Div, Mod,
     Eq, Ne, Lt, Le, Gt, Ge,
     And, Or,
+    /// `x in c` / `x not in c` — 리스트 원소·맵 키·부분 문자열·바이트 포함 (Phase 46)
+    In, NotIn,
 }
 
 impl fmt::Display for BinaryOp {
@@ -205,9 +214,19 @@ impl fmt::Display for BinaryOp {
             BinaryOp::Ge  => ">=",
             BinaryOp::And => "and",
             BinaryOp::Or  => "or",
+            BinaryOp::In  => "in",
+            BinaryOp::NotIn => "not in",
         };
         write!(f, "{s}")
     }
+}
+
+/// f-문자열 조각.
+#[derive(Debug, Clone)]
+pub enum FStringPart {
+    Lit(String),
+    /// 식과 형식 지정자(`{x:.2f}`의 `.2f`)
+    Expr(Box<Expr>, Option<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +249,12 @@ pub enum ExprKind {
     Call { callee: Box<Expr>, args: Vec<Expr> },
     Index { target: Box<Expr>, index: Box<Expr> },
     Field { target: Box<Expr>, name: String },
+    /// `f"..."` 보간 문자열 (Phase 50): 글자 조각과 `{식[:형식]}` 조각을 이어 붙인 문자열.
+    FString(Vec<FStringPart>),
+    /// `if c { a } else { b }` 식 (Phase 47). 각 갈래의 마지막 문장(식)이 값. else 필수.
+    IfExpr { cond: Box<Expr>, then: Block, else_: Block },
+    /// `target[start:end]` — 생략된 경계는 None (Phase 46)
+    Slice { target: Box<Expr>, start: Option<Box<Expr>>, end: Option<Box<Expr>> },
     // 함수 / 클로저
     // name: Some("foo") 이면 본문 안에서 재귀 가능 (named fn 디슈가)
     // param_types/ret_type: 선택적 타입 힌트 (런타임 검증, None=미지정).
@@ -238,6 +263,9 @@ pub enum ExprKind {
         name: Option<String>,
         params: Vec<String>,
         param_types: Vec<Option<TypeAnn>>,
+        /// 기본값 (Phase 47). params와 길이가 같고, 기본값은 뒤쪽 매개변수에만 있다.
+        /// 호출 시 인자가 생략되면 그때 평가한다 (호출마다 새 값).
+        param_defaults: Vec<Option<Expr>>,
         ret_type: Option<TypeAnn>,
         body: Block,
     },
@@ -245,6 +273,8 @@ pub enum ExprKind {
     Spawn(Box<Expr>),
     // 대입 (target: Ident / Index / Field 만 허용)
     Assign { target: Box<Expr>, value: Box<Expr> },
+    /// 복합 대입 `target op= value` (target: Ident / Index / Field 경로). 경로 키는 한 번만 평가.
+    CompoundAssign { op: BinaryOp, target: Box<Expr>, value: Box<Expr> },
 }
 
 // =============================================================================
@@ -269,6 +299,10 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
         StmtKind::Let { name, ty, value } => {
             let tystr = ty.map(|t| format!(": {}", t.name())).unwrap_or_default();
             out.push_str(&format!("{pad}Let {name}{tystr} [{}:{}]\n", stmt.span.line, stmt.span.col));
+            dump_expr(out, value, depth + 1);
+        }
+        StmtKind::LetUnpack { names, value } => {
+            out.push_str(&format!("{pad}LetUnpack [{}] [{}:{}]\n", names.join(", "), stmt.span.line, stmt.span.col));
             dump_expr(out, value, depth + 1);
         }
         StmtKind::Expr(expr) => {
@@ -299,8 +333,8 @@ fn dump_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
             out.push_str(&format!("{pad}  body:\n"));
             dump_block(out, body, depth + 2);
         }
-        StmtKind::For { var, iter, body } => {
-            out.push_str(&format!("{pad}For {var} in [{}:{}]\n", stmt.span.line, stmt.span.col));
+        StmtKind::For { vars, iter, body } => {
+            out.push_str(&format!("{pad}For {} in [{}:{}]\n", vars.join(", "), stmt.span.line, stmt.span.col));
             dump_expr(out, iter, depth + 1);
             out.push_str(&format!("{pad}  body:\n"));
             dump_block(out, body, depth + 2);
@@ -386,6 +420,36 @@ fn dump_expr(out: &mut String, expr: &Expr, depth: usize) {
             out.push_str(&format!("{pad}Field(.{name})\n"));
             dump_expr(out, target, depth + 1);
         }
+        ExprKind::FString(parts) => {
+            out.push_str(&format!("{pad}FString\n"));
+            for p in parts {
+                match p {
+                    FStringPart::Lit(s) => out.push_str(&format!("{pad}  lit: {s:?}\n")),
+                    FStringPart::Expr(e, spec) => {
+                        out.push_str(&format!("{pad}  expr{}:\n", spec.as_ref().map(|s| format!(" (:{s})")).unwrap_or_default()));
+                        dump_expr(out, e, depth + 2);
+                    }
+                }
+            }
+        }
+        ExprKind::IfExpr { cond, then, else_ } => {
+            out.push_str(&format!("{pad}IfExpr\n"));
+            dump_expr(out, cond, depth + 1);
+            out.push_str(&format!("{pad}  then:\n"));
+            dump_block(out, then, depth + 2);
+            out.push_str(&format!("{pad}  else:\n"));
+            dump_block(out, else_, depth + 2);
+        }
+        ExprKind::Slice { target, start, end } => {
+            out.push_str(&format!("{pad}Slice\n"));
+            dump_expr(out, target, depth + 1);
+            for b in [start, end] {
+                match b {
+                    Some(e) => dump_expr(out, e, depth + 1),
+                    None => out.push_str(&format!("{pad}  <none>\n")),
+                }
+            }
+        }
         ExprKind::Function { name, params, ret_type, body, .. } => {
             let n = name.as_deref().unwrap_or("<anon>");
             let ret = ret_type.map(|t| format!(" -> {}", t.name())).unwrap_or_default();
@@ -398,6 +462,11 @@ fn dump_expr(out: &mut String, expr: &Expr, depth: usize) {
         }
         ExprKind::Assign { target, value } => {
             out.push_str(&format!("{pad}Assign\n"));
+            dump_expr(out, target, depth + 1);
+            dump_expr(out, value, depth + 1);
+        }
+        ExprKind::CompoundAssign { op, target, value } => {
+            out.push_str(&format!("{pad}CompoundAssign({op}=)\n"));
             dump_expr(out, target, depth + 1);
             dump_expr(out, value, depth + 1);
         }

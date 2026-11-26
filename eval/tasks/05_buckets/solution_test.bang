@@ -1,0 +1,11 @@
+let s = import("solution.bang")
+
+fn test_buckets() {
+    let r = s.buckets([1, 12, 5, 3, 14], 5)
+    assert_eq(r, {0: [1, 3], 2: [12, 14], 1: [5]})
+    assert_eq(keys(r), [0, 2, 1])
+}
+fn test_int_keys() {
+    let r = s.buckets([7], 5)
+    assert_eq(r[1], [7])
+}

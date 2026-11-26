@@ -1,0 +1,14 @@
+let s = import("solution.bang")
+
+fn test_counter() {
+    let c = s.make_counter(10)
+    assert_eq(c.inc(), 11)
+    c.inc()
+    assert_eq(c.get(), 12)
+}
+fn test_independent() {
+    let a = s.make_counter(0)
+    let b = s.make_counter(0)
+    a.inc()
+    assert_eq([a.get(), b.get()], [1, 0])
+}

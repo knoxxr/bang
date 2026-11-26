@@ -1,0 +1,6 @@
+let s = import("solution.bang")
+
+fn test_total() {
+    let text = "name,amount\n\"Kim, J\",10.5\nLee,2\n"
+    assert_eq(s.csv_total(text, "amount"), 12.5)
+}

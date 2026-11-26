@@ -1,6 +1,5 @@
 // Bang — 런타임 공용 타입: RuntimeError, 채널 전송용 Value(데이터 전용), BangChannel
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -15,23 +14,69 @@ use crate::lexer::token::Span;
 pub struct RuntimeError {
     pub message: String,
     pub span: Span,
+    /// 에러 종류 (Phase 48). `catch e`에서 `e.kind`로 보인다. 목록은 [`kind`] 모듈 (SPEC 8.2).
+    pub kind: &'static str,
+    /// 에러가 난 소스 파일 (Phase 56) — import한 모듈 안의 에러면 그 모듈 경로. None이면 실행 중인 메인 파일.
+    pub file: Option<std::sync::Arc<str>>,
+    /// 잡히지 않은 사용자 `throw`의 원래 값 (Phase 62). 작업(spawn·parallel_map)이나 내장 함수의 콜백 경계를
+    /// 건너 바깥 `catch`에 도달하면 에러 맵 대신 이 값이 그대로 바인딩된다 ("throw한 값은 그대로", SPEC 8.1).
+    pub thrown: Option<Box<crate::vm::VmValue>>,
+}
+
+/// `catch e`의 `e.kind` 값 (SPEC 8.2). 대외 계약이므로 이름을 바꾸지 않는다.
+pub mod kind {
+    /// 0으로 나누기 / 나머지
+    pub const ZERO_DIVISION: &str = "zero_division";
+    /// 정수 오버플로
+    pub const OVERFLOW: &str = "overflow";
+    /// 리스트/문자열/바이트 인덱스 범위 초과
+    pub const INDEX: &str = "index";
+    /// 맵에 없는 키 읽기/갱신
+    pub const KEY: &str = "key";
+    /// 연산·호출·접근 대상의 타입이 맞지 않음 (타입 힌트 위반 포함)
+    pub const TYPE: &str = "type";
+    /// 빌트인/함수 인자 개수·타입 잘못
+    pub const ARGUMENT: &str = "argument";
+    /// 형식은 맞지만 값이 잘못됨 (JSON/정규식 파싱, 분해 길이, 변환 실패 등)
+    pub const VALUE: &str = "value";
+    /// 파일·네트워크·프로세스
+    pub const IO: &str = "io";
+    /// assert / assert_eq 실패
+    pub const ASSERTION: &str = "assertion";
+    /// import 실패
+    pub const IMPORT: &str = "import";
+    /// 권한 모드에서 허가하지 않은 파일·네트워크·프로세스·환경 변수 접근 (Phase 64)
+    pub const PERMISSION: &str = "permission";
+    /// 그 밖의 런타임 에러
+    pub const ERROR: &str = "error";
+
+    /// 전체 목록 (다시 던진 에러 맵 복원용).
+    pub const ALL: &[&str] = &[
+        ZERO_DIVISION, OVERFLOW, INDEX, KEY, TYPE, ARGUMENT, VALUE, IO, ASSERTION, IMPORT, PERMISSION, ERROR,
+    ];
 }
 
 impl RuntimeError {
     pub fn new(msg: impl Into<String>, span: Span) -> Self {
-        Self { message: msg.into(), span }
+        Self { message: msg.into(), span, kind: kind::ERROR, file: None, thrown: None }
     }
     pub fn no_span(msg: impl Into<String>) -> Self {
-        Self { message: msg.into(), span: Span::new(0, 0) }
+        Self { message: msg.into(), span: Span::new(0, 0), kind: kind::ERROR, file: None, thrown: None }
+    }
+    /// 종류 지정 (빌더).
+    pub fn with_kind(mut self, k: &'static str) -> Self {
+        self.kind = k;
+        self
     }
 }
 
 impl fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.span.line == 0 {
-            write!(f, "런타임 오류: {}", self.message)
-        } else {
-            write!(f, "[{}:{}] 런타임 오류: {}", self.span.line, self.span.col, self.message)
+        match (&self.file, self.span.line) {
+            (None, 0) => write!(f, "런타임 오류: {}", self.message),
+            (None, _) => write!(f, "[{}:{}] 런타임 오류: {}", self.span.line, self.span.col, self.message),
+            (Some(file), 0) => write!(f, "[{file}] 런타임 오류: {}", self.message),
+            (Some(file), _) => write!(f, "[{file} {}:{}] 런타임 오류: {}", self.span.line, self.span.col, self.message),
         }
     }
 }
@@ -53,7 +98,7 @@ pub enum Value {
     Str(String),
     Nil,
     List(Vec<Value>),
-    Map(HashMap<String, Value>),
+    Map(crate::omap::OrderedMap<Value>),
     /// 불변 바이트 열 (값 의미론 — 불변이라 Arc 공유가 관찰상 깊은 복사와 동일)
     Bytes(Arc<Vec<u8>>),
 }
@@ -81,7 +126,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
-            Value::Float(n) => write!(f, "{n}"),
+            Value::Float(n) => write!(f, "{}", crate::vm::fmt_float(*n)),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Str(s) => write!(f, "{s}"),
             Value::Nil => write!(f, "nil"),
@@ -95,11 +140,9 @@ impl fmt::Display for Value {
             }
             Value::Map(map) => {
                 write!(f, "{{")?;
-                let mut pairs: Vec<_> = map.iter().collect();
-                pairs.sort_by_key(|(k, _)| k.as_str());
-                for (i, (k, v)) in pairs.iter().enumerate() {
+                for (i, (k, v)) in map.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
-                    write!(f, "{k}: {v}")?;
+                    write!(f, "{}: {v}", crate::vm::key_display(k))?;
                 }
                 write!(f, "}}")
             }

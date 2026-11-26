@@ -2,6 +2,7 @@
 
 use bang::ast::dump_program;
 use bang::compiler::compile;
+use bang::diagnostics::{Diagnostic, Severity};
 use bang::lexer::Lexer;
 use bang::lexer::token::Span;
 use bang::parser::Parser;
@@ -31,12 +32,16 @@ fn main() {
         "add"      => cmd_add(&args[2..]),
         "install"  => cmd_install(&args[2..]),
         "new"      => cmd_new(&args[2..]),
+        "test"     => cmd_test(&args[2..]),
+        "fmt"      => cmd_fmt(&args[2..]),
         "help" | "--help" | "-h" => print_usage(),
         "version" | "--version" | "-V" => print_version(),
         other => {
             // 알려진 명령이 아니면 파일 경로로 간주해 실행한다.
             // (bang script.bang  /  ./script.bang  /  bang - )
-            if other == "-" || std::path::Path::new(other).is_file() {
+            // 권한 플래그로 시작해도 run으로 본다 (bang --sandbox app.bang — Phase 64)
+            let perm_flag = other == "--sandbox" || other.starts_with("--allow-");
+            if other == "-" || perm_flag || std::path::Path::new(other).is_file() {
                 cmd_run(&args[1..]);
             } else {
                 eprintln!("알 수 없는 명령 또는 존재하지 않는 파일: {other}");
@@ -60,19 +65,27 @@ fn print_usage() {
     eprintln!("  bang <명령> [옵션] [인자...]");
     eprintln!();
     eprintln!("명령:");
-    eprintln!("  run     [--dump-ast] <파일|->  .bang 파일/표준입력 실행 (바이트코드 VM)");
+    eprintln!("  run     [--dump-ast] [--json] [권한] <파일|-> [인자...]  .bang 파일/표준입력 실행 (바이트코드 VM)");
     eprintln!("  compile -o <출력> <파일>  [실험적] AOT 컴파일 (C 트랜스파일 + cc -O2,");
     eprintln!("                    정수·문자열·함수만 지원 — 리스트/맵/동시성 미지원)");
-    eprintln!("  check   <파일>   오류 검사 (실행 없음)");
+    eprintln!("  check   [--json] <파일>  오류 검사 (실행 없음, --json: 진단을 JSON Lines로)");
     eprintln!("  build   <파일>   컴파일 검증 + 통계 출력");
     eprintln!("  parse   <파일>   AST 출력");
     eprintln!("  tokenize <파일>  토큰화 출력 (디버그)");
     eprintln!("  repl             대화형 셸(REPL) 시작");
+    eprintln!("  test [권한] [경로...]  테스트 실행: *_test.bang / test_*.bang 파일의 test_* 함수");
+    eprintln!("  fmt [--check] [경로...]  들여쓰기 정규화 (--check: 바뀔 파일만 보고, exit 1)");
     eprintln!("  new <디렉토리>   새 프로젝트 스캐폴딩 (main.bang + bang.toml)");
     eprintln!("  add <이름> <git-url[@rev]>  의존성 추가 (bang.toml + bang_modules/ 설치)");
     eprintln!("  install          bang.toml의 모든 의존성 설치");
     eprintln!("  version          버전 출력");
     eprintln!("  help             도움말 출력");
+    eprintln!();
+    eprintln!("권한 (run/test, 파일 앞에 — 하나라도 주면 허가한 것만 가능):");
+    eprintln!("  --sandbox                 아무것도 허가하지 않음");
+    eprintln!("  --allow-read[=경로,..]    파일 읽기       --allow-write[=경로,..]  파일 쓰기");
+    eprintln!("  --allow-net[=호스트[:포트],..]  네트워크  --allow-run[=프로그램,..]  proc_run");
+    eprintln!("  --allow-env[=이름,..]     환경 변수       --allow-all              전부");
 }
 
 // ============================================================================
@@ -103,7 +116,7 @@ fn lex_and_parse(source: &str, _path: &str) -> bang::ast::Program {
         Err(errors) => {
             for e in &errors {
                 let span = Span::new(e.line, e.col);
-                eprintln!("{}", format_with_context(&e.to_string(), span, source));
+                emit(&diag(Severity::Error, "lex", e.message(), e.to_string(), span, source), source);
             }
             process::exit(1);
         }
@@ -112,7 +125,7 @@ fn lex_and_parse(source: &str, _path: &str) -> bang::ast::Program {
         Ok(prog) => prog,
         Err(errors) => {
             for e in &errors {
-                eprintln!("{}", format_with_context(&e.to_string(), e.span, source));
+                emit(&diag(Severity::Error, "parse", e.message.clone(), e.to_string(), e.span, source), source);
             }
             process::exit(1);
         }
@@ -123,18 +136,64 @@ fn lex_and_parse(source: &str, _path: &str) -> bang::ast::Program {
 // Phase 7: 소스 컨텍스트가 있는 에러 포맷
 // ============================================================================
 
-fn format_with_context(message: &str, span: Span, source: &str) -> String {
-    if span.line == 0 {
-        return message.to_string();
+/// 진단 출력 방식 (Phase 65): 0 = 사람용(stderr), 1 = JSON Lines(stderr — run), 2 = JSON Lines(stdout — check)
+static DIAG_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// 진단에 적을 메인 스크립트 경로
+static DIAG_FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn set_diag(mode: u8, file: &str) {
+    DIAG_MODE.store(mode, std::sync::atomic::Ordering::Relaxed);
+    let _ = DIAG_FILE.set(file.to_string());
+}
+
+fn json_mode() -> bool {
+    DIAG_MODE.load(std::sync::atomic::Ordering::Relaxed) != 0
+}
+
+/// 진단 하나를 현재 방식으로 출력한다.
+fn emit(d: &Diagnostic, source: &str) {
+    match DIAG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => {
+            // 같은 줄의 연쇄 에러에 같은 힌트를 되풀이하지 않는다 (사람용만 — JSON은 진단마다 온전히)
+            static SHOWN: std::sync::Mutex<Vec<(usize, &'static str)>> = std::sync::Mutex::new(Vec::new());
+            let mut d = d.clone();
+            if let (Some(h), Ok(mut shown)) = (d.hint, SHOWN.lock()) {
+                if shown.contains(&(d.span.line, h)) {
+                    d.hint = None;
+                } else {
+                    shown.push((d.span.line, h));
+                }
+            }
+            eprintln!("{}", d.human(source))
+        }
+        1 => eprintln!("{}", d.json()),
+        _ => println!("{}", d.json()),
     }
-    let line_num = span.line;
-    let col_num  = span.col;
-    let line_text = source.lines().nth(line_num.saturating_sub(1)).unwrap_or("");
-    let pointer_offset = col_num.saturating_sub(1);
-    format!(
-        "{message}\n  |\n{:>3} | {line_text}\n  | {:>pointer_offset$}^",
-        line_num, ""
-    )
+}
+
+/// 메인 파일 기준 진단 (lex·parse·resolve·type·compile 단계).
+fn diag(sev: Severity, stage: &'static str, message: String, display: String, span: Span, source: &str) -> Diagnostic {
+    Diagnostic::new(sev, stage, None, message, display, DIAG_FILE.get().cloned(), span, source)
+}
+
+/// 런타임 에러 진단: import한 모듈 안에서 난 에러면 그 모듈 파일·소스를 쓴다 (Phase 56). (진단, 그 소스)
+fn runtime_diag(e: &bang::runtime::RuntimeError, main_source: &str) -> (Diagnostic, String) {
+    let (file, src) = match &e.file {
+        Some(path) => (Some(path.to_string()), fs::read_to_string(path.as_ref()).unwrap_or_default()),
+        None => (DIAG_FILE.get().cloned(), main_source.to_string()),
+    };
+    let d = Diagnostic::new(Severity::Error, "runtime", Some(e.kind), e.message.clone(), e.to_string(), file, e.span, &src);
+    (d, src)
+}
+
+/// 런타임 에러 사람용 출력 (REPL·bang test·run 공통 — 힌트 포함).
+fn runtime_error_text(e: &bang::runtime::RuntimeError, main_source: &str) -> String {
+    let (d, src) = runtime_diag(e, main_source);
+    d.human(&src)
+}
+
+fn format_with_context(message: &str, span: Span, source: &str) -> String {
+    bang::diagnostics::with_context(message, span, source)
 }
 
 // ============================================================================
@@ -144,17 +203,39 @@ fn format_with_context(message: &str, span: Span, source: &str) -> String {
 fn cmd_run(args: &[String]) {
     let mut dump_ast = false;
     let mut path: Option<&str> = None;
+    let mut script_args: Vec<String> = Vec::new();
+    let mut perms = bang::permissions::Permissions::default();
+    let mut sandboxed = false;
 
-    for arg in args {
+    // 옵션은 파일 경로 앞에만 온다. 경로 뒤의 모든 인자는 스크립트의 것이다 (args() — Phase 62).
+    for (i, arg) in args.iter().enumerate() {
+        // 권한 모드 플래그 (Phase 64): --sandbox, --allow-read[=..] 등
+        match bang::permissions::parse_flag(&mut perms, arg) {
+            Ok(true) => {
+                sandboxed = true;
+                continue;
+            }
+            Ok(false) => {}
+            Err(m) => {
+                eprintln!("오류: {m}");
+                process::exit(1);
+            }
+        }
         match arg.as_str() {
             "--dump-ast" => dump_ast = true,
+            // 진단을 JSON Lines로 stderr에 (Phase 65 — AI 에이전트용). 프로그램 출력(stdout)은 그대로.
+            "--json" => DIAG_MODE.store(1, std::sync::atomic::Ordering::Relaxed),
             // v0.30.0에서 제거된 백엔드 — 파일 경로로 오인하지 않게 명확히 알린다.
             "--interp" | "--jit" => {
                 eprintln!("오류: '{arg}'는 v0.30.0에서 제거되었습니다 — 바이트코드 VM이 유일한 실행 엔진입니다");
                 eprintln!("      ('{arg}' 없이 'bang run <파일>'로 실행하세요)");
                 process::exit(1);
             }
-            _ => { path = Some(arg); }
+            _ => {
+                path = Some(arg);
+                script_args = args[i..].to_vec();
+                break;
+            }
         }
     }
 
@@ -167,6 +248,11 @@ fn cmd_run(args: &[String]) {
         }
     };
 
+    bang::stdlib::set_script_args(script_args);
+    set_diag(DIAG_MODE.load(std::sync::atomic::Ordering::Relaxed), path);
+    if sandboxed {
+        bang::permissions::install(perms);
+    }
     let source = read_source(path);
     let prog   = lex_and_parse(&source, path);
 
@@ -177,32 +263,34 @@ fn cmd_run(args: &[String]) {
 
     let resolve_result = bang::resolver::resolve(&prog);
     for w in &resolve_result.warnings {
-        eprintln!("{}", format_with_context(&w.to_string(), w.span, &source));
+        emit(&diag(Severity::Warning, "resolve", w.message.clone(), w.to_string(), w.span, &source), &source);
     }
     if !resolve_result.errors.is_empty() {
         for e in &resolve_result.errors {
-            eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
+            emit(&diag(Severity::Error, "resolve", e.message.clone(), e.to_string(), e.span, &source), &source);
         }
         process::exit(1);
     }
 
-    run_vm_program(&prog, &source);
+    run_vm_program(&prog, &source, path);
 }
 
-fn run_vm_program(prog: &bang::ast::Program, source: &str) {
-    let out = match compile(prog) {
+fn run_vm_program(prog: &bang::ast::Program, source: &str, path: &str) {
+    // 상대 경로 import는 스크립트 위치 기준 (Phase 62). 표준 입력(-)은 현재 디렉터리 기준.
+    let compiled = if path == "-" { compile(prog) } else { bang::compiler::compile_main(prog, path) };
+    let out = match compiled {
         Ok(o) => o,
         Err(errors) => {
             for e in &errors {
-                eprintln!("{}", format_with_context(&e.to_string(), e.span, source));
+                emit(&diag(Severity::Error, "compile", e.message.clone(), e.to_string(), e.span, source), source);
             }
             process::exit(1);
         }
     };
-    let output = Arc::new(Mutex::new(Vec::<String>::new()));
-    let mut vm = bang::vm::Vm::new(out.global_count as usize, output);
+    let mut vm = bang::vm::Vm::new(out.global_count as usize, bang::vm::Output::Stdout);
     if let Err(e) = vm.run(out.main_fn) {
-        eprintln!("{}", format_with_context(&e.to_string(), e.span, source));
+        let (d, src) = runtime_diag(&e, source);
+        emit(&d, &src);
         process::exit(1);
     }
 }
@@ -212,21 +300,23 @@ fn run_vm_program(prog: &bang::ast::Program, source: &str) {
 // ============================================================================
 
 fn cmd_check(args: &[String]) {
-    if args.is_empty() {
+    // --json: 진단을 JSON Lines로 stdout에 (Phase 65). 문제가 없으면 아무것도 출력하지 않고 exit 0.
+    let json = args.iter().any(|a| a == "--json");
+    let Some(path) = args.iter().find(|a| *a != "--json") else {
         eprintln!("오류: 파일 경로가 필요합니다");
         process::exit(1);
-    }
-    let path   = &args[0];
+    };
+    set_diag(if json { 2 } else { 0 }, path);
     let source = read_source(path);
     let prog   = lex_and_parse(&source, path);
 
     let resolve_result = bang::resolver::resolve(&prog);
     for w in &resolve_result.warnings {
-        eprintln!("{}", format_with_context(&w.to_string(), w.span, &source));
+        emit(&diag(Severity::Warning, "resolve", w.message.clone(), w.to_string(), w.span, &source), &source);
     }
     if !resolve_result.errors.is_empty() {
         for e in &resolve_result.errors {
-            eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
+            emit(&diag(Severity::Error, "resolve", e.message.clone(), e.to_string(), e.span, &source), &source);
         }
         process::exit(1);
     }
@@ -235,13 +325,13 @@ fn cmd_check(args: &[String]) {
     let type_errors = bang::typeck::check(&prog);
     if !type_errors.is_empty() {
         for e in &type_errors {
-            eprintln!("{}", format_with_context(
-                &format!("타입 오류: {}", e.message), e.span, &source));
+            emit(&diag(Severity::Error, "type", e.message.clone(), format!("타입 오류: {}", e.message), e.span, &source), &source);
         }
         process::exit(1);
     }
 
     match compile(&prog) {
+        Ok(_) if json_mode() => {}
         Ok(out) => {
             println!("OK: {path}");
             println!("  전역 바인딩: {}개  opcodes: {}바이트",
@@ -250,7 +340,7 @@ fn cmd_check(args: &[String]) {
         }
         Err(errors) => {
             for e in &errors {
-                eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
+                emit(&diag(Severity::Error, "compile", e.message.clone(), e.to_string(), e.span, &source), &source);
             }
             process::exit(1);
         }
@@ -267,16 +357,17 @@ fn cmd_build(args: &[String]) {
         process::exit(1);
     }
     let path   = &args[0];
+    set_diag(0, path);
     let source = read_source(path);
     let prog   = lex_and_parse(&source, path);
 
     let resolve_result = bang::resolver::resolve(&prog);
     for w in &resolve_result.warnings {
-        eprintln!("{}", format_with_context(&w.to_string(), w.span, &source));
+        emit(&diag(Severity::Warning, "resolve", w.message.clone(), w.to_string(), w.span, &source), &source);
     }
     if !resolve_result.errors.is_empty() {
         for e in &resolve_result.errors {
-            eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
+            emit(&diag(Severity::Error, "resolve", e.message.clone(), e.to_string(), e.span, &source), &source);
         }
         process::exit(1);
     }
@@ -291,7 +382,7 @@ fn cmd_build(args: &[String]) {
         }
         Err(errors) => {
             for e in &errors {
-                eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
+                emit(&diag(Severity::Error, "compile", e.message.clone(), e.to_string(), e.span, &source), &source);
             }
             process::exit(1);
         }
@@ -342,7 +433,7 @@ fn cmd_repl() {
     // VM 기반 REPL: 전역(name→slot 맵 + 값 배열)을 스니펫 간 공유해 상태를 유지한다.
     // try/catch·import·타입힌트·JSON/정규식/tcp 등 VM 전용 기능이 REPL에서도 동작.
     let shared_globals: Arc<Mutex<Vec<bang::vm::VmValue>>> = Arc::new(Mutex::new(Vec::new()));
-    let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let output = bang::vm::Output::Stdout;
     let mut globals_map: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
 
     let stdin = io::stdin();
@@ -422,7 +513,7 @@ fn cmd_repl() {
         // 스니펫마다 새 VM(공유 전역) — 이전 에러의 잔여 상태가 남지 않음
         let mut vm = bang::vm::Vm::with_globals(shared_globals.clone(), output.clone());
         if let Err(e) = vm.run(out.main_fn) {
-            eprintln!("{}", format_with_context(&e.to_string(), e.span, trimmed));
+            eprintln!("{}", runtime_error_text(&e, trimmed));
         }
         // (print는 VM이 stdout에 직접 출력하므로 별도 echo 불필요)
     }
@@ -467,7 +558,7 @@ fn cmd_compile(args: &[String]) {
     let prog   = lex_and_parse(&source, source_path);
 
     // C 트랜스파일
-    let c_code = match bang::codegen::transpile(&prog) {
+    let c_code = match bang::codegen::transpile_with_source(&prog, Some(&source)) {
         Ok(c) => c,
         Err(errors) => {
             for e in &errors {
@@ -540,7 +631,9 @@ fn read_deps() -> Vec<bang::pkg::Dependency> {
 }
 
 fn write_deps(deps: &[bang::pkg::Dependency]) {
-    let text = bang::pkg::serialize_manifest(deps);
+    // [package] 등 다른 섹션은 보존하고 [dependencies]만 바꾼다 (Phase 62)
+    let existing = fs::read_to_string(MANIFEST).unwrap_or_default();
+    let text = bang::pkg::update_manifest(&existing, deps);
     if let Err(e) = fs::write(MANIFEST, text) {
         eprintln!("오류: {MANIFEST} 쓰기 실패: {e}");
         process::exit(1);
@@ -682,4 +775,186 @@ fn bracket_depth_delta(line: &str) -> i32 {
         }
     }
     depth
+}
+
+// ============================================================================
+// bang test / bang fmt (Phase 49)
+// ============================================================================
+
+/// 경로 목록 → .bang 파일 목록 (디렉터리는 재귀, bang_modules/.git/target 제외, 정렬).
+/// `only_tests`면 디렉터리 안에서는 *_test.bang / test_*.bang만 고른다 (직접 준 파일은 그대로).
+fn collect_bang_files(paths: &[String], only_tests: bool) -> Vec<std::path::PathBuf> {
+    fn is_test_file(p: &std::path::Path) -> bool {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name.ends_with("_test.bang") || (name.starts_with("test_") && name.ends_with(".bang"))
+    }
+    fn walk(dir: &std::path::Path, only_tests: bool, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if p.is_dir() {
+                if !matches!(name, "bang_modules" | ".git" | "target" | "node_modules") {
+                    walk(&p, only_tests, out);
+                }
+            } else if name.ends_with(".bang") && (!only_tests || is_test_file(&p)) {
+                out.push(p);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let roots: Vec<String> = if paths.is_empty() { vec![".".to_string()] } else { paths.to_vec() };
+    for r in &roots {
+        let p = std::path::Path::new(r);
+        if p.is_dir() {
+            walk(p, only_tests, &mut out);
+        } else if p.is_file() {
+            out.push(p.to_path_buf());
+        } else {
+            eprintln!("오류: '{r}' 파일 또는 디렉터리가 없습니다");
+            process::exit(1);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// bang test [경로...] — 테스트 파일의 최상위를 실행한 뒤 이름이 test_로 시작하는 최상위 함수를
+/// 하나씩 격리 실행한다. 함수가 에러 없이 끝나면 통과 (assert / assert_eq / throw로 실패).
+fn cmd_test(args: &[String]) {
+    // 권한 플래그 (Phase 64): bang test --sandbox --allow-read=fixtures — 나머지 인자는 경로
+    let mut perms = bang::permissions::Permissions::default();
+    let mut sandboxed = false;
+    let mut paths: Vec<String> = Vec::new();
+    for a in args {
+        match bang::permissions::parse_flag(&mut perms, a) {
+            Ok(true) => sandboxed = true,
+            Ok(false) => paths.push(a.clone()),
+            Err(m) => {
+                eprintln!("오류: {m}");
+                process::exit(1);
+            }
+        }
+    }
+    let files = collect_bang_files(&paths, true);
+    if sandboxed {
+        // 테스트 파일 탐색은 권한과 무관하게 먼저 끝내고, 테스트 코드 실행부터 권한을 적용한다
+        bang::permissions::install(perms);
+    }
+    if files.is_empty() {
+        eprintln!("테스트 파일이 없습니다 (*_test.bang 또는 test_*.bang)");
+        process::exit(1);
+    }
+    let started = std::time::Instant::now();
+    let (mut passed, mut failed, mut broken_files) = (0usize, 0usize, 0usize);
+    for file in &files {
+        let path = file.display().to_string();
+        println!("{path}");
+        let source = read_source(&path);
+        // 파일 단위 실패(파스·리졸브·컴파일·최상위 실행 에러)는 그 파일의 테스트를 건너뛴다
+        let tokens = match Lexer::new(&source).tokenize() {
+            Ok(t) => t,
+            Err(errs) => {
+                for e in errs { println!("  오류  {e}"); }
+                broken_files += 1;
+                continue;
+            }
+        };
+        let prog = match Parser::new(tokens).parse() {
+            Ok(p) => p,
+            Err(errs) => {
+                for e in errs { println!("  오류  {e}"); }
+                broken_files += 1;
+                continue;
+            }
+        };
+        let resolved = bang::resolver::resolve(&prog);
+        if !resolved.errors.is_empty() {
+            for e in &resolved.errors { println!("  오류  {e}"); }
+            broken_files += 1;
+            continue;
+        }
+        let out = match bang::compiler::compile_main(&prog, &path) {
+            Ok(o) => o,
+            Err(errs) => {
+                for e in &errs { println!("  오류  {e}"); }
+                broken_files += 1;
+                continue;
+            }
+        };
+        let mut vm = bang::vm::Vm::new(out.global_count as usize, bang::vm::Output::Stdout);
+        if let Err(e) = vm.run(out.main_fn) {
+            println!("  오류  최상위 실행 실패: {e}");
+            broken_files += 1;
+            continue;
+        }
+        // 선언 순서(전역 슬롯 순)대로 test_ 함수 실행
+        let mut tests: Vec<(&String, u16)> = out.global_names.iter()
+            .filter(|(n, _)| n.starts_with("test_"))
+            .map(|(n, s)| (n, *s))
+            .collect();
+        tests.sort_by_key(|(_, s)| *s);
+        if tests.is_empty() {
+            println!("  (test_로 시작하는 함수 없음)");
+        }
+        for (name, slot) in tests {
+            match vm.run_global_fn_isolated(slot as usize) {
+                None => continue, // 함수가 아닌 test_ 이름
+                Some(Ok(_)) => {
+                    passed += 1;
+                    println!("  ok    {name}");
+                }
+                Some(Err(e)) => {
+                    failed += 1;
+                    println!("  FAIL  {name}");
+                    println!("{}", runtime_error_text(&e, &source)
+                        .lines().map(|l| format!("        {l}")).collect::<Vec<_>>().join("\n"));
+                }
+            }
+        }
+    }
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    let file_note = if broken_files > 0 { format!(", 파일 오류 {broken_files}개") } else { String::new() };
+    println!("\n결과: {passed}개 통과, {failed}개 실패{file_note} ({}개 파일, {ms:.0}ms)", files.len());
+    if failed > 0 || broken_files > 0 {
+        process::exit(1);
+    }
+}
+
+/// bang fmt [--check] [경로...] — 들여쓰기 정규화 (src/fmt.rs). 줄 안의 내용은 바꾸지 않는다.
+fn cmd_fmt(args: &[String]) {
+    let check = args.iter().any(|a| a == "--check");
+    let paths: Vec<String> = args.iter().filter(|a| a.as_str() != "--check").cloned().collect();
+    let files = collect_bang_files(&paths, false);
+    let (mut changed, mut errors) = (0usize, 0usize);
+    for file in &files {
+        let path = file.display().to_string();
+        let source = read_source(&path);
+        match bang::fmt::format_source(&source) {
+            Ok(formatted) if formatted == source => {}
+            Ok(formatted) => {
+                changed += 1;
+                if check {
+                    println!("포맷 필요: {path}");
+                } else if let Err(e) = fs::write(file, formatted) {
+                    eprintln!("오류: '{path}' 쓰기 실패: {e}");
+                    errors += 1;
+                } else {
+                    println!("포맷함: {path}");
+                }
+            }
+            Err(e) => {
+                eprintln!("건너뜀: {path} — {e}");
+                errors += 1;
+            }
+        }
+    }
+    if check && changed > 0 {
+        eprintln!("{changed}개 파일이 포맷되지 않았습니다 (bang fmt로 고치세요)");
+        process::exit(1);
+    }
+    if errors > 0 {
+        process::exit(1);
+    }
 }

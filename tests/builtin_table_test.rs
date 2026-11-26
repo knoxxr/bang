@@ -132,6 +132,18 @@ const GOLDEN: &[(usize, &str, Option<usize>)] = &[
     (120, "bytes_to_hex", Some(1)),
     (121, "file_read_bytes", Some(1)),
     (122, "tcp_read_bytes", Some(1)),
+    (123, "assert_eq", Some(2)),
+    (124, "format", None),
+    (125, "path_join", None),
+    (126, "path_basename", Some(1)),
+    (127, "path_dirname", Some(1)),
+    (128, "path_ext", Some(1)),
+    (129, "path_abs", Some(1)),
+    (130, "csv_parse", Some(1)),
+    (131, "csv_stringify", Some(1)),
+    (132, "http_post", None),
+    (133, "http_request", None),
+    (134, "idiv", Some(2)),
 ];
 
 #[test]

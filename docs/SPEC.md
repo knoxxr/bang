@@ -18,21 +18,34 @@ Bang은 동적 타입 범용 프로그래밍 언어이다.
 `bang run`·`bang repl`·`import`가 모두 VM으로 실행된다. 다른 백엔드가 VM과 다르게
 동작하면 그 백엔드의 결함이다(지원하지 않는 기능은 조용히 무시하지 않고 명확한 에러를 내야 한다).
 
+**실험적 AOT (`bang compile`)** — 지원 범위: int/float/bool/nil/str, 산술·비교·논리, let/대입·복합 대입,
+if/while/return, 최상위 함수(재귀), 빌트인 `print str int float bool len abs sqrt floor ceil round pow
+min max(인자 2개) exit assert`. 그 밖(리스트·맵·spawn·클로저·for·try·타입 힌트·f-문자열 등)은 컴파일 에러다.
+지원 범위 안에서는 VM과 같은 결과를 낸다(Phase 58): 정수 오버플로·0 나누기·잘못된 변환은 에러로 종료(종료 코드 1),
+`/`는 float, Python 참거짓, float 표시, `len`은 문자 수. `tests/transpile_test.rs`의 VM↔AOT 동치 테스트가
+같은 프로그램 모음(36개, 에러 경우 13개 포함)을 두 엔진으로 실행해 표준 출력·종료 코드·**에러 출력**(메시지·
+`[줄:열]` 위치·소스 줄 표시)을 글자 단위로 비교한다 (Phase 61 — `bang compile`은 원본 소스 줄을 실행 파일에 넣는다).
+
 ---
 
 ## 2. 어휘 구조 (Lexical Structure)
 
 ### 2.1 문자 집합
 
-소스 코드는 UTF-8 인코딩이다. 식별자는 ASCII 영문자·숫자·`_`로 구성된다.
+소스 코드는 UTF-8 인코딩이다. 파일 맨 앞의 UTF-8 BOM(U+FEFF)은 무시한다.
+식별자는 유니코드 문자(한글 포함)·`_`로 시작하고 문자·숫자·`_`로 이어진다 (Phase 46):
+`let 이름 = "방"`, `let 점수_합 = 0`.
 
 ### 2.2 주석
 
 ```
 // 한 줄 주석 (줄 끝까지)
+/* 블록 주석
+   여러 줄 가능 (중첩 없음) */
 ```
 
-블록 주석은 지원하지 않는다.
+줄바꿈을 포함한 블록 주석은 줄바꿈 하나로 취급된다(문장 종결 규칙 유지). 닫히지 않은
+블록 주석은 렉서 에러다.
 
 ### 2.3 키워드
 
@@ -69,7 +82,7 @@ channel  send  recv  close  wait  parallel_map
 | 식별자 | ✅ |
 | `return`, `break`, `continue` | ✅ |
 | `)`, `]`, `}` | ✅ |
-| 연산자 (`+`, `-`, `*`, `/`, `%`, `=`, 비교, 논리) | ❌ (다음 줄로 계속) |
+| 연산자 (`+`, `-`, `*`, `/`, `%`, `=`, `+=` 등 복합 대입, 비교, 논리) | ❌ (다음 줄로 계속) |
 | `(`, `[`, `{`, `,`, `:`, `.` | ❌ |
 | `let`, `fn`, `if`, `else`, `while`, `for`, `in`, `spawn`, `parallel` | ❌ |
 
@@ -84,13 +97,33 @@ Bang은 동적 타입 언어이다. 변수에 타입 선언이 없고,
 
 | 타입 | 설명 | 리터럴 예시 |
 |------|------|-------------|
-| `int` | 64비트 정수 (오버플로 시 런타임 에러 — 아래 참고) | `42`, `0`, `-7` |
-| `float` | 64비트 부동소수점 | `3.14`, `0.5` |
+| `int` | 64비트 정수 (오버플로 시 런타임 에러 — 아래 참고) | `42`, `-7`, `1_000_000`, `0xff`, `0b1010`, `0o17` |
+| `float` | 64비트 부동소수점 | `3.14`, `0.5`, `1e3`, `2.5e-3` |
 | `bool` | 불리언 | `true`, `false` |
-| `string` | 불변 문자열 | `"hello"`, `"a\nb"` |
+| `string` | 불변 문자열 | `"hello"`, `"a\nb"`, `"""여러 줄"""` |
 | `nil` | 값 없음 | `nil` |
 
-**정수 오버플로**: `int` 연산(`+ - * / %`, 단항 `-`, `abs`, `sum`, `gcd` 등)의 결과가
+**숫자 리터럴** (Phase 46): `_`는 숫자 사이 구분자(`1_000`), 진법 접두사 `0x`/`0b`/`0o`,
+지수 `e`/`E`(부호 허용, 결과는 float). 숫자 바로 뒤에 문자가 붙으면(`12abc`, `1_`) 렉서 에러.
+
+**나눗셈** (Phase 57): `/`는 **항상 float**을 돌려준다 (`8 / 2` → `4.0`, `7 / 2` → `3.5`). 이전에는 나누어떨어지면
+int, 아니면 float이라 값에 따라 타입이 바뀌었다. 정수 몫은 `idiv(a, b)`(빌트인 134): int끼리는 아래로 내린
+int(`idiv(-7, 2)` → `-4`, Python의 `//`와 같음), float이 섞이면 내린 float. bang에서 `//`는 주석이라 연산자로
+쓰지 않는다. `%`는 지금처럼 0 쪽으로 자른 나머지다(`-7 % 2` → `-1`, Python과 다름).
+
+**산술의 타입**: `+ - * / %`는 숫자끼리(int·float 섞기 가능)만, `+`는 문자열·리스트·bytes끼리 연결도 한다.
+그 밖의 조합은 `type` 에러다 (Phase 61: 이전에는 한쪽이 float이면 숫자가 아닌 쪽을 조용히 0.0으로 바꿔
+`2.5 * "x"`가 `0.0`이었다).
+
+**float 표시** (Phase 57): 정수 값인 float도 소수점을 붙여 표시한다 (`4.0`, `1e3` → `1000.0`). 출력·`str()`·
+f-문자열·JSON이 모두 같다. int와 float을 눈으로 구별할 수 있게 하기 위함이다(이전에는 둘 다 `4`).
+
+**참거짓** (Phase 57, Python 규칙): 조건(`if`·`while`·`not`·`and`/`or`)과 `bool()`에서 다음은 **거짓**이다 —
+`false`, `nil`, `0`, `0.0`, `""`, `[]`, `{}`, 빈 bytes. 나머지는 참이다. (이전에는 `false`·`nil`만 거짓이어서
+`if not items`가 빈 리스트를 참으로 봤다.) `and`/`or`는 Python처럼 피연산자 값을 그대로 돌려준다
+(`0 or "기본값"` → `"기본값"`).
+
+**정수 오버플로**: `int` 연산(`+ - * %`, `idiv`, 단항 `-`, `abs`, `sum`, `gcd` 등)의 결과가
 64비트 범위를 벗어나면 **try/catch로 잡을 수 있는 런타임 에러**를 낸다
 ("정수 오버플로: ..."). 조용히 wrap하지 않으며, debug/release 빌드의 의미가 동일하다.
 (bigint 자동 승격은 없다 — 큰 수가 필요하면 float 사용을 고려.)
@@ -100,13 +133,82 @@ Bang은 동적 타입 언어이다. 변수에 타입 선언이 없고,
 | 타입 | 설명 | 리터럴 예시 |
 |------|------|-------------|
 | `list` | 순서 있는 가변 배열 | `[1, 2, 3]`, `[]` |
-| `map` | 키-값 매핑 | `{"name": "Alice", "age": 30}` |
+| `map` | 키-값 매핑 (**삽입 순서 유지**) | `{"name": "Alice", "age": 30}` |
 | `bytes` | 불변 바이트 열 (11장) | 리터럴 없음 — `bytes_from_str("hi")`, `bytes_from_hex("00ff")` |
+
+**맵의 순서** (Phase 51): 맵은 키를 **처음 넣은 순서**를 지킨다 (Python dict와 같음). 출력, `keys()`·`values()`,
+`for k in m`, `json_stringify`가 모두 이 순서를 따르고, `json_parse`는 문서의 키 순서를 보존한다.
+이미 있는 키에 다시 넣으면 값만 바뀌고 자리는 그대로다. `merge(a, b)`는 a의 순서 뒤에 b의 새 키가 붙는다.
+`==`는 순서와 무관하다(같은 키 집합 + 키별 같은 값). (v0.36.0까지는 키 정렬 순서였다.)
+
+**맵 키** (Phase 57): 키는 **str 또는 int**다. `1`과 `"1"`은 서로 다른 키다. 리터럴에도 정수 키를 쓸 수 있다
+(`{1: "일", -2: "마이너스"}`). 그 밖의 값(float·bool·nil·리스트 등)을 키로 쓰면 `type` 에러다 — 이전에는 무엇이든
+조용히 문자열로 바꿨다(`m[1]`이 `m["1"]`과 같았다). `keys()`·`for k in m`은 키를 원래 타입으로 돌려준다.
+`json_stringify`는 JSON 규칙대로 정수 키를 문자열로 쓴다(`{1: "a"}` → `{"1":"a"}`, 이때 `1`과 `"1"`이 함께 있으면
+JSON 키가 겹친다). 출력(`print`)은 문자열을 따옴표 없이 보여 주므로 `1`과 `"1"` 키가 똑같이 보인다 — 타입은
+`type(k)`로 확인한다.
 
 ### 3.3 함수 타입
 
 함수는 일급 값(first-class value)이다. 변수에 대입, 인자로 전달,
 반환값으로 사용할 수 있다. 클로저를 지원한다.
+
+**클로저가 붙잡는 것** (Phase 53 명문화): 클로저는 바깥 변수의 **값이 아니라 변수 자체**를 붙잡는다.
+
+```bang
+let fs = []
+for i in range(3) { fs += [fn() { return i }] }
+print([fs[0](), fs[1](), fs[2]()])   // [2, 2, 2] — Python과 같은 늦은 바인딩
+
+fn make() {
+    let n = 0
+    return {"inc": fn() { n += 1 }, "get": fn() { return n }}   // 두 메서드가 n을 공유
+}
+let s = make()
+let t = s          // 맵은 복사되지만 안의 클로저는 같은 n을 붙잡는다
+t.inc()
+print(s.get())     // 1 — 독립된 객체가 필요하면 make()를 다시 호출
+```
+
+- 같은 작업 안에서는 같은 변수를 붙잡은 클로저끼리(그리고 그 변수를 만든 함수와) 상태를 공유한다.
+  이것이 "맵 + 클로저 = 객체" 관용구의 근거다 (클래스는 없다 — 헌법 거부 목록).
+- **작업 경계에서는 격리된다**: `spawn`·`parallel_map`·`bang test`로 넘어가는 값(호출 대상, 인자, 붙잡은
+  변수, 모듈 전역)은 그 안에 든 클로저와 클로저 상태까지 복사된다. 같은 객체의 메서드끼리는 복사본에서도
+  서로 공유한다. 따라서 자식 작업이 객체를 바꿔도 부모와 다른 작업에는 보이지 않는다 —
+  **작업 사이에는 공유 가변 상태가 없다.** 결과를 돌려받으려면 반환값이나 채널을 쓴다.
+- 클로저가 없는 큰 리스트·맵은 복사하지 않고 공유한다(불변 공유라 안전). 한 번 "클로저 없음"으로 확인한
+  컨테이너는 다시 훑지 않는다. 비용 메모: 아직 끝나지 않은 Future가 많이 든 리스트(예: 전역에 Future를
+  계속 모으면서 spawn)를 넘기면 spawn마다 그 리스트를 훑는다 — Future 목록은 지역 변수에 두는 편이 빠르다.
+- 채널로는 함수를 보낼 수 없다(6.4) — 클로저 상태가 작업 사이를 건너는 길은 없다.
+- Future를 다른 작업에 넘기면, 받는 작업은 결과를 처음 꺼낼 때 그 결과(안의 클로저 상태 포함)를
+  격리된 복사본으로 받는다 — 객체를 돌려주는 작업의 Future를 여러 작업에 나눠 줘도 상태가 공유되지 않는다.
+
+**기본값 매개변수** (Phase 47): `fn greet(name, g = "안녕", p = "!") { ... }`
+
+- 기본값은 뒤쪽 매개변수에만 둘 수 있다 (기본값 있는 매개변수 뒤에 없는 것은 파스 에러).
+- 인자를 생략하면 **호출할 때마다** 기본값 식을 새로 평가한다 — Python의 "가변 기본값 공유"
+  함정이 없다(`fn acc(x, xs = [])`는 매번 빈 리스트). 앞쪽 매개변수를 참조할 수 있다(`fn f(v, k = v * 2)`).
+- 명시적으로 `nil`을 넘기면 기본값으로 바뀌지 않는다(생략과 구별).
+- 인자 수는 범위로 검사한다: 정적(리졸버) `인자 수 불일치: 함수는 1~3개를 ...`, 런타임
+  `인자 개수 불일치: 1~3개 기대, 0개 전달`. spawn·parallel_map 호출에도 같은 규칙.
+- 키워드 인자(`f(b=1)`)·가변 인자는 없다.
+
+**메서드 문법** (Phase 47): `x.f(a, b)`에서 `f`가 빌트인 이름이면
+
+1. `x`가 맵이고 키 `f`가 있으면 그 값을 호출한다 (맵 + 클로저 "객체" 관용구가 우선).
+2. 그 외에는 빌트인 `f(x, a, b)`를 호출한다: `"Hi".upper()`, `xs.sort()`, `m.keys()`,
+   `xs.map(fn(x) { ... }).filter(...)` 체이닝.
+
+`f`가 빌트인 이름이 아니면 기존대로 필드 값을 꺼내 호출한다. 메서드 문법은 **새 기능이 아니라
+표기법**이다 — 값 의미론이 그대로라 `xs.sort()`는 정렬된 **새 리스트**를 돌려주고 `xs`는 바뀌지
+않는다. 그래서 결과를 버리는 문장은 실수로 보고 막는다:
+
+- 문장 위치의 `xs.push(v)`, `xs.sort()` 등(값을 새로 만들 뿐인 빌트인: push, pop, sort, sort_by,
+  reverse, unique, merge, replace, upper, lower, trim, trim_start, trim_end, slice, map, filter,
+  flat, repeat, union, intersect, difference)은 **런타임 에러** (`x.push(...)의 결과가 버려짐 ...`).
+  `xs = xs.push(v)` 또는 `xs += [v]`로 쓴다. (맵 객체의 키를 호출한 경우는 해당 없음.)
+- 함수 표기 `push(xs, v)` 단독 문장은 기존 코드 호환을 위해 **경고**만 낸다.
+- `pop(xs)`/`xs.pop()`은 마지막 원소를 돌려줄 뿐 제거하지 않는다 — 제거는 `xs = xs[:-1]`.
 
 ### 3.4 Future 타입
 
@@ -133,29 +235,32 @@ statement      = let_stmt
                | continue_stmt
                | expr_stmt ;
 
-let_stmt       = "let" IDENT "=" expression NL ;
-fn_decl        = "fn" IDENT "(" [ params ] ")" block ;
+let_stmt       = "let" IDENT [ ":" type ] "=" expression NL
+               | "let" "[" IDENT { "," IDENT } "]" "=" expression NL ;   (* 분해 선언 *)
+fn_decl        = "fn" IDENT "(" [ params ] ")" [ "->" type ] block ;
 if_stmt        = "if" expression block
                  { "else" "if" expression block }
                  [ "else" block ] ;
 while_stmt     = "while" expression block ;
-for_stmt       = "for" IDENT "in" expression block ;
+for_stmt       = "for" IDENT { "," IDENT } "in" expression block ;
 return_stmt    = "return" [ expression ] NL ;
 break_stmt     = "break" NL ;
 continue_stmt  = "continue" NL ;
 expr_stmt      = expression NL ;
 
 block          = "{" { statement } "}" ;
-params         = IDENT { "," IDENT } ;
+params         = param { "," param } ;
+param          = IDENT [ ":" type ] [ "=" expression ] ;   (* 기본값은 뒤쪽에만 *)
 
 (* === 식(Expression) — 우선순위 낮은 순 === *)
 expression     = assignment ;
-assignment     = IDENT "=" assignment
+assignment     = target ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) assignment
                | logic_or ;
+target         = IDENT { "[" expression "]" | "." IDENT } ;
 logic_or       = logic_and { "or" logic_and } ;
 logic_and      = equality { "and" equality } ;
 equality       = comparison { ( "==" | "!=" ) comparison } ;
-comparison     = addition { ( "<" | "<=" | ">" | ">=" ) addition } ;
+comparison     = addition { ( "<" | "<=" | ">" | ">=" | "in" | "not" "in" ) addition } ;
 addition       = multiplication { ( "+" | "-" ) multiplication } ;
 multiplication = unary { ( "*" | "/" | "%" ) unary } ;
 unary          = ( "not" | "-" ) unary
@@ -163,6 +268,7 @@ unary          = ( "not" | "-" ) unary
 postfix        = primary { call_or_index } ;
 call_or_index  = "(" [ arguments ] ")"    (* 함수 호출 *)
                | "[" expression "]"        (* 인덱싱 *)
+               | "[" [ expression ] ":" [ expression ] "]"  (* 슬라이스 *)
                | "." IDENT ;              (* 멤버 접근 *)
 
 primary        = INT_LIT | FLOAT_LIT | STRING_LIT
@@ -173,23 +279,25 @@ primary        = INT_LIT | FLOAT_LIT | STRING_LIT
                | map_literal
                | spawn_expr
                | lambda
+               | if_expr
                | parallel_block ;
 
 list_literal   = "[" [ expression { "," expression } ] "]" ;
 map_literal    = "{" [ map_entry { "," map_entry } ] "}" ;
 map_entry      = expression ":" expression ;
 spawn_expr     = "spawn" expression ;
-lambda         = "fn" "(" [ params ] ")" block ;
+lambda         = "fn" "(" [ params ] ")" [ "->" type ] block ;
+if_expr        = "if" expression block "else" ( block | if_expr ) ;   (* 각 블록은 식으로 끝남 *)
 parallel_block = "parallel" block ;
 
 arguments      = expression { "," expression } ;
 
 (* === 토큰 === *)
 NL             = <자동 삽입 줄바꿈> ;
-IDENT          = ( letter | "_" ) { letter | digit | "_" } ;
-INT_LIT        = digit { digit } ;
-FLOAT_LIT      = digit { digit } "." digit { digit } ;
-STRING_LIT     = '"' { char | escape } '"' ;
+IDENT          = ( unicode_letter | "_" ) { unicode_letter | digit | "_" } ;
+INT_LIT        = digits | "0" ( "x" | "b" | "o" ) radix_digits ;   (* 숫자 사이 "_" 허용 *)
+FLOAT_LIT      = digits [ "." digits ] [ ( "e" | "E" ) [ "+" | "-" ] digits ] ;  (* "." 또는 지수 필수 *)
+STRING_LIT     = '"' { char | escape } '"' | '"""' { char | NL | escape } '"""' ;
 escape         = "\\" ( "n" | "t" | "\\" | '"' ) ;
 ```
 
@@ -204,6 +312,42 @@ map["key"] = v   // 맵 키 대입
 
 > **주의**: `let`은 선언, `=`은 재대입. 선언되지 않은 변수에 `=`은 에러.
 
+**분해 선언** (Phase 47): `let [a, b] = expr`는 expr이 길이 2인 리스트일 때 a, b를 선언한다.
+길이가 다르거나 리스트가 아니면 런타임 에러(`분해: 값 2개 기대, 3개 발견`, `분해: List 필요, ...`).
+함수가 여러 값을 돌려줄 때 쓴다: `let [q, r] = divmod(a, b)`.
+
+**if 식** (Phase 47): 표현식 자리의 `if c { a } else { b }`는 값을 낸다. 각 갈래의 **마지막 문장이
+식**이어야 하며 그 값이 결과다(앞 문장은 자유). `else`는 필수이고 `else if` 체인을 쓸 수 있다.
+문장 자리의 `if`는 기존 if 문이다.
+
+```bang
+let label = if score >= 90 { "A" } else if score >= 80 { "B" } else { "C" }
+```
+
+**복합 대입** (Phase 46): `x += e`는 `x = x + e`와 같다 (`-=`, `*=`, `/=`, `%=`도 같은 방식).
+대상이 경로(`m[k] += 1`, `cfg.n *= 2`)여도 되며, 이때 **경로의 키 식은 한 번만 평가**된다.
+경로의 마지막 키가 맵에 없으면 에러(`복합 대입: 맵에 키 'k' 없음`) — 카운터는
+`m[k] = get(m, k, 0) + 1`로 쓴다. 값은 값 의미론 그대로다(`xs += [v]`는 xs만 바꾼다).
+
+**중첩 경로 대입** (Phase 45): 대입 대상은 변수에서 시작하는 인덱스·필드 경로일 수 있다.
+
+```bang
+m["a"][0] = 9      // 맵 안 리스트의 원소
+grid[i][j] = 1     // 2차원 리스트
+cfg.db.port = 5432 // 맵 필드 경로
+```
+
+- 값 의미론은 그대로다: 경로 대입은 **그 변수의 값만** 바꾸며, 별칭·인자·캡처로 복제된 다른
+  값에는 보이지 않는다.
+- 중간 단계의 맵 키가 없으면 에러(`인덱스 대입: 맵에 키 'k' 없음`), 리스트 범위 초과도 에러.
+  에러 시 변수 값은 바뀌지 않는다. 마지막 단계의 맵 키는 없으면 새로 만든다.
+- 루트가 변수가 아니면(`f()[0] = 1`) 컴파일 에러.
+- 대입식의 값은 대입한 값이다 (`print(a[0] = 7)` → `7`).
+
+**성능 메모** (관찰 불가능한 최적화): `v[k] = x`, 경로 대입, `x = push(x, e)`, `x = x + e`는
+변수의 값을 제자리에서 변경한다(공유 중일 때만 복사 — copy-on-write). 따라서 루프 안에서
+원소 대입·맵 삽입·push 누적은 원소 수에 선형이다. 그 밖의 형태(`y = push(x, e)`)는 새 값을 만든다.
+
 ---
 
 ## 5. 연산자 우선순위
@@ -213,12 +357,31 @@ map["key"] = v   // 맵 키 대입
 | 1 (최저) | `=` | 우→좌 | 대입 |
 | 2 | `or` | 좌→우 | 논리합 (단락 평가) |
 | 3 | `and` | 좌→우 | 논리곱 (단락 평가) |
-| 4 | `==`  `!=` | 좌→우 | 동등 비교 |
-| 5 | `<`  `<=`  `>`  `>=` | 좌→우 | 순서 비교 |
+| 4 | `==`  `!=` | 좌→우 | 동등 비교 (아래 참고) |
+| 5 | `<`  `<=`  `>`  `>=`  `in`  `not in` | 좌→우 | 순서 비교, 포함 검사 |
 | 6 | `+`  `-` | 좌→우 | 덧셈, 뺄셈, 문자열 연결 |
 | 7 | `*`  `/`  `%` | 좌→우 | 곱셈, 나눗셈, 나머지 |
 | 8 | `-` (단항)  `not` | 우→좌 | 산술 부정, 논리 부정 |
-| 9 (최고) | `()`  `[]`  `.` | 좌→우 | 호출, 인덱싱, 멤버 |
+| 9 (최고) | `()`  `[]`  `[:]`  `.` | 좌→우 | 호출, 인덱싱, 슬라이스, 멤버 |
+
+**동등 비교 `==`**: 값은 구조로 비교한다 — int/float는 수치(`1 == 1.0`), str·bytes는 내용,
+list는 원소별, **map은 키 집합과 키별 값**(Phase 49 이전에는 맵 비교가 항상 false였던 결함 수정).
+함수·채널·Future·TCP 핸들은 동일성(같은 객체인지)으로 비교한다. 타입이 다르면 false.
+(`in`, `unique`, `index_of`, `union` 등도 같은 비교를 쓴다.)
+
+**`in` / `not in`** (Phase 46): `x in c`는 c가 리스트면 원소 중 `==`인 것이 있는지, 맵이면 키,
+문자열이면 부분 문자열, bytes면 바이트 값(Int) 또는 부분열(bytes)을 검사한다. 그 밖의 조합은 에러.
+주의: 단항 `not`은 비교보다 우선순위가 높다 — `not x in xs`는 `(not x) in xs`이므로
+**`x not in xs`**를 쓴다.
+
+**슬라이스** (Phase 46): `t[s:e]`는 list/str/bytes의 부분을 새 값으로 만든다. 경계를 생략하면
+처음/끝, 음수는 끝에서부터(`a[-2:]` = 마지막 2개), 범위 밖은 잘라 맞춘다(Python과 같음, step 없음).
+경계가 Int가 아니면 에러. (`slice(t, s, e)` 빌트인은 음수를 0으로 자르는 기존 동작을 유지한다.)
+
+**for-in 순회 대상** (Phase 46): list(원소), map(키 — 삽입 순서), str(문자), bytes(0~255 정수),
+channel(닫힐 때까지 수신). 변수가 둘 이상이면(`for k, v in m`) 원소를 분해한다: 맵은 `[키, 값]`
+쌍으로 순회하고, 그 외에는 각 원소가 같은 길이의 리스트여야 한다(`for i, x in enumerate(xs)`).
+길이가 다르면 에러(`분해: 값 2개 기대, 3개 발견`).
 
 ---
 
@@ -228,11 +391,16 @@ map["key"] = v   // 맵 키 대입
 
 1. **함수 색칠 없음**: async/await 키워드가 없다. 모든 함수는 동기·비동기
    구분 없이 하나의 형태로 작성된다.
-2. **값 이동(move)**: `spawn`에 전달되는 값은 이동된다. 공유 가변 상태가
-   발생하지 않으므로 락·뮤텍스·데이터 레이스가 사용자에게 노출되지 않는다.
+2. **값 격리**: `spawn`에 전달되는 값(인자·붙잡은 변수·안에 든 클로저 상태 포함)은 새 작업용으로
+   복사된다(3.3 "클로저가 붙잡는 것"). 작업 사이의 공유 가변 상태가 없으므로 락·뮤텍스·데이터 레이스가
+   사용자에게 노출되지 않는다.
 3. **구조적 동시성**: 모든 `spawn`은 가장 가까운 함수 본문 또는
    `parallel` 블록에 뿌리내린다. 스코프 종료 시 자동 조인되어
    작업 누수가 불가능하다.
+
+**자동 대기는 얕다**: 값이 필요한 지점(연산·호출 인자·조건·인덱스·필드·return 등)에서 Future 자체를 기다린다.
+리스트·맵 **안에 든** Future는 꺼내 쓸 때 기다린다. 그래서 `[spawn g()] == [3]`은 리스트 안의 Future와 3을
+비교해 `false`다 — 결과끼리 비교하려면 `[wait(f)] == [3]`처럼 먼저 꺼낸다. (`print`만 표시를 위해 깊게 기다린다.)
 
 ### 6.2 spawn
 
@@ -258,6 +426,25 @@ parallel {
 
 - `parallel` 블록은 내부의 모든 `spawn`이 완료될 때까지 블록을 벗어나지 않는다.
 - 블록 안에서 선언된 변수는 블록 밖에서 접근 가능 (스코프 승격).
+- 작업 중 에러가 있으면 **모든 작업이 끝난 뒤** 첫 에러를 던진다 (Phase 55 이전에는 첫 에러에서 바로
+  빠져나와 나머지 작업을 기다리지 않았다). 블록 안에서 예외가 나도 블록의 작업을 모두 기다린 뒤 전파한다.
+
+### 6.3-1 함수 본문에 뿌리내림 (Phase 55)
+
+`parallel` 블록 밖의 `spawn`은 **그 spawn을 실행한 함수 본문**에 뿌리내린다. 함수는 반환하기 전에
+(명시적 `return`이든 끝에 도달하든) 자기 본문에서 시작한 작업을 모두 기다린다. 최상위 코드의 spawn은
+프로그램 끝에 기다린다.
+
+```bang
+fn f() {
+    spawn slow()          // f의 본문에 뿌리내림
+    return "f 반환"        // slow()가 끝난 뒤에야 반환된다
+}
+```
+
+- 함수가 spawn 결과를 돌려주면(`return spawn g()`) 그 작업은 반환 전에 이미 끝나 있다(`return`은 자동 대기 지점).
+- 작업을 함수보다 오래 살리는 방법은 없다 — 오래 도는 작업은 최상위나 바깥 함수에서 spawn한다.
+- (Phase 55 이전에는 함수 본문 조인이 구현되지 않아, 함수가 자식을 기다리지 않고 먼저 반환했다.)
 
 ### 6.4 채널 (Channel)
 
@@ -286,11 +473,24 @@ let r = select([ch1, ch2, ch3])   // 먼저 준비된 채널에서 수신
 
 여러 채널 중 가장 먼저 값이 도착한 채널에서 수신한다. 폴링 기반 구현이다.
 
-### 6.4-2 spawn 에러 가시성
+### 6.4-2 spawn 에러 전파 (Phase 55)
 
-spawn된 작업이 처리되지 않은 에러로 끝나면 스코프 종료 시(자동 조인)
-stderr에 경고를 출력한다. 부모 작업은 중단되지 않는다(구조적 동시성).
-에러를 직접 다루려면 spawn 대상 함수 안에서 `try`/`catch`를 쓴다.
+spawn된 작업이 에러로 끝났는데 **아무도 그 결과를 받아 보지 않았다면**, 작업이 뿌리내린 스코프(함수 본문·
+`parallel` 블록)가 끝날 때 그 에러를 던진다 — 호출자가 `try`/`catch`로 잡을 수 있고, 끝까지 안 잡히면
+프로그램이 에러로 끝난다(종료 코드 1).
+
+```bang
+fn f() {
+    spawn bad()           // bad()가 에러로 끝나면
+    return "ok"
+}
+try { f() } catch e { print(e.kind) }   // 여기서 잡힌다
+```
+
+- 결과를 이미 받아 본 작업(`x + 1`처럼 값으로 써서 에러를 받았고 그걸 `catch`로 처리한 경우)의 에러는
+  다시 던지지 않는다.
+- 예외가 이미 전파 중일 때 함께 끝난 작업의 에러는 stderr 경고로 알린다(정보를 잃지 않게).
+- (Phase 55 이전에는 경고만 출력하고 정상 종료(종료 코드 0)해서 스크립트·CI가 실패를 알 수 없었다.)
 
 ### 6.4-3 serve_event — 논블로킹 이벤트 루프 서버
 
@@ -330,6 +530,13 @@ let results = parallel_map(items, fn(item) {
 ```
 
 - 리스트의 각 요소를 병렬로 처리하고 결과를 순서 유지하여 반환.
+- 각 호출은 `spawn`과 같은 격리로 실행된다 (클로저·모듈 전역을 원소마다 깊은 복사 —
+  한 호출이 전역을 바꿔도 다른 호출에 보이지 않는다).
+- 구조적 동시성: 반환 전에 모든 작업을 조인한다. 호출 중 에러가 있으면 **전부 조인한 뒤**
+  원래 순서상 첫 에러를 던진다(try/catch로 잡힘).
+- 작업 수는 최대 256개. 원소가 더 많으면 연속 구간으로 나눠 작업 하나가 여러 원소를 순서대로
+  처리한다. 빌트인 함수(`parallel_map(xs, str)`)는 순차 실행한다.
+- (v0.30.0까지는 VM에서 순차 실행되던 결함이 있었다 — Phase 45에서 수정.)
 
 ### 6.6 단계적 구현 메모
 
@@ -353,11 +560,38 @@ let results = parallel_map(items, fn(item) {
 | `\\` | 역슬래시 |
 | `\"` | 큰따옴표 |
 
+**f-문자열 (보간)** (Phase 50): `f"..."` 안의 `{식}` 자리에 식의 값을 넣는다 (`str()`과 같은 표시 형식).
+`f` 접두사가 없는 문자열은 지금처럼 중괄호를 글자 그대로 둔다(호환).
+
+```bang
+let name = "방"
+print(f"안녕, {name}! {len(name) * 2}글자")   // 안녕, 방! 2글자
+print(f"{m["key"]} { {"a": 1}["a"] }")        // 식 안에 따옴표·맵 리터럴 가능
+print(f"{{중괄호}} 그대로")                     // {중괄호} 그대로
+print(f"{3.14159:.2f} {1234567:,} {name:>5}")   // 3.14 1,234,567     방
+```
+
+- `{식:형식}`의 형식 지정자: `[[채움]정렬][0][너비][,][.정밀도][종류]` —
+  정렬 `<` `>` `^`(숫자 기본 오른쪽, 그 외 왼쪽), `0` 숫자 0 채움(부호 뒤), `,` 천 단위 구분,
+  종류 `f`(고정소수점, 기본 정밀도 6) `d`(정수) `x`(16진) `b`(2진) `%`(백분율). 종류 없이 정밀도만 쓰면
+  숫자는 고정소수점, 문자열은 앞에서 자른다. 잘못된 지정자는 파스 에러, 값과 안 맞으면 `value` 에러.
+- `{}`의 식은 값이 필요한 지점이다 — Future는 자동 대기(print처럼 깊게 해소).
+- `f"""..."""` 여러 줄 f-문자열도 된다. `{}` 안에는 식 하나만 (문장·줄바꿈 불가).
+- 식의 에러 위치는 원본 파일의 줄·열로 보고된다.
+- 같은 형식 규칙을 함수로: `format("{} + {} = {:.1f}", 1, 2, 3)` (빌트인 124). 자리 표시는 `{}` 또는
+  `{:형식}`만(순서대로), 인자 수와 자리 표시 수가 다르면 `argument` 에러.
+
+**여러 줄 문자열** (Phase 46): `"""..."""`는 줄바꿈을 그대로 담는다. 이스케이프는 같게 처리되고,
+안에 `"`를 그대로 쓸 수 있다. 여는 `"""` 바로 뒤의 줄바꿈도 내용에 포함된다(Python과 같음).
+
 ---
 
 ## 8. 에러 처리
 
-모든 에러 메시지는 `[줄:열]` 형식의 소스 위치를 포함한다.
+모든 에러 메시지는 `[줄:열]` 형식의 소스 위치를 포함한다. import한 모듈 안에서 난 에러는
+`[모듈경로 줄:열]`로 그 파일을 밝히고, 그 파일의 소스 줄을 보여 준다 (Phase 56).
+spawn한 작업 안에서 난 에러는 결과를 꺼낸 줄이 아니라 **작업 안에서 실제로 난 줄**을 가리킨다
+(`catch e`의 `e.line`도 같다). 작업을 시작하다 난 에러(인자 수 등)는 spawn/parallel_map을 호출한 줄을 가리킨다.
 
 에러 종류:
 - **LexError**: 예상하지 못한 문자, 종료되지 않은 문자열, 잘못된 이스케이프
@@ -383,7 +617,15 @@ throw <식>
   즉시 빠져나와 가장 가까운 바깥 `try`의 `catch`로 전파된다. 호출 스택을 가로질러
   전파되므로, 중첩 함수에서 던진 예외도 호출자의 `try`에서 잡힌다.
 - 내장 런타임 에러(0 나눗셈, 타입 불일치 등)도 `catch`로 잡힌다. 이 경우 catch
-  변수에는 에러 **메시지 문자열**이 바인딩된다.
+  변수에는 **맵 `{kind, message, line, col}`**이 바인딩된다 (Phase 48 — 이전에는 메시지 문자열).
+  `kind`로 에러 종류를 구별하고(8.2), `message`가 사람이 읽는 메시지다.
+  사용자가 `throw`한 값은 가공 없이 그대로 바인딩된다. 이 규칙은 **작업과 콜백을 건너도** 같다
+  (Phase 62): `spawn`·`parallel_map`·함수 본문 조인·`parallel` 블록, 그리고 `map`·`filter` 같은 내장 함수에
+  넘긴 콜백 안에서 잡히지 않은 `throw` 값은 바깥 `catch`에 원래 값 그대로 도착한다(이전에는
+  `{kind: "error", message: "잡히지 않은 예외: …"}` 맵으로 바뀌었다). 다른 작업으로 넘긴 Future를 통해
+  받은 값은 결과 값과 똑같이 격리된다(6.1 — 안에 든 클로저 상태를 공유하지 않음).
+- catch에서 받은 내장 에러 맵을 `throw e`로 다시 던졌는데 끝내 잡히지 않으면, 원래 에러의
+  메시지·위치·종류로 보고한다 (다시 던져도 정보가 사라지지 않는다).
 - `catch` 블록은 그 try 자신의 핸들러로 보호되지 않는다. catch 안에서 다시
   `throw`하면 더 바깥의 `try`로 전파된다(re-throw).
 - 잡히지 않은 예외는 프로그램을 비정상 종료시킨다("잡히지 않은 예외: …").
@@ -400,9 +642,78 @@ try {
     print(parse_int("42"))     // 42
     print(parse_int("abc"))    // 여기서 에러 발생 → catch로
 } catch e {
-    print("파싱 실패: " + e)
+    print("파싱 실패: " + e.message)   // e.kind == "value"
 }
 ```
+
+### 8.2 에러 종류 (`e.kind`)
+
+`kind` 값은 대외 계약이다 (이름을 바꾸지 않는다).
+
+| kind | 언제 |
+|---|---|
+| `zero_division` | 0으로 나누기·나머지 |
+| `overflow` | 정수 오버플로 |
+| `index` | 리스트·문자열·bytes 인덱스 범위 초과 |
+| `key` | 맵에 없는 키 읽기(`m[k]`, `m.k`), 없는 키에 복합 대입, 경로 대입 중간 키 없음 |
+| `type` | 연산·비교·호출·인덱스·필드 접근 대상의 타입이 맞지 않음, 타입 힌트 위반 |
+| `argument` | 함수·빌트인의 인자 개수나 인자 타입이 잘못됨 |
+| `value` | 형식은 맞지만 값이 잘못됨 — JSON/정규식 파싱, `int("abc")`, 분해 길이 불일치 등 |
+| `io` | 파일·디렉터리·네트워크·프로세스·환경 빌트인의 실패 |
+| `assertion` | `assert` / `assert_eq` 실패 |
+| `import` | 모듈을 찾거나 실행하지 못함 |
+| `permission` | 권한 모드에서 허가하지 않은 파일·네트워크·프로세스·환경 변수 접근 (17장, Phase 64) |
+| `error` | 그 밖의 런타임 에러 |
+
+```
+try {
+    let cfg = json_parse(read_file("config.json"))
+} catch e {
+    if e.kind == "io" { print("설정 파일 없음 — 기본값 사용") }
+    else { throw e }               // 그 밖의 에러는 다시 던짐
+}
+```
+
+### 8.3 없는 맵 키 (Phase 48)
+
+맵에 없는 키를 읽으면(`m["k"]`, `m.k`) `key` 종류의 에러다 (이전에는 조용히 `nil`).
+없을 수도 있는 키는 명시적으로 다룬다: `get(m, k, 기본값)`, `has(m, k)`, `k in m`.
+리스트 인덱스 범위 초과가 에러인 것과 같은 원칙이다 (헌법 7조 — 조용한 마법 금지).
+
+### 8.4 진단 출력: 힌트와 JSON (Phase 65)
+
+**다른 언어 습관 힌트**: 오류가 Python·JavaScript 습관 때문으로 보이면 사람용 출력 끝에 `= 힌트:` 줄을 붙인다.
+판단은 오류가 난 줄(문자열·주석 제외)을 보고 한다 — 오류 위치가 습관 단어 다음 토큰을 가리키는 경우가 많아서다.
+대상: `elif` `def` `function` `var`/`const` `class` `lambda` `except` `raise` `import x`(문장형) `pass` `None`/`null`/`undefined`
+`True`/`False` `is` `&&`/`||` `!x` `x++` `**` `;` 콜론 블록(`if x:`) Python 조건식(`a if c else b`), 런타임의 `.append`·`.length`
+등(런타임 오류는 메시지에 그 이름이 있을 때만). 같은 줄의 연쇄 오류에는 한 번만 보인다.
+
+```
+[1:9] 리졸브 오류: 정의되지 않은 변수: 'None'
+  |
+  1 | let y = None
+  |         ^
+  = 힌트: 값이 없음은 `nil`
+```
+
+**JSON 진단** (AI 에이전트·편집기용): 진단 하나를 JSON 한 줄로 낸다(JSON Lines, 필드 순서 고정).
+
+- `bang check --json 파일` — stdout. 문제가 없으면 아무것도 출력하지 않고 종료 코드 0, 오류가 있으면 1.
+- `bang run --json 파일` — stderr. 프로그램 출력(stdout)은 그대로다.
+
+```
+{"severity":"error","stage":"runtime","kind":"type","message":"필드 접근: List 에 필드 'append' 없음","file":"app.bang","line":3,"col":1,"hint":"리스트에 추가는 `xs += [v]` …"}
+```
+
+| 필드 | 값 |
+|---|---|
+| `severity` | `"error"` 또는 `"warning"` |
+| `stage` | `"lex"` `"parse"` `"resolve"` `"type"` `"compile"` `"runtime"` |
+| `kind` | 런타임 오류의 종류(8.2, `e.kind`와 같음). 그 밖의 단계는 `null` |
+| `message` | 위치 접두어 없는 메시지 |
+| `file` | 파일 경로 (import한 모듈 안의 런타임 오류면 그 모듈) |
+| `line` `col` | 1부터. 위치가 없으면 0 |
+| `hint` | 힌트 문자열 또는 `null` |
 
 ## 9. 선택적 타입 힌트 (Gradual Typing)
 
@@ -439,7 +750,7 @@ print(area(3, 4))        // 12
 try {
     let n: int = "oops"  // 타입 불일치 → 런타임 에러
 } catch e {
-    print(e)             // "타입 불일치: int 기대, Str 받음"
+    print(e.message)     // "타입 불일치: int 기대, Str 받음" (e.kind == "type")
 }
 ```
 
@@ -448,6 +759,20 @@ try {
 ## 10. 시스템 빌트인 (프로세스·환경·대기·파일)
 
 스크립트 실무용 빌트인. 실패는 모두 `try`/`catch`로 잡히는 런타임 에러다.
+
+**스크립트 인자와 표준 입력** (Phase 62):
+
+- `args()` → `[스크립트 경로, 인자...]` (Python `sys.argv`와 같은 모양). `bang app.bang a "b c"` →
+  `["app.bang", "a", "b c"]`. 옵션(`--dump-ast`)은 스크립트 경로 **앞에만** 오고, 경로 뒤의 모든 인자는
+  스크립트의 것이다(`-`로 시작해도). 표준 입력 실행(`bang - x`)은 `["-", "x"]`. REPL·`bang test`에서는 `[]`.
+  (이전에는 프로세스 argv 전체를 돌려주었고, 스크립트 뒤의 인자를 실행할 파일로 오인했다.)
+- `input()` / `input(프롬프트)` → 한 줄(줄바꿈 제외). **입력 끝(EOF)이면 `nil`** — 빈 줄 `""`과 구별된다
+  (Phase 62 — 이전에는 EOF도 `""`였다). 전형적인 루프: `let l = input()` 후 `if l == nil { break }`.
+
+**`print`와 표준 출력** (Phase 54): `print`는 표준 출력에 바로 쓰고 아무것도 메모리에 남기지 않는다
+(이전에는 출력한 모든 줄을 내부 목록에도 쌓아 오래 도는 서버의 메모리가 계속 늘었다). 읽는 쪽이 파이프를
+닫으면(`bang app.bang | head`) 에러 메시지 없이 종료 코드 141(128+SIGPIPE)로 조용히 끝난다. 그 밖의 쓰기
+실패는 `io` 종류의 런타임 에러다.
 
 | 함수 | 반환 | 실패 조건 |
 |---|---|---|
@@ -506,7 +831,9 @@ if r.code != 0 {
 | `a + b` | 연결한 새 `bytes` |
 | `a == b` | 내용 비교 |
 | `b[i] = v` | **에러** — 불변. `slice`와 `+`로 새 값을 만든다 |
-| `for x in b` | 지원하지 않음 — `for i in range(len(b))` 사용 |
+| `for x in b` | 각 바이트를 `0..255` 정수로 순회 (Phase 46) |
+| `b[s:e]` | 슬라이스 — 새 `bytes` |
+| `x in b` | 바이트 값(Int) 또는 부분열(bytes) 포함 여부 |
 
 | 빌트인 | 설명 |
 |---|---|
@@ -533,7 +860,7 @@ write_file("copy.png", png)             // 무손실 복사
 
 ---
 
-## 12. HTTP 클라이언트 (http_get)
+## 12. HTTP 클라이언트 (http_get / http_post / http_request)
 
 ```bang
 let r = http_get("https://example.com/")
@@ -544,8 +871,10 @@ print(len(r.body))
 
 - `http_get(url)` → `{"status": int, "headers": map, "body": str}`. `http://`와 `https://`를 지원한다.
 - 리다이렉트는 따라가지 않는다 — `status`(301/302 등)와 `headers.location`을 그대로 돌려준다.
-- 4xx/5xx는 에러가 아니라 `status`로 돌려준다. 연결 실패·TLS 실패·타임아웃(10초)은 catch 가능한 에러다.
-- `Transfer-Encoding: chunked`와 `Content-Length`를 처리한다.
+- 4xx/5xx는 에러가 아니라 `status`로 돌려준다. 연결 실패·TLS 실패·대기 시간 초과는 catch 가능한 `io` 에러다.
+- `Transfer-Encoding: chunked`와 `Content-Length`를 처리한다. 본문이 `Content-Length`·chunked 경계보다 먼저
+  끊기면 `io` 에러다 (Phase 63 — 이전에는 대기 시간이 지나거나 연결이 끊기면 **잘린 본문을 조용히 돌려주었다**).
+  chunked 본문은 받는 대로 해석한다(이전에는 데이터 안의 `0\r\n\r\n` 바이트를 끝으로 오판할 수 있었다).
 
 **https 구현**: TLS는 rustls(+ring)로 처리한다. 헌법 5조 "자급 코어"의 유일한 의존성 예외이며,
 `https` cargo feature(기본 켜짐)로 격리되어 있다. `cargo build --no-default-features`로 빌드하면
@@ -559,6 +888,194 @@ TLS 의존성이 빠지고 `https://` 요청은 "https를 지원하지 않음" �
 - 루트 인증서는 바이너리에 내장된 Mozilla 목록(webpki-roots)만 쓴다. OS 인증서 저장소를 읽지 않으므로,
   **사내 프록시처럼 자체 인증 기관(CA)을 쓰는 환경에서는 https 접속이 실패한다.**
   내장 목록은 bang을 새로 빌드해야 갱신된다.
-- GET만 지원한다(POST 등 없음). 요청 헤더를 지정할 수 없다.
+- (Phase 52 이전 한계였던 "GET만, 헤더 지정 불가"는 아래 12.1로 해소.)
 - `body`는 `str`이다 — UTF-8이 아닌 응답은 `�`로 대체된다(11장 한계 참고).
 - 클라이언트 인증서(mTLS), 프록시, HTTP/2는 지원하지 않는다.
+
+### 12.1 POST와 일반 요청 (Phase 52)
+
+```bang
+let r = http_post("https://api.example.com/items", {"name": "방"})   // map/list → JSON
+let r = http_post(url, "plain text", {"Authorization": "Bearer t"})
+let r = http_request("DELETE", url)
+let r = http_request("PUT", url, bytes_from_str("raw"), {"Content-Type": "text/csv"})
+```
+
+- `http_post(url, body[, headers])` (빌트인 132), `http_request(method, url[, body[, headers]])` (133).
+  반환과 에러 규칙은 `http_get`과 같다 (`{status, headers, body}`, 4xx/5xx는 status로).
+- body: `str`(기본 Content-Type `text/plain; charset=utf-8`), `bytes`(`application/octet-stream`),
+  map/list(JSON으로 직렬화, `application/json`), `nil`(본문 없음). `Content-Length`는 자동.
+- headers: str 값의 맵. 같은 이름(대소문자 무시)을 주면 기본값(User-Agent·Accept·Content-Type) 대신 쓰인다.
+  `Host`·`Connection`·`Content-Length`는 bang이 정하며 무시된다. 헤더 이름은 영숫자·`-`·`_`만,
+  값에 줄바꿈이 있으면 `value` 에러(헤더 주입 방지). 메서드는 대문자 영문만(`value` 에러).
+- 나머지 한계(리다이렉트 안 따라감, body는 str, 사내 CA·프록시·HTTP/2 미지원)는 `http_get`과 같다.
+
+### 12.2 옵션: 대기 시간과 줄 단위 스트리밍 (Phase 63)
+
+`http_post(url, body, headers, options)`, `http_request(method, url, body, headers, options)` — 마지막 인자 맵
+(`headers`·`body`는 `nil`로 비워 둘 수 있다). `http_get(url)`은 번호 계약상 인자 1개 그대로다 — 옵션이 필요하면
+`http_request("GET", url, nil, nil, options)`.
+
+| 키 | 값 | 뜻 |
+|---|---|---|
+| `timeout_ms` | 0 이상의 int (기본 10000, 0 = 무제한) | 연결·요청 전송·응답 읽기 **각각**의 대기 상한. 스트리밍에서는 "다음 데이터가 올 때까지"의 상한이다 |
+| `on_line` | 함수 `fn(line)` | **2xx** 응답 본문을 받는 대로 줄 단위로 넘긴다(줄 끝 `\n`·`\r\n` 제거, 마지막에 줄바꿈 없는 조각도 넘김). 결과의 `body`는 `nil` |
+
+- 모르는 키나 잘못된 타입은 조용히 무시하지 않고 `argument` 에러다.
+- `on_line` 콜백은 요청을 부른 작업 안에서 동기로 실행된다(새 작업·스레드 없음). 붙잡은 변수를 바꿔 결과를 모으면 된다.
+  콜백이 정확히 `false`를 돌려주면 그 자리에서 수신을 멈추고 연결을 닫는다(정상 반환). 콜백이 던진 값은 요청 밖의
+  `catch`에 그대로 도착한다.
+- 2xx가 아닌 응답(예: 429·500의 에러 JSON)은 콜백에 넘기지 않고 평소처럼 `body`에 모아 돌려준다 — `status`를 보고 처리한다.
+- 서버 전송 이벤트(SSE, `text/event-stream`)는 이 줄 콜백으로 받는다: `data: ` 줄을 골라 `json_parse`한다.
+  예제: `examples/llm_fanout.bang` (LLM API 병렬 호출 + 스트리밍, 테스트는 로컬 가짜 서버로 종단 검증).
+
+
+---
+
+## 13. 도구: 테스트와 포맷 (Phase 49)
+
+### 13.1 `bang test [경로...]`
+
+- 경로를 생략하면 현재 디렉터리를 재귀 탐색한다 (`bang_modules/`, `.git/`, `target/` 제외).
+  디렉터리에서는 `*_test.bang`과 `test_*.bang` 파일만 고르고, 파일을 직접 주면 이름과 상관없이 실행한다.
+- 파일마다 최상위를 한 번 실행한 뒤, 이름이 `test_`로 시작하는 **최상위 함수**를 선언 순서대로
+  인자 없이 호출한다. 에러 없이 끝나면 통과, 에러(`assert`/`assert_eq` 실패, `throw`, 런타임 에러)면 실패.
+- 각 테스트는 `spawn`과 같은 **격리**로 실행된다 — 한 테스트가 전역을 바꿔도 다른 테스트에 보이지 않는다.
+- 파스·리졸브·컴파일·최상위 실행 에러는 그 파일의 "파일 오류"로 보고한다.
+- 실패나 파일 오류가 하나라도 있으면 exit 1 (CI에서 그대로 쓴다).
+
+`assert_eq(actual, expected)` (빌트인 123): `==`(3장·5장 동등 비교)로 같지 않으면
+`assert_eq 실패: 기대 <expected>, 실제 <actual>` 에러를 던진다(문자열은 따옴표로 표시해 `1`과 `"1"`을 구별).
+
+### 13.2 `bang fmt [--check] [경로...]`
+
+의도적으로 보수적인 포매터다. 줄을 합치거나 나누지 않고 줄 안의 공백도 바꾸지 않는다.
+
+- 들여쓰기를 4칸 단위로 맞춘다: 줄은 "가장 안쪽 미닫힘 괄호를 연 줄"보다 한 단계 깊고,
+  줄 맨 앞의 닫는 괄호는 그 괄호를 연 줄의 수준으로 내어 쓴다. 이항 연산자·`=`·`and`/`or`로 끝난
+  줄 다음 줄은 문장 첫 줄보다 한 단계 깊다(콤마는 해당 없음).
+- 줄 끝 공백 제거, 연속 빈 줄은 하나로, 파일 앞뒤 빈 줄 제거, CRLF→LF, 끝에 줄바꿈 하나.
+- 여러 줄 문자열(`"""`)과 블록 주석의 안쪽 줄은 그대로 둔다.
+- 포맷 전후의 토큰열이 다르면(포매터 결함) 파일을 쓰지 않는다. 렉싱 오류가 있는 파일은 건너뛴다.
+- `--check`: 파일을 바꾸지 않고, 포맷이 필요한 파일이 있으면 목록을 출력하고 exit 1.
+
+---
+
+## 14. 경로와 CSV (Phase 52)
+
+### 14.1 경로 (`path_*`)
+
+문자열만 다룬다 — 파일이 있는지 확인하지 않는다(`path_abs` 포함).
+
+| 빌트인 | 결과 |
+|---|---|
+| `path_join(a, b, ...)` (125) | OS 구분자로 이음. 뒤 조각이 절대 경로면 거기서 다시 시작 (`path_join("a", "/x")` → `/x`) |
+| `path_basename(p)` (126) | 마지막 이름 (`a/b.txt` → `b.txt`, 없으면 `""`) |
+| `path_dirname(p)` (127) | 상위 경로 (`a/b.txt` → `a`, `b.txt` → `""`) |
+| `path_ext(p)` (128) | 확장자, 점 없이 (`a.tar.gz` → `gz`, 없으면 `""`) |
+| `path_abs(p)` (129) | 현재 디렉터리 기준 절대 경로 (심볼릭 링크는 풀지 않음) |
+
+구분자는 OS를 따른다(Windows는 `\`). 비교할 때는 문자열을 직접 만들지 말고 `path_join`으로 만든다.
+
+### 14.2 CSV (`csv_*`)
+
+- `csv_parse(text)` (130) → 행 리스트, 각 행은 문자열 리스트. RFC 4180: `"..."` 따옴표 필드,
+  `""` = 따옴표 글자, 따옴표 안 줄바꿈·쉼표 허용, CRLF/LF 모두. 마지막 줄바꿈·빈 줄은 행을 만들지 않는다.
+  닫히지 않은 따옴표는 `value` 에러. 숫자 변환은 하지 않는다(`int(row[1])`).
+- `csv_stringify(rows)` (131) → 텍스트. 행마다 `\n`, 쉼표·따옴표·줄바꿈이 든 필드만 따옴표로 감싼다,
+  `nil`은 빈 칸, 그 밖의 값은 `str()` 표시. 행이 리스트가 아니면 `argument` 에러.
+- 헤더 행 기준으로 맵을 만들려면: `let head = rows[0]` 후 `for row in rows[1:]`에서 `for i, name in enumerate(head) { rec[name] = row[i] }`.
+
+---
+
+## 15. 메모리 관리
+
+bang은 값을 **참조 카운팅**으로 관리한다. 값은 마지막 참조가 사라지는 즉시 해제되므로 멈춤(GC pause)이 없다.
+리스트·맵은 값이라 서로를 가리킬 수 없으므로, 순환은 클로저가 끼어 있을 때만 생긴다:
+
+```bang
+fn make() {
+    let me = {}
+    me = {"get": fn() { return me }}   // 맵 → 클로저 → 변수 me → 같은 맵 : 순환
+    return me
+}
+```
+
+- 객체(맵)를 담은 변수를 그 객체의 메서드(클로저)가 다시 붙잡을 때 (위 예)
+- 함수 안에서 정의한 이름 있는 함수가 자기 자신을 재귀 호출할 때
+- 작업(spawn·parallel_map·serve_event 요청 처리)마다 복사되는 모듈 전역과 그 안의 함수들
+
+**순환 수집** (Phase 60): 참조 카운팅만으로는 이런 순환이 해제되지 않으므로, 순환이 생길 수 있는 지점을
+후보로 모아 "바깥에서 들어오는 참조가 없는 순환"만 끊는다(trial deletion — `src/cycles.rs`).
+
+- 후보: 클로저가 붙잡은 채 반환된 함수의 지역 변수들, 작업 경계에서 복사한 상태(작업이 끝날 때 수집).
+- 함수 반환 후보는 2048개마다 수집하고, 살아남은 것은 늙은 세대로 옮겨 그 수가 두 배가 될 때 다시 본다
+  (Python의 세대별 수집과 같은 분할 상환 방식). 작업이 끝날 때는 그 작업의 후보를 모두 본다.
+- 바깥에서 닿는 값(실행 중인 함수의 변수, 연산 중인 값, 다른 변수·리스트가 가리키는 객체, 작업의 결과)은
+  절대 건드리지 않는다. 테스트는 수집을 매 반환마다 일으키는 설정으로도 전체 테스트·예제가 같은 결과임을
+  확인했다.
+- 실측: 순환 객체 30만 개 298MB → 14MB, spawn 20만 회 75MB → 12MB(횟수와 무관). 시간 영향은 잡음 범위.
+
+**남은 한계**: 오래 살아남은 객체가 나중에 버려지면, 늙은 세대를 다시 볼 때까지(살아남은 후보 수가 두 배가 될
+때까지) 메모리에 남는다. 새 객체를 더 만들지 않는 프로그램에서는 그 순환이 끝까지 남을 수 있다.
+
+## 16. 모듈 해석 (import)
+
+`import(spec)`은 `.bang` 파일을 한 번 실행하고(이후 같은 파일은 캐시) 그 최상위 바인딩을 선언 순서의 맵으로
+돌려준다. 순환 import는 순환 경로를 담은 `import` 에러다.
+
+**기준 디렉터리** (Phase 62): 상대 경로와 바레 이름은 **`import`를 쓴 파일이 있는 디렉터리** 기준이다
+(Python이 스크립트 위치를 기준으로 삼는 것과 같다). 그래서 프로그램을 어느 디렉터리에서 실행해도 같은 모듈을
+찾는다. 이전에는 `bang`을 실행한 현재 디렉터리 기준이라, `lib/a.bang`이 같은 폴더의 `b.bang`을 가져오려면
+`import("lib/b.bang")`으로 써야 했다. REPL과 표준 입력(`bang -`) 코드는 기준 파일이 없으므로 현재 디렉터리 기준이다.
+
+| `spec` | 찾는 곳 (처음 찾은 것) |
+|---|---|
+| 절대 경로 | 그 경로 |
+| `.bang`으로 끝나거나 `/`·`\`가 든 상대 경로 | `<기준>/<spec>` |
+| 바레 이름 `name` | `<기준>/name.bang` → `<기준>/bang_modules/name/{name,main,lib}.bang` → 기준의 상위 디렉터리들의 `bang_modules/name/…` (위로 올라가며) → `BANG_PATH`(`:` 구분)의 `<dir>/name.bang`, `<dir>/name/{name,main}.bang` |
+
+위쪽 `bang_modules/` 탐색 덕분에 `bang_modules/pkg/pkg.bang` 안의 `import("util")`이 프로젝트의
+`bang_modules/util/`을 찾는다(Node.js와 같은 방식).
+
+**매니페스트** (`bang.toml`): `bang add`/`bang install`은 `[dependencies]` 섹션만 읽고 쓴다. 다른 섹션(`bang new`가
+만드는 `[package]` 등)과 주석은 보존한다(Phase 62 — 이전에는 `bang add`가 파일을 `[dependencies]`만으로 다시 썼다).
+
+## 17. 권한 모드 (Phase 64)
+
+AI가 생성한 코드나 남이 준 스크립트를 실행할 때, 그 코드가 할 수 있는 일을 실행 전에 제한한다(Deno식 허가 목록).
+
+```
+bang --sandbox app.bang                                   # 아무것도 허가하지 않음
+bang run --allow-read=./data --allow-net=api.anthropic.com app.bang
+bang test --sandbox --allow-read=fixtures                 # 테스트도 같은 플래그
+```
+
+- **켜는 조건**: `--sandbox` 또는 `--allow-*` 플래그가 하나라도 있으면 권한 모드다. 플래그가 없으면 이전과 같이 모두 허용한다.
+  플래그는 스크립트 경로 **앞**에 쓴다(경로 뒤의 인자는 스크립트의 `args()` — 10장).
+- **분야와 대상** (값 없이 쓰면 그 분야 전부, `=a,b`로 목록, 같은 플래그를 여러 번 쓰면 합쳐짐):
+
+| 플래그 | 검사하는 빌트인 | 목록 항목 |
+|---|---|---|
+| `--allow-read` | `read_file` `file_read_bytes` `file_exists` `is_dir` `list_dir` `file_size` `tcp_send_file` | 경로 — 그 아래 전부 |
+| `--allow-write` | `write_file` `file_append` `dir_create` `file_remove` `file_move`(양쪽) | 경로 — 그 아래 전부 |
+| `--allow-net` | `http_get` `http_post` `http_request` `tcp_connect` `tcp_listen` `serve_event` | `host`(모든 포트) 또는 `host:port` |
+| `--allow-run` | `proc_run` | 프로그램 이름(`argv[0]`과 정확히 같아야 함) |
+| `--allow-env` | `env_get` | 변수 이름 |
+| `--allow-all` | 전부 | — |
+
+- 허가하지 않은 호출은 아무 일도 하지 않고 `permission` 종류의 에러를 낸다(catch 가능, 미처리 시 종료 코드 1).
+  메시지에 허용하는 플래그가 들어 있다.
+- **경로 비교**: 대상과 허가 경로를 모두 실제 경로로 풀어(심볼릭 링크 해소, 존재하지 않는 대상은 가장 가까운 존재하는
+  상위 디렉터리를 풀고 나머지를 붙임) 허가 경로 아래인지 본다. `data/../secret`이나 `data` 안의 링크로 빠져나갈 수 없다.
+- **네트워크 비교**: 호스트 이름 문자열 그대로 비교한다(DNS를 풀지 않음 — `localhost`와 `127.0.0.1`은 다르다). URL은 스킴
+  기본 포트(http 80, https 443)를 쓴다. `tcp_accept`·`tcp_read` 등은 이미 허가된 연결·리스너에만 쓸 수 있으므로 검사하지 않는다.
+- **import**: 모듈 적재는 허용하되 `.bang` 파일만 불러올 수 있다(다른 파일을 import로 읽어 에러 메시지로 내용을 흘리지 못하게).
+  모듈 코드도 같은 권한으로 실행된다.
+- **범위**: 권한은 프로세스 전체에 한 번 설정되고 스크립트가 바꿀 수 없다. `spawn`·`parallel_map` 작업, 콜백, 메서드 문법
+  등 모든 경로가 빌트인 디스패치 한 곳에서 같은 검사를 받는다.
+- **언제나 허용**: `print`·`input`·`args`·`env_cwd`·`sleep`·`now_ms` 등 외부 자원을 바꾸지 않는 빌트인, CPU·메모리 사용.
+
+**한계 (반드시 인지)**: 이것은 bang 코드가 *빌트인으로* 하는 일을 막는 장치이지 운영체제 수준 격리가 아니다.
+`--allow-run=sh`나 `--allow-run=python`처럼 범용 실행기를 허가하면 그 프로세스는 아무 제한 없이 동작한다 — 실행을 허가할
+프로그램은 좁게 고른다. CPU·메모리·실행 시간 제한은 없다(무한 루프는 막지 못함). 완전한 격리가 필요하면 컨테이너와 함께 쓴다.

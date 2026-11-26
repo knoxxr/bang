@@ -1,0 +1,5 @@
+fn validate_age(x) {
+    if type(x) != "Int" { throw {"field": "age", "reason": "not_int"} }
+    if x < 0 or x > 150 { throw {"field": "age", "reason": "out_of_range"} }
+    return x
+}

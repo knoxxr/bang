@@ -85,7 +85,8 @@ print(b)              // [99, 2, 3]
 
 ```
 print(7 + 2 * 3)      // 13
-print(10 / 4)         // 2.5   (정수끼리도 나누면 float)
+print(10 / 4)         // 2.5   (/ 는 항상 float: 10 / 2 → 5.0)
+print(idiv(10, 4))    // 2     (정수 몫은 idiv)
 print(10 % 3)         // 1
 print("foo" + "bar")  // foobar  (+ 로 문자열 연결)
 print(1 < 2 and 3 >= 3)   // true
@@ -268,7 +269,7 @@ fn safe_div(x, y) {
         return -1
     }
 }
-print(safe_div(10, 2))    // 5
+print(safe_div(10, 2))    // 5.0
 print(safe_div(10, 0))    // -1   (0 나눗셈도 catch로 잡힘)
 ```
 
@@ -287,6 +288,20 @@ try {
 } catch e {
     print(e.code)         // 400
 }
+```
+
+내장 에러(0 나눗셈, 없는 키 등)를 잡으면 `e`는 `{kind, message, line, col}` 맵이다.
+`kind`로 종류를 구별할 수 있다:
+
+```
+let scores = {"민수": 90}
+try {
+    print(scores["영희"])
+} catch e {
+    print(e.kind)          // key
+    print(e.message)       // 맵에 키 '영희' 없음 (없을 수 있으면 get(m, k, 기본값) 또는 has(m, k))
+}
+print(get(scores, "영희", 0))   // 0 — 없을 수 있는 키는 get으로
 ```
 
 ---
@@ -360,7 +375,7 @@ let mathutils = import("mathutils")
 let data = json_parse("{\"name\": \"Al\", \"nums\": [1, 2, 3]}")
 print(data.name)                  // Al
 print(sum(data.nums))             // 6
-print(json_stringify({"ok": true, "n": 5}))   // {"n":5,"ok":true}
+print(json_stringify({"ok": true, "n": 5}))   // {"ok":true,"n":5}
 ```
 
 **정규식** — 매칭·추출·치환 (캡처 그룹 지원):
@@ -419,6 +434,92 @@ sleep(500)                        // 0.5초 대기 (spawn된 작업 안에서도
 **수학**: `abs sqrt pow floor ceil round min max gcd clamp sign sin cos tan log exp pi() e()`.
 
 ---
+
+## 11.5 Python에서 왔다면
+
+Python 손버릇 대부분이 그대로 통한다 — f-문자열(`f"{x:.2f}"`), 복합 대입, 슬라이스, `in`,
+`for k, v`, 메서드 문법, 기본값 매개변수, if 식, 한글 이름까지:
+
+```bang
+let words = "the cat and the hat".split(" ")
+let counts = {}
+for w in words {
+    counts[w] = get(counts, w, 0) + 1
+}
+for k, v in counts {
+    print(f"{k}: {v}")
+}
+
+let xs = [5, 3, 8, 1]
+xs += [9]
+print(xs.sort()[:3])
+print(xs[-2:])
+print(3 in xs, "z" not in counts)
+
+fn describe(n, unit = "개") {
+    let size = if n > 3 { "많음" } else { "적음" }
+    return str(n) + unit + " (" + size + ")"
+}
+print(describe(5))
+print(describe(2, "명"))
+
+let [lo, hi] = [xs.sort()[0], xs.sort()[-1]]
+print(lo, hi)
+let 합계 = 1_000 + 0xff
+print(합계)
+```
+
+출력:
+
+```
+the: 2
+cat: 1
+and: 1
+hat: 1
+[1, 3, 5]
+[1, 9]
+true true
+5개 (많음)
+2명 (적음)
+1 9
+1255
+```
+
+다른 점 세 가지만 기억하자 (모두 **값 의미론** 때문이다 — 7장의 동시성이 안전한 이유):
+
+- `xs.sort()`·`xs.push(v)`는 **새 값**을 돌려준다. `xs`는 그대로다. 그래서 `xs.push(v)`를
+  단독 문장으로 쓰면 에러로 알려 준다 — `xs = xs.push(v)` 또는 `xs += [v]`로 쓴다.
+- `pop`은 마지막 원소를 돌려줄 뿐 지우지 않는다. 지우려면 `xs = xs[:-1]`.
+- 기본값 매개변수는 호출마다 새로 계산된다 (`fn f(xs = [])`가 호출 간에 공유되지 않는다).
+
+## 11.6 테스트와 포맷
+
+`_test.bang`으로 끝나는 파일에 `test_`로 시작하는 함수를 쓰고 `bang test`를 실행한다:
+
+```bang
+// calc_test.bang
+fn add(a, b) { return a + b }
+
+fn test_add() {
+    assert_eq(add(2, 3), 5)
+}
+
+fn test_add_strings() {
+    assert_eq(add("a", "b"), "ab")
+}
+```
+
+```
+$ bang test
+./calc_test.bang
+  ok    test_add
+  ok    test_add_strings
+
+결과: 2개 통과, 0개 실패 (1개 파일, 0ms)
+```
+
+실패하면 어느 줄에서 무엇이 달랐는지(`assert_eq 실패: 기대 5, 실제 4`)를 보여 주고 exit 1로
+끝난다. 들여쓰기는 `bang fmt`가 맞춰 준다 (`bang fmt --check`는 CI용).
 
 ## 12. 다음 단계
 

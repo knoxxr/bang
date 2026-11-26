@@ -1,0 +1,9 @@
+fn csv_total(text, column) {
+    let rows = csv_parse(text)
+    let i = index_of(rows[0], column)
+    let total = 0.0
+    for row in rows[1:] {
+        total += float(row[i])
+    }
+    return total
+}

@@ -1,0 +1,11 @@
+fn fan_in(lists) {
+    let ch = channel()
+    for xs in lists {
+        spawn fn() { send(ch, sum(xs)) }()
+    }
+    let total = 0
+    for _ in lists {
+        total += recv(ch)
+    }
+    return total
+}

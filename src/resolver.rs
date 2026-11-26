@@ -94,8 +94,25 @@ struct VarInfo {
     state: VarState,
     used: bool,
     span: Span,
-    /// fn 리터럴 직접 바인딩이면 파라미터 수
-    arity: Option<usize>,
+    /// fn 리터럴 직접 바인딩이면 (최소, 최대) 인자 수 — 기본값 매개변수가 있으면 최소 < 최대
+    arity: Option<Arity>,
+}
+
+/// 결과를 버리면 아무 효과가 없는 빌트인 (값 의미론: 인자를 바꾸지 않고 새 값을 돌려준다).
+/// 문장으로 단독 호출되면 경고, 메서드 문법(`xs.push(v)`)이면 VM이 에러를 낸다.
+pub const PURE_BUILTINS: &[&str] = &[
+    "push", "pop", "sort", "sort_by", "reverse", "unique", "merge", "replace", "upper", "lower",
+    "trim", "trim_start", "trim_end", "slice", "map", "filter", "flat", "repeat", "union",
+    "intersect", "difference",
+];
+
+/// (최소, 최대) 인자 수.
+type Arity = (usize, usize);
+
+/// 매개변수 목록 → (필수 개수, 전체 개수).
+fn fn_arity(params: &[String], defaults: &[Option<Expr>]) -> Arity {
+    let required = defaults.iter().take_while(|d| d.is_none()).count().min(params.len());
+    (required, params.len())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,7 +235,7 @@ impl Resolver {
     }
 
     /// 현재 스코프의 변수에 arity 저장.
-    fn set_arity(&mut self, name: &str, arity: usize) {
+    fn set_arity(&mut self, name: &str, arity: Arity) {
         if let Some(frame) = self.scopes.last_mut() {
             if let Some(info) = frame.find_mut(name) {
                 info.arity = Some(arity);
@@ -265,11 +282,11 @@ impl Resolver {
             if let StmtKind::Let { name, value, .. } = &stmt.kind {
                 // arity는 파라미터 수로 직접 계산한다 — 본문을 여기서 해석하면
                 // 아직 prescan 안 된 이름을 못 찾으므로, 본문 해석은 아래 resolve_stmts로 미룬다.
-                if let ExprKind::Function { params, .. } = &value.kind {
+                if let ExprKind::Function { params, param_defaults, .. } = &value.kind {
                     if let Some(slot) = self.declare(name, stmt.span) {
                         self.define(name);
                         self.table.let_slots.insert(stmt.span, slot);
-                        self.set_arity(name, params.len());
+                        self.set_arity(name, fn_arity(params, param_defaults));
                         self.global_prescan.insert(name.clone());
                     }
                 }
@@ -290,7 +307,7 @@ impl Resolver {
                 state: VarState::Defined,
                 used: true,
                 span: Span::new(0, 0),
-                arity: b.arity,
+                arity: b.arity.map(|n| (n, n)),
             }));
         }
     }
@@ -344,8 +361,21 @@ impl Resolver {
                 false
             }
 
+            StmtKind::LetUnpack { names, value } => {
+                self.resolve_expr(value);
+                for name in names {
+                    if let Some(s) = self.declare(name, stmt.span) {
+                        self.define(name);
+                        // 같은 span에 여러 이름 — 슬롯 기록은 첫 이름만 (VM 컴파일러는 자체 할당)
+                        self.table.let_slots.entry(stmt.span).or_insert(s);
+                    }
+                }
+                false
+            }
+
             StmtKind::Expr(expr) => {
                 self.resolve_expr(expr);
+                self.warn_discarded_pure(expr);
                 false
             }
 
@@ -378,18 +408,22 @@ impl Resolver {
                 false
             }
 
-            StmtKind::For { var, iter, body } => {
+            StmtKind::For { vars, iter, body } => {
                 self.resolve_expr(iter);
-                // 루프 변수를 body와 같은 새 스코프에 선언
+                // 루프 변수(들)를 body와 같은 새 스코프에 선언
                 self.push_scope(FrameKind::Block);
-                let slot = self.scopes.last().map(|f| f.vars.len()).unwrap_or(0);
-                self.scopes.last_mut().unwrap().vars.push((var.clone(), VarInfo {
-                    slot,
-                    state: VarState::Defined,
-                    used: false,
-                    span: stmt.span,
-                    arity: None,
-                }));
+                for var in vars {
+                    let slot = self.scopes.last().map(|f| f.vars.len()).unwrap_or(0);
+                    if let Some(frame) = self.scopes.last_mut() {
+                        frame.vars.push((var.clone(), VarInfo {
+                            slot,
+                            state: VarState::Defined,
+                            used: false,
+                            span: stmt.span,
+                            arity: None,
+                        }));
+                    }
+                }
                 self.resolve_stmts(&body.stmts);
                 self.pop_scope(true);
                 false
@@ -438,7 +472,7 @@ impl Resolver {
     }
 
     /// 식 해석. fn 리터럴이면 Some(arity), 그 외 None.
-    fn resolve_expr_arity(&mut self, expr: &Expr) -> Option<usize> {
+    fn resolve_expr_arity(&mut self, expr: &Expr) -> Option<Arity> {
         match &expr.kind {
             ExprKind::Int(_)
             | ExprKind::Float(_)
@@ -497,11 +531,12 @@ impl Resolver {
                 }
 
                 // 인자 수 검사 (arity 알고 있을 때만)
-                if let Some(arity) = callee_arity {
-                    if args.len() != arity {
+                if let Some((min, max)) = callee_arity {
+                    if args.len() < min || args.len() > max {
+                        let need = if min == max { format!("{max}개") } else { format!("{min}~{max}개") };
                         self.errors.push(ResolveError::new(
                             format!(
-                                "인자 수 불일치: 함수는 {arity}개를 필요로 하지만 {}개가 제공됨",
+                                "인자 수 불일치: 함수는 {need}를 필요로 하지만 {}개가 제공됨",
                                 args.len()
                             ),
                             expr.span,
@@ -522,8 +557,32 @@ impl Resolver {
                 None
             }
 
-            ExprKind::Function { name, params, body, .. } => {
-                let arity = params.len();
+            ExprKind::FString(parts) => {
+                for p in parts {
+                    if let crate::ast::FStringPart::Expr(e, _) = p {
+                        self.resolve_expr(e);
+                    }
+                }
+                None
+            }
+
+            ExprKind::IfExpr { cond, then, else_ } => {
+                self.resolve_expr(cond);
+                self.resolve_block(then);
+                self.resolve_block(else_);
+                None
+            }
+
+            ExprKind::Slice { target, start, end } => {
+                self.resolve_expr(target);
+                for e in [start, end].into_iter().flatten() {
+                    self.resolve_expr(e);
+                }
+                None
+            }
+
+            ExprKind::Function { name, params, param_defaults, body, .. } => {
+                let arity = fn_arity(params, param_defaults);
                 self.push_scope(FrameKind::Function);
                 self.fn_depth += 1;
 
@@ -543,6 +602,11 @@ impl Resolver {
                         span: param_span,
                         arity: None,
                     }));
+                }
+
+                // 기본값 식: 매개변수가 보이는 함수 스코프에서 해석 (호출 시 평가)
+                for d in param_defaults.iter().flatten() {
+                    self.resolve_expr(d);
                 }
 
                 // named fn: 외부 스코프에서 해당 이름을 used로 표시
@@ -582,11 +646,36 @@ impl Resolver {
                 self.resolve_assign_target(target);
                 None
             }
+
+            ExprKind::CompoundAssign { target, value, .. } => {
+                self.resolve_expr(value);
+                self.resolve_assign_target(target);
+                None
+            }
         }
     }
 
+    /// 값을 새로 만들 뿐 인자를 바꾸지 않는 빌트인의 결과를 문장에서 버리면 경고 (Phase 47).
+    /// 예: `push(xs, 1)` 단독 문장은 아무 효과가 없다 — Python의 xs.append 습관.
+    fn warn_discarded_pure(&mut self, expr: &Expr) {
+        let ExprKind::Call { callee, .. } = &expr.kind else { return };
+        let ExprKind::Ident(name) = &callee.kind else { return };
+        if !PURE_BUILTINS.contains(&name.as_str()) {
+            return;
+        }
+        // 사용자가 같은 이름을 재정의했다면(빌트인 스코프가 아니면) 경고하지 않는다
+        if !matches!(self.lookup_raw(name), Some((_, _, 0))) {
+            return;
+        }
+        self.warnings.push(ResolveWarning::new(
+            format!("'{name}'의 결과가 버려짐 — {name}은(는) 새 값을 돌려줄 뿐 인자를 바꾸지 않습니다 \
+                     (예: xs = {name}(xs, ...) 또는 xs += [v])"),
+            expr.span,
+        ));
+    }
+
     /// Ident 조회 + VarRef 기록.
-    fn resolve_ident(&mut self, name: &str, span: Span) -> Option<usize> {
+    fn resolve_ident(&mut self, name: &str, span: Span) -> Option<Arity> {
         match self.lookup_raw(name) {
             None => {
                 self.errors.push(ResolveError::new(

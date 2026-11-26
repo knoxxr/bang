@@ -1,0 +1,9 @@
+let s = import("solution.bang")
+
+fn test_merge() {
+    let a = [1, 4, 9]
+    let b = [2, 3, 10, 11]
+    assert_eq(s.merge_sorted(a, b), [1, 2, 3, 4, 9, 10, 11])
+    assert_eq(a, [1, 4, 9])
+    assert_eq(s.merge_sorted([], [5]), [5])
+}

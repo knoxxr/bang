@@ -18,10 +18,49 @@
   ],
   "repository": {
     "comment": {
-      "name": "comment.line.double-slash.bang",
-      "match": "//.*$"
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.bang",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.bang",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
     },
     "string": {
+      "patterns": [
+        {
+          "name": "string.interpolated.bang",
+          "begin": "\\bf\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.bang", "match": "\\{\\{|\\}\\}" },
+            {
+              "name": "meta.embedded.expression.bang",
+              "begin": "\\{",
+              "end": "\\}",
+              "patterns": [{ "include": "$self" }]
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.triple.bang",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.bang",
+              "match": "\\\\[\\\\\"ntr0]"
+            }
+          ]
+        },
+        { "include": "#string-single" }
+      ]
+    },
+    "string-single": {
       "name": "string.quoted.double.bang",
       "begin": "\"",
       "end": "\"",
@@ -35,12 +74,16 @@
     "number": {
       "patterns": [
         {
+          "name": "constant.numeric.hex.bang",
+          "match": "\\b0([xX][0-9a-fA-F_]+|[bB][01_]+|[oO][0-7_]+)\\b"
+        },
+        {
           "name": "constant.numeric.float.bang",
-          "match": "\\b[0-9]+\\.[0-9]+\\b"
+          "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*)?[eE][+-]?[0-9]+\\b|\\b[0-9][0-9_]*\\.[0-9][0-9_]*\\b"
         },
         {
           "name": "constant.numeric.integer.bang",
-          "match": "\\b[0-9]+\\b"
+          "match": "\\b[0-9][0-9_]*\\b"
         }
       ]
     },
@@ -82,7 +125,7 @@
     },
     "builtin": {
       "name": "support.function.builtin.bang",
-      "match": "\\b(print|str|int|float|bool|len|type|channel|send|recv|close|parallel_map|wait|push|pop|keys|values|range|assert|exit|split|join|trim|trim_start|trim_end|replace|contains|starts_with|ends_with|upper|lower|find|chars|sort|reverse|map|filter|reduce|any|all|flat|enumerate|zip|sum|abs|sqrt|floor|ceil|round|pow|min|max|read_file|write_file|input|print_err|args|import|slice|has|get|merge|repeat|index_of|json_parse|json_stringify|now_ms|random|random_int|list_dir|file_exists|is_dir|sort_by|unique|format_time|ord|chr|regex_match|regex_find|regex_find_all|regex_replace|regex_groups|gcd|clamp|sign|sin|cos|tan|log|exp|pi|e|union|intersect|difference|tcp_listen|tcp_accept|tcp_read|tcp_write|tcp_close|tcp_read_until|tcp_set_timeout|select|file_size|tcp_send_file|serve_event|tcp_connect|http_get|proc_run|env_get|env_cwd|sleep|file_remove|file_move|dir_create|file_append|bytes_from_str|bytes_to_str|bytes_from_hex|bytes_to_hex|file_read_bytes|tcp_read_bytes)\\b(?=\\s*\\()"
+      "match": "\\b(print|str|int|float|bool|len|type|channel|send|recv|close|parallel_map|wait|push|pop|keys|values|range|assert|exit|split|join|trim|trim_start|trim_end|replace|contains|starts_with|ends_with|upper|lower|find|chars|sort|reverse|map|filter|reduce|any|all|flat|enumerate|zip|sum|abs|sqrt|floor|ceil|round|pow|min|max|read_file|write_file|input|print_err|args|import|slice|has|get|merge|repeat|index_of|json_parse|json_stringify|now_ms|random|random_int|list_dir|file_exists|is_dir|sort_by|unique|format_time|ord|chr|regex_match|regex_find|regex_find_all|regex_replace|regex_groups|gcd|clamp|sign|sin|cos|tan|log|log10|exp|pi|e|union|intersect|difference|tcp_listen|tcp_accept|tcp_read|tcp_write|tcp_close|tcp_read_until|tcp_set_timeout|select|file_size|tcp_send_file|serve_event|tcp_connect|http_get|proc_run|env_get|env_cwd|sleep|file_remove|file_move|dir_create|file_append|bytes_from_str|bytes_to_str|bytes_from_hex|bytes_to_hex|file_read_bytes|tcp_read_bytes|assert_eq|format|path_join|path_basename|path_dirname|path_ext|path_abs|csv_parse|csv_stringify|http_post|http_request|idiv)\\b(?=\\s*\\()"
     },
     "function-def": {
       "patterns": [

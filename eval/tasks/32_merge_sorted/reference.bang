@@ -1,0 +1,15 @@
+fn merge_sorted(a, b) {
+    let out = []
+    let i = 0
+    let j = 0
+    while i < len(a) and j < len(b) {
+        if a[i] <= b[j] {
+            out += [a[i]]
+            i += 1
+        } else {
+            out += [b[j]]
+            j += 1
+        }
+    }
+    return out + a[i:] + b[j:]
+}

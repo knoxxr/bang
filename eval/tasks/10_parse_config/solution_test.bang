@@ -1,0 +1,6 @@
+let s = import("solution.bang")
+
+fn test_config() {
+    let text = "# 설정\nhost = example.com\n\nport=8080\nquery = a=b\n"
+    assert_eq(s.parse_config(text), {"host": "example.com", "port": "8080", "query": "a=b"})
+}

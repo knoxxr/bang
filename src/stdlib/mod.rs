@@ -16,6 +16,8 @@ mod bytes;
 mod collections;
 mod concurrency;
 mod core;
+pub use core::set_script_args;
+mod csv;
 mod fs;
 mod json;
 mod math;
@@ -26,12 +28,13 @@ mod sys;
 mod time;
 
 /// 각 분야 파일이 공통으로 쓰는 이름들.
+pub use string::{apply_format, parse_format_spec, FormatSpec};
+
 mod prelude {
     pub(crate) use crate::lexer::token::Span;
     pub(crate) use crate::runtime::{BangChannel, RuntimeError};
     pub(crate) use crate::vm::*;
     pub(crate) use std::cmp::Ordering;
-    pub(crate) use std::collections::HashMap;
     pub(crate) use std::sync::{Arc, Mutex, OnceLock};
 }
 
@@ -173,6 +176,18 @@ pub static BUILTINS: &[Builtin] = &[
     Builtin { name: "bytes_to_hex", arity: Some(1), func: bytes::b_bytes_to_hex }, // 120
     Builtin { name: "file_read_bytes", arity: Some(1), func: fs::b_file_read_bytes }, // 121
     Builtin { name: "tcp_read_bytes", arity: Some(1), func: net::b_tcp_read_bytes }, // 122
+    Builtin { name: "assert_eq", arity: Some(2), func: core::b_assert_eq }, // 123
+    Builtin { name: "format", arity: None, func: string::b_format }, // 124
+    Builtin { name: "path_join", arity: None, func: fs::b_path_join }, // 125
+    Builtin { name: "path_basename", arity: Some(1), func: fs::b_path_basename }, // 126
+    Builtin { name: "path_dirname", arity: Some(1), func: fs::b_path_dirname }, // 127
+    Builtin { name: "path_ext", arity: Some(1), func: fs::b_path_ext }, // 128
+    Builtin { name: "path_abs", arity: Some(1), func: fs::b_path_abs }, // 129
+    Builtin { name: "csv_parse", arity: Some(1), func: csv::b_csv_parse }, // 130
+    Builtin { name: "csv_stringify", arity: Some(1), func: csv::b_csv_stringify }, // 131
+    Builtin { name: "http_post", arity: None, func: net::b_http_post }, // 132
+    Builtin { name: "http_request", arity: None, func: net::b_http_request }, // 133
+    Builtin { name: "idiv", arity: Some(2), func: math::b_idiv }, // 134
 ];
 
 /// 이름 → 번호.
@@ -188,6 +203,36 @@ pub fn builtin_count() -> usize {
 /// 번호 → 이름.
 pub fn builtin_name(idx: usize) -> Option<&'static str> {
     BUILTINS.get(idx).map(|b| b.name)
+}
+
+/// 빌트인이 낸 에러의 종류가 아직 정해지지 않았으면(`error`) 빌트인 분야로 정한다 (Phase 48).
+/// 인자 검사 헬퍼(req_args·str_arg 등)는 이미 `argument`를 붙이므로 그대로 둔다.
+pub fn categorize_error(name: &str, e: RuntimeError) -> RuntimeError {
+    use crate::runtime::kind;
+    if e.kind != kind::ERROR {
+        return e;
+    }
+    let k = if name.starts_with("file_") || name.starts_with("dir_") || name.starts_with("tcp_")
+        || name.starts_with("proc_") || name.starts_with("env_")
+        || matches!(name, "read_file" | "write_file" | "list_dir" | "is_dir" | "file_exists"
+            | "http_get" | "http_post" | "http_request" | "serve_event" | "input" | "path_abs")
+    {
+        kind::IO
+    } else if name.starts_with("json_") || name.starts_with("regex_") || name.starts_with("bytes_")
+        || name.starts_with("csv_")
+        || matches!(name, "int" | "float" | "chr" | "ord")
+    {
+        kind::VALUE
+    } else if matches!(name, "assert" | "assert_eq") {
+        kind::ASSERTION
+    } else if name == "import" {
+        kind::IMPORT
+    } else if e.message.contains(" 필요, ") || e.message.contains("인자") {
+        kind::ARGUMENT
+    } else {
+        kind::ERROR
+    };
+    e.with_kind(k)
 }
 
 /// 번호 → 인자 수 (`Some(None)` = 가변 인자, `None` = 없는 번호).

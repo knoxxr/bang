@@ -1,0 +1,7 @@
+let s = import("solution.bang")
+
+fn test_mul() {
+    assert_eq(s.safe_mul(6, 7), 42)
+    assert_eq(s.safe_mul(9223372036854775807, 2), nil)
+    assert_eq(s.safe_mul(-3037000500, 3037000500), nil)
+}

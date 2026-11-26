@@ -62,6 +62,45 @@ pub fn serialize_manifest(deps: &[Dependency]) -> String {
     out
 }
 
+/// 기존 bang.toml 텍스트의 `[dependencies]` 섹션만 새 목록으로 바꾼다 (Phase 62).
+/// `[package]` 등 다른 섹션·주석·순서는 그대로 둔다. 섹션이 없으면 끝에 붙인다.
+pub fn update_manifest(existing: &str, deps: &[Dependency]) -> String {
+    let section = serialize_manifest(deps);
+    let mut out = String::new();
+    let mut in_deps = false;
+    let mut replaced = false;
+    for line in existing.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            if in_deps {
+                // 다음 섹션 앞에 빈 줄 하나
+                out.push('\n');
+            }
+            in_deps = t == "[dependencies]";
+            if in_deps {
+                out.push_str(&section);
+                replaced = true;
+                continue;
+            }
+        }
+        if in_deps {
+            continue; // 옛 의존성 줄은 버린다 (새 목록으로 대체)
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !replaced {
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        out.push_str(&section);
+    }
+    out
+}
+
 /// 의존성 추가/갱신 (같은 이름이면 교체).
 pub fn upsert(deps: &mut Vec<Dependency>, dep: Dependency) {
     if let Some(existing) = deps.iter_mut().find(|d| d.name == dep.name) {
@@ -118,5 +157,20 @@ util = \"https://github.com/u/util\"
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].url, "u2");
         assert_eq!(deps[0].rev, Some("v2".into()));
+    }
+
+    #[test]
+    fn update_manifest_keeps_other_sections() {
+        let deps = vec![Dependency { name: "a".into(), url: "https://x/a".into(), rev: Some("v1".into()) }];
+        let src = "# 내 앱\n[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nold = \"https://x/old\"\n";
+        let out = update_manifest(src, &deps);
+        assert_eq!(out, "# 내 앱\n[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\na = \"https://x/a@v1\"\n");
+        // 의존성 섹션 뒤에 다른 섹션이 있어도 보존
+        let src2 = "[dependencies]\nold = \"u\"\n[extra]\nk = 1\n";
+        assert_eq!(update_manifest(src2, &deps), "[dependencies]\na = \"https://x/a@v1\"\n\n[extra]\nk = 1\n");
+        // 섹션이 없으면 끝에 추가
+        assert_eq!(update_manifest("[package]\nname = \"p\"\n", &deps), "[package]\nname = \"p\"\n\n[dependencies]\na = \"https://x/a@v1\"\n");
+        assert_eq!(update_manifest("", &deps), "[dependencies]\na = \"https://x/a@v1\"\n");
+        assert_eq!(parse_manifest(&update_manifest(src, &deps)), deps);
     }
 }

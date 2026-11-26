@@ -1,7 +1,7 @@
 // 에러 처리 — try / catch / throw
 // 기대 출력:
 // 잡음: 문제 발생
-// 0으로 나눌 수 없음
+// zero_division: 0으로 나눌 수 없음 (18행)
 // 안전: 10
 // 음수 불가
 // code=42
@@ -13,12 +13,12 @@ try {
     print("잡음: " + e)
 }
 
-// 내장 런타임 에러(0 나눗셈)도 catch — 메시지가 문자열로 바인딩됨
+// 내장 런타임 에러(0 나눗셈)도 catch — {kind, message, line, col} 맵으로 바인딩됨
 try {
     let x = 1 / 0
     print(x)
 } catch e {
-    print(e)
+    print(e.kind + ": " + e.message + " (" + str(e.line) + "행)")
 }
 
 // 함수에서 던진 예외가 호출자의 try로 전파

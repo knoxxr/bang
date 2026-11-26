@@ -21,10 +21,14 @@ Rust로 처음부터 구현한다. 소스 확장자는 .bang, CLI/바이너리 �
 값 의미론
 
 
-컨테이너(list, map, string)는 값 의미론: 바인딩·인자 전달·클로저 캡처·
-채널 송신·spawn 캡처에서 모두 복제된다.
-함수·채널·Future는 참조 의미론(Arc 공유). 채널이 유일하게 허용된 명시적 공유 통로다.
-이 규칙이 "공유 가변 상태 없음"을 보장한다. 성능을 이유로 컨테이너에 공유 가변 참조를
+컨테이너(list, map, string)는 값 의미론: 바인딩·인자 전달·반환·
+채널 송신·spawn에서 모두 복제된다.
+클로저는 변수를 붙잡는다(한 작업 안에서 공유 — Python식 늦은 바인딩). 작업 경계(spawn·
+parallel_map·bang test)를 넘는 값은 vm::Isolator가 안에 든 클로저와 그 상태까지 복사한다
+(Phase 53, 헌법 1조 개정). 새 작업 경계를 만들면 반드시 Isolator를 거칠 것.
+함수·채널·Future는 참조 의미론(Arc 공유) — 단 작업 경계에서 함수(클로저 상태)는 Isolator가 복사하고
+Future 결과도 격리된다. 작업끼리 값을 주고받는 명시적 통로는 채널과 작업의 반환값뿐이다.
+이 규칙이 "작업 사이의 공유 가변 값 없음"을 보장한다(파일·소켓 등 외부 자원은 본래 공유됨). 성능을 이유로 컨테이너에 공유 가변 참조를
 도입하지 말 것 — 동시성 안전성의 근거가 무너진다.
 
 
@@ -64,10 +68,11 @@ src/
   parser/       재귀 하강 + Pratt
   resolver/     스코프/바인딩 정적 해석 (Phase 4)
   compiler/     AST → 바이트코드 (Phase 5)
-  vm/           스택 VM + GC (Phase 5)
+  vm/           스택 VM (Phase 5). 메모리는 참조 카운팅(Arc) + 세대별 순환 수집(cycles.rs, Phase 60, SPEC 15장)
+  cycles        순환 참조 수집기 — 후보 상태 벡터에서 trial deletion (src/cycles.rs)
   runtime/      RuntimeError + 채널(BangChannel, try_recv는 select용) + 채널 전송용 데이터 전용 Value
   stdlib/       빌트인 단일 등록 테이블(mod.rs BUILTINS: 이름·인자 수·구현) + 분야별 구현 파일
-                (core/concurrency/string/collections/math/json/time/fs/regex/net/sys/bytes).
+                (core/concurrency/string/collections/math/json/time/fs/regex/net/sys/bytes/csv).
                 resolver(이름·인자 수)와 VM(디스패치)이 이 테이블 하나를 읽는다 (Phase 44).
   scheduler/    M:N 스케줄러 (Phase 9) + 탄력 풀(Phase 28: idle 0이면 임시워커, cap 512)
   codegen/      [실험적] AOT C 트랜스파일러(transpile) — 정수·문자열·함수 부분집합, 미지원은 에러
@@ -75,11 +80,17 @@ src/
   regex/        자체 정규식 엔진 (Phase 21~22, 백트래킹 VM + 캡처)
   pkg/          bang.toml 매니페스트 파서 (Phase 23, bang add/install)
   reactor/      논블로킹 I/O 리액터 (Phase 34, polling 기반; serve_event가 사용)
+  diagnostics   진단 출력 (Phase 65, src/diagnostics.rs) — 사람용·JSON Lines·다른 언어 습관 힌트. CLI 오류 출력은 main.rs emit() 경유.
+  permissions   권한 모드 (Phase 64, src/permissions.rs) — --sandbox/--allow-*. Vm::call_builtin 한 곳에서 검사.
+                새 빌트인이 파일·네트워크·프로세스·환경에 닿으면 permissions::check에 분야를 등록할 것.
 docs/SPEC.md    언어 명세 (동시성·serve_event 한계 포함). 의미 변경 시 함께 갱신.
 docs/PHILOSOPHY.md 헌법(9조 + 영구 거부 목록 + 거절의 기록). 기능 제안은 이것과 대조.
 docs/VISION.md  활성화 계획(철학+GTM 종합). P0~P2 실행 로드맵.
 docs/TUTORIAL.md 진행형 입문 튜토리얼 (먼저 읽는 문서).
 docs/GUIDE.md   사용자 가이드 (초기 버전 기준 — 최신은 TUTORIAL/SPEC).
+wiki/           GitHub Wiki 사용자 매뉴얼 원본(한국어 14페이지). 사용자에게 보이는 동작이 바뀌면 함께 갱신하고
+                python3 wiki/tools/verify_wiki.py 로 검증(bang 블록 실행·출력 비교 + 내부 링크 검사).
+                게시: sh wiki/tools/publish.sh (위키 push 권한 필요).
 정본 실행 엔진: VM. SPEC의 의미는 VM 기준이며, 다른 백엔드는 미지원 기능에서 명확한 에러를 내야 한다.
 
 빌트인 추가 절차 (번호 = src/stdlib/mod.rs BUILTINS에서의 위치, 바이트코드에 박히는 대외 계약)
@@ -96,11 +107,15 @@ docs/GUIDE.md   사용자 가이드 (초기 버전 기준 — 최신은 TUTORIAL
      editors/vscode-bang 문법 빌트인 목록·README 개수, CLAUDE.md 체크리스트.
 빌트인 명명 규칙
   - 분야 접두사: tcp_* (소켓), regex_*, json_*, proc_* (프로세스), env_* (환경),
-    file_* (파일), dir_* (디렉터리), bytes_* (바이트 변환). 동사는 접두사 뒤: file_read_bytes.
+    file_* (파일), dir_* (디렉터리), bytes_* (바이트 변환), path_* (경로 문자열), csv_* (CSV),
+    http_* (HTTP 클라이언트). 동사는 접두사 뒤: file_read_bytes.
   - 기존 비접두사 이름(read_file, list_dir, is_dir, sleep 등)은 번호 계약상 유지하며 개명하지 않는다.
   - 범용 연산(len, slice, push, map 등)은 접두사 없이 여러 타입을 받는 하나의 이름으로 확장한다.
 의존성: polling(리액터), rustls+webpki-roots(https feature, 기본 켜짐 — 자급 코어의 유일한 예외).
         CI는 --no-default-features 빌드도 검증. (cranelift는 Phase 44에서 JIT와 함께 제거)
+eval/           LLM 정답률 측정 (Phase 66): tasks/<id>/{task.md, reference.bang, solution_test.bang} + run.bang(bang으로 작성).
+                bang eval/run.bang --reference / --empty 는 API 없이 과제 검증(tests/eval_test.rs가 CI에서 실행).
+                실제 측정(API 비용 발생)은 사용자 승인 후. llms.txt·진단·힌트를 바꾸면 측정으로 효과 확인.
 examples/       기본 샘플 + 동시성 샘플(channels/parallel_block/spawn_basic 등)이 한 디렉토리에 평면 배치.
                 상단 주석의 기대 출력이 통합 테스트 정답지.
 
@@ -493,3 +508,302 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
                cc 없을 때 transpile_test 스킵을 stderr에 표시. SPEC 1장 "VM이 정본" 명시.
                CLAUDE.md 변경 금지 결정의 백엔드 전략 문구 갱신(사용자 승인).
                vm.rs 3,234 → 약 1,600줄. (tests: 343 green 양쪽 feature, clippy 0)
+✅ Phase 45 — 기초 결함 수정: COW 실효화 + 중첩 경로 대입 + parallel_map 병렬 + BOM — v0.31.0
+             (1) COW 무력화 버그: 대입이 변수를 스택에 로드(Arc 참조 2)한 뒤 make_mut → 매번 전체 복사.
+               a[i]=v 2만 회 1.9s, 맵 2만 삽입 9.9s, 20만 삽입 >120s, xs=push(xs,v) 4만 회 38s (O(n²)).
+               수정: OP_SET_PATH(79)·OP_UPDATE_VAR(80). 변수 슬롯이 로드한 복사본과 같은 Arc면 복사본을
+               버리고 슬롯을 제자리 변경(make_mut이 공유 중일 때만 복사 — 관찰 의미 불변).
+               키·값 평가 중 변수가 재대입되면 원래 의미대로 복사본을 고쳐 저장, 에러 시 원값 복원.
+               x = push(x, e) / x = x + e 패턴도 제자리(push가 빌트인일 때만).
+               결과: 위 작업 모두 수십 ms (맵 20만 삽입 0.17s).
+             (2) 중첩 경로 대입 m["a"][0]=9, g[i][j]=v, cfg.db.port=1 (이전: "복잡한 인덱스 대입 미지원").
+               중간 맵 키 없음/범위 초과는 catch 가능 에러, 루트가 변수가 아니면 컴파일 에러.
+               대입식의 값 = 대입한 값(이전엔 컨테이너).
+             (3) parallel_map 진짜 병렬화 (Phase 42 발견 결함): 원소마다 deep_clone_closure 격리,
+               작업 최대 256개(초과 시 연속 구간 분할), 전부 조인 후 순서상 첫 에러. 빌트인 함수는 순차.
+               검증: 8 × sleep(300) = 0.3s (이전 2.4s).
+             (4) 렉서가 UTF-8 BOM 무시 (Phase 43 발견 결함).
+             SPEC 2.1/4.2/6.5 갱신. 회귀: lexer +1, vm_test +9. (tests: 353 green, clippy 0)
+✅ Phase 46 — 문법 편의 묶음 (Python 체감 1차) — v0.32.0
+             렉서: 복합 대입 토큰(+= -= *= /= %=), /* */ 블록 주석(줄바꿈 포함 시 줄바꿈 1개로 취급,
+               미종결 에러), """여러 줄 문자열""", 숫자 1_000·0xff·0b101·0o17·1e3·2.5e-3
+               (숫자 뒤 문자 붙으면 에러), 유니코드(한글) 식별자.
+             파서/AST: ExprKind::CompoundAssign·Slice, BinaryOp::In/NotIn(비교 수준, `not in` 2토큰),
+               StmtKind::For{vars: Vec<String>} (for k, v in m).
+             컴파일러/VM: 복합 대입 — 변수는 x = x op e로 디슈가(Phase 45 갱신 경로 재사용), 경로는
+               OP_SET_PATH binop 피연산자(키 1회 평가, 마지막 맵 키 없으면 에러).
+               OP_SLICE(81, Python식 음수·잘라맞춤, step 없음) / OP_MAKE_ITER_PAIRS(82) / OP_IN(83) /
+               OP_UNPACK(84). for-in이 map(정렬 키)·str(문자)·bytes(정수)도 순회.
+             AOT: x op= e(변수)만 지원, in/슬라이스/경로 복합 대입은 명확한 에러.
+             결정: `not`의 우선순위는 그대로(단항) — `not x in xs`는 (not x) in xs. SPEC 5장에 `x not in xs`
+               사용을 명시. slice() 빌트인은 번호 계약상 기존 동작(음수→0) 유지, 문법 슬라이스만 Python식.
+             문서: SPEC 2.1/2.2/2.5/3.1/4.1/4.2/5/7/11, llms.txt(세미콜론 쓰던 잘못된 관용구도 수정),
+               VS Code 문법(블록 주석·삼중 문자열·숫자 리터럴).
+             회귀: lexer +5, vm_test +6. (tests: 364 green, clippy 0)
+✅ Phase 47 — 표현력 (Python 체감 2차): 메서드 문법·기본값 매개변수·분해 선언·if 식 — v0.33.0
+             메서드 문법(UFCS): x.f(args)에서 f가 빌트인 이름이면 OP_METHOD_CALL(86) — 맵에 키 f가 있으면
+               그 값 호출(맵+클로저 객체 관용구 우선), 아니면 빌트인 f(x, args). 빌트인 이름이 아니면 기존 필드 호출.
+               값 의미론 유지(xs.sort()는 새 리스트). 문장 위치에서 순수 빌트인(resolver::PURE_BUILTINS) 메서드의
+               결과를 버리면 런타임 에러(xs.push(v) 습관 차단), 함수 표기 push(xs, v) 단독 문장은 리졸버 경고(호환).
+               spawn x.f()는 thunk 경로로 컴파일.
+             기본값 매개변수: fn f(a, b = 2). 뒤쪽에만, 호출마다 평가(가변 기본값 공유 함정 없음), 명시적 nil은
+               유지. CompiledFn.min_arity + CallFrame.argc + OP_JUMP_IF_ARG(85). 리졸버 arity가 (최소, 최대) 범위,
+               do_call/run_spawned 범위 검사. typeck는 기본값 타입이 표기와 충돌하면 보고.
+             분해 선언 let [a, b] = expr (StmtKind::LetUnpack, OP_UNPACK 재사용, 전역/지역 모두).
+             if 식: 표현식 자리 if c { a } else { b } (ExprKind::IfExpr, else 필수, 각 갈래 마지막 문장=값).
+             파서 깊이 가드 회귀(디버그 빌드 스택 오버플로) 발견·수정: 슬라이스/not in/복합 대입/if 식 파싱을
+               #[inline(never)] 보조 함수로 분리해 parse_expr_bp 재귀 프레임을 작게 유지.
+             AOT: 기본값·분해·if 식은 명확한 에러.
+             문서: SPEC 3.3/4.1/4.2, llms.txt, TUTORIAL 11.5 "Python에서 왔다면"(스니펫 실행 검증).
+             보류(사용자 결정 대기): 문자열 보간 문법.
+             회귀: resolver +3, vm_test +7. (tests: 374 green, clippy 0)
+✅ Phase 49 — 도구: bang test / bang fmt + assert_eq(123) + 맵 동등 비교 결함 수정 — v0.34.0
+             (Phase 48 에러 모델은 사용자 결정 대기로 건너뜀)
+             bang test [경로...]: *_test.bang / test_*.bang 발견(bang_modules/.git/target 제외), 최상위 1회 실행 후
+               test_* 최상위 함수를 선언 순서로 격리 실행(Vm::run_global_fn_isolated = deep_clone_closure +
+               run_spawned → 테스트 간 전역 격리). 실패/파일 오류 시 exit 1, 실패 위치 소스 문맥 출력.
+             bang fmt [--check] [경로...]: src/fmt.rs 줄 단위 재들여쓰기(4칸). 여는 괄호 스택에 "연 줄의 수준"을
+               기록해 한 줄에서 여러 괄호를 열어도 한 단계만, 연산자로 끝난 줄 다음은 hanging indent, 줄 끝
+               공백·연속 빈 줄·CRLF 정리, 삼중 문자열/블록 주석 안쪽은 보존. 전후 토큰열 비교로 안전 검증
+               (다르면 쓰지 않음). 저장소의 모든 .bang(examples/tests/bench)이 포맷 안정.
+             assert_eq(actual, expected) 빌트인 123 (끝에 추가, GOLDEN·스냅샷 갱신).
+             (버그) vm_eq에 Map 비교가 없어 {"a":1} == {"a":1}이 false였음 → 키 집합·값 구조 비교.
+               참조 타입(함수·채널·Future·TCP)은 Arc 동일성. in/unique/index_of/union 등도 영향(올바르게).
+               assert_eq 스냅샷 작성 중 발견.
+             발견(미수정): print가 vm.output Vec에도 모든 줄을 누적 — 장시간 서버에서 메모리 증가 (테스트용 캡처 잔재).
+             문서: SPEC 5장(동등 비교)·13장 신설, README 명령/표, llms.txt(123개), TUTORIAL 11.6, VS Code 빌트인 목록.
+             회귀: fmt 단위 +7, cli_test +2, vm_test +2, 스냅샷 +1줄. (tests: 385 green, clippy 0)
+✅ Phase 48 — 에러 모델 (사용자 결정 2·3·4, 헌법 7조 개정) — v0.35.0  [호환성 깨짐]
+             (결정 2) 잡힌 내장 에러 = 맵 {kind, message, line, col} (이전: 메시지 문자열). throw한 값은 그대로.
+               RuntimeError.kind(&'static str) + runtime::kind 상수 11종(zero_division overflow index key type
+               argument value io assertion import error — 대외 계약). VM 핵심 사이트 51곳 명시 태그,
+               빌트인 에러는 stdlib::categorize_error가 분야(이름 접두사)로 분류(인자 헬퍼는 argument 우선).
+               spawn/parallel_map을 건너도 kind 유지. catch에서 throw e로 다시 던진 에러 맵이 끝내 안 잡히면
+               원래 메시지·위치·kind로 복원(rethrown_error). 새 값 타입은 만들지 않음(작은 표면 — 거절 기록).
+               주의: print(e)는 맵 전체를 출력 — 메시지는 e.message.
+             (결정 3) 없는 맵 키 읽기(m[k], m.k) = key 에러 (이전: 조용히 nil). get/has/in으로 명시.
+             (결정 4) C FFI 보류 — PHILOSOPHY 거절의 기록 + VISION 부록.
+             헌법 7조 개정: "없는 맵 키 읽기도 잡히는 에러" 명시.
+             (발견·수정) examples 중 기대 출력 주석이 있는데 테스트에 빠진 6개(error_handling·type_hints·
+               json_demo·regex_demo·concurrency_demo·event_loop)를 vm_test에 추가 — 전부 통과.
+             문서: SPEC 8.1~8.3, README, llms.txt, TUTORIAL 8장. 회귀: vm_test +4(+예제 6). (tests: 395 green, clippy 0)
+✅ Phase 50 — f-문자열 보간 + format() 빌트인(124) (사용자 결정 1) — v0.36.0
+             렉서: f"..." / f"""...""" → TokenKind::FStr(Vec<FStrPart>) (글자 조각 + {식[:형식]} 조각, 식의
+               원본 줄·열 기록). {{ }}는 글자 중괄호, 식 안의 문자열·괄호 중첩 추적(f"{m["k"]}" 가능).
+             파서: 조각마다 하위 렉서·파서로 식 하나를 파싱, 토큰 위치를 원본 기준으로 이동(에러 위치 정확).
+               형식 지정자는 파스 시 검증. ExprKind::FString. 키워드 추가 없음(f는 따옴표가 붙을 때만 접두사).
+             VM: OP_FMT(87, 형식 지정) / OP_BUILD_STR(88, n개 이어 붙임, Future 깊게 해소).
+             형식 지정자 [[채움]정렬][0][너비][,][.정밀도][f|d|x|b|%] — stdlib::string 공유 구현(apply_format),
+               format(fmt, ...)도 같은 규칙({} / {:형식}, 인자 수 불일치 = argument 에러).
+             (버그) spawn len(x)처럼 빌트인을 직접 spawn하면 "클로저 필요" 에러 → thunk 경로로 수정.
+             fmt: f-문자열 안 따옴표 인식, 토큰 비교 시 f-문자열 조각 위치는 무시(들여쓰기로 바뀌는 게 정상).
+             문서: SPEC 7장, llms.txt(124개), README, TUTORIAL 11.5, VS Code(f-문자열 하이라이팅·빌트인 목록).
+             회귀: lexer +1, fmt +1, vm_test +4, 스냅샷 +1줄. (tests: 401 green, clippy 0)
+✅ Phase 51 — 맵 삽입 순서 유지 (Python dict와 같음) — v0.37.0  [출력 순서 바뀜]
+             src/omap.rs OrderedMap<V>(엔트리 Vec + 키→위치 HashMap, 의존성 없음). VmValue::Map·runtime::Value::Map
+               저장소 교체. 출력·keys()·values()·for k in m·json_stringify가 삽입 순서(이전: 키 정렬 5곳 제거).
+               json_parse는 문서 순서 보존, merge(a, b)는 a 순서 뒤에 b의 새 키. ==는 순서 무관.
+               채널·spawn을 건너도 순서 유지. import 모듈 export 맵은 선언(슬롯) 순서(이전: 해시 순서 — 비결정적).
+             동작 스냅샷 2줄 갱신(keys 순서, json_stringify 순서) — 의도된 의미 변경(사용자 승인).
+             문서: SPEC 3.2(맵의 순서)·5장, llms.txt, TUTORIAL 11.5 출력(실행 결과로 재생성).
+             회귀: omap 단위 +2, vm_test +2. (tests: 405 green, clippy 0)
+✅ Phase 52 — 실무 빌트인: 경로·CSV·HTTP POST (125-133) — v0.38.0
+             경로(fs.rs): path_join(가변)·path_basename·path_dirname·path_ext(점 없음)·path_abs(std::path::absolute,
+               존재 여부 무관). 문자열만 다루고 구분자는 OS를 따름.
+             CSV(새 파일 stdlib/csv.rs): csv_parse(RFC 4180 — 따옴표·""·필드 안 줄바꿈·CRLF, 미종결 따옴표 = value 에러),
+               csv_stringify(필요한 필드만 따옴표, nil은 빈 칸).
+             HTTP(net.rs): http_get을 http_request(fname, method, url, body, headers)로 일반화.
+               http_post(url, body[, headers]) / http_request(method, url[, body[, headers]]).
+               body: str/bytes/map·list(JSON 자동, application/json)/nil, Content-Length 자동, 사용자 헤더가 기본값 대체
+               (Host·Connection·Content-Length는 고정). 헤더 주입 방지(이름 영숫자·-·_, 값 줄바꿈 금지), 메서드 대문자만.
+             categorize_error: csv_* → value, http_post/http_request/path_abs → io.
+             명명 규칙에 path_* / csv_* / http_* 추가, 모듈 경계에 csv 추가.
+             문서: SPEC 12.1·14장, llms.txt(133개), README 표, VS Code 빌트인 목록, 스냅샷 +2줄.
+             회귀: csv 단위 +1, http_client_test +3(Rust 스레드 에코 서버), vm_test +2. (tests: 411 green, clippy 0)
+✅ Phase 53 — 클로저 의미 정식화 + 작업 간 상태 공유 결함 수정 (헌법 1조 개정) — v0.39.0
+             (발견) 문서는 "클로저 캡처에서 복제"였지만 실제 클로저는 변수를 붙잡음(Python식 늦은 바인딩).
+               더 심각: spawn 경계가 호출 대상 클로저만 복사해서, 인자·맵 안의 "객체"(맵+클로저)나 Future로 받은
+               객체의 상태가 스레드 사이에 공유 → 갱신 유실 경쟁(같은 프로그램이 25464/31571/37952). 불변 규칙 위반.
+             (수정) vm::Isolator: 작업 경계(OP_SPAWN 대상+인자, parallel_map 원소별, bang test, serve_event)에서
+               값에 닿는 모든 클로저·상태 벡터(지역·모듈 전역)를 메모이즈 복사(같은 객체 메서드끼리는 복사본에서도 공유,
+               순환 안전 — 자리 먼저 만들고 finish()에서 채움). Future는 derived Future로 감싸 결과를 처음 꺼낼 때 격리.
+               성능: 큰 리스트를 spawn마다 훑는 회귀(98ms→2201ms)를 "클로저 없음" 캐시로 해소(→83ms). 캐시는 Weak만
+               보관 — Weak가 있으면 Arc::make_mut이 새 할당으로 옮기므로 내용이 바뀐 컨테이너는 절대 적중하지 않음.
+             (결정, 사용자 승인 A안) 한 작업 안에서는 클로저가 변수를 공유(객체 관용구의 근거), 작업 사이에는 공유 없음.
+               헌법 1조·불변 규칙 문구 개정, SPEC 3.3 "클로저가 붙잡는 것" 신설·6.1 갱신.
+             (버그 2개 추가 수정) 함수 안의 이름 있는 함수가 자기 자신을 재귀 호출하면 컴파일 에러였음 → 슬롯 선언 후 컴파일.
+               인덱스·필드 접근 대상 Future를 자동 대기하지 않았음(SPEC 위반) → OP_INDEX_GET/OP_FIELD_GET auto_resolve.
+             회귀: vm_test +5 (늦은 바인딩·객체 공유, spawn 격리, 캐시 후 클로저 추가, 중첩 재귀, Future 격리+필드 대기).
+             성능 실측(4코어): fib_par 변화 없음(4.4s). 큰 리스트 인자 spawn 2000회 HEAD 90ms → 83ms.
+               미해결 비용: 끝나지 않은 Future가 많이 든 전역 리스트를 두고 spawn을 반복하면 매번 훑음
+               (2000개 누적 시 90ms → 150ms). 끝났고 클로저 없는 Future는 재포장하지 않음.
+             (tests: 416 green, clippy 0).
+✅ Phase 54 — print 출력 대상 분리 (메모리 누적 제거) — v0.40.0
+             vm::Output { Stdout, Capture(Arc<Mutex<Vec<String>>>) }. 이전: print가 println + VM 목록에 누적(테스트만 읽음)
+               → 서버 메모리 무한 증가, 모든 스레드 print가 한 잠금 경쟁, 잠금 unwrap(규약 위반).
+             CLI(run/REPL/test)는 Stdout(버퍼 없음), 테스트·내장은 Capture(화면에 안 씀). Vm::new/with_globals는
+               impl Into<Output>(Arc를 넘기던 기존 테스트 호환), run_spawned는 Output, spawn 작업은 부모 대상 상속.
+             실측: 100만 줄 출력 최대 메모리 72MB → 12MB (출력량과 무관해짐), 시간 동일.
+             파이프 닫힘(bang x | head): 이전 panic 메시지 → 조용히 exit 141(128+SIGPIPE). 그 밖 쓰기 실패는 io 에러.
+             문서: SPEC 10장. 회귀: vm_test +2, cli_test +1(unix 파이프). (tests: 419 green, clippy 0)
+✅ Phase 55 — 구조적 동시성 완성: 함수 본문 조인 + spawn 에러 전파 (헌법 3조 위반 수정) — v0.41.0
+             (발견, 헌법 점검) 3조·불변 규칙은 "가장 가까운 함수 본문 또는 parallel 블록에 뿌리내려 스코프 종료 시
+               조인"인데, 함수 본문 조인이 없었음 — 함수가 자식을 기다리지 않고 반환, 프로그램 끝에서만 조인.
+               자식 에러는 경고만 내고 exit 0 → 실패 감지 불가.
+             (수정) CallFrame.spawned: parallel 블록 밖 spawn은 실행 중인 프레임에 등록, OP_RETURN/암묵 반환 시 조인.
+               SpawnScope{frame_depth}: 같은 프레임의 parallel 블록이면 블록에 등록(블록 안에서 호출한 함수의 spawn은
+               그 함수 본문에). 프로그램 레벨 스코프 제거 — 최상위 spawn은 메인 프레임에 뿌리내림.
+               에러: VmFuture.observed(값으로 받아 본 에러 표시) + join_unobserved — 아무도 받지 않은 첫 에러를 스코프
+               종료 시 던짐(catch 가능, 미처리 시 exit 1). 이미 처리한 에러는 다시 던지지 않음.
+               되감기(unwind_to)·에러 종료(drain_pending_tasks)도 남은 작업을 모두 조인(에러는 경고).
+             (함께 수정한 결함) parallel 블록이 첫 에러에서 나머지 작업을 기다리지 않고 빠져나감 → 전부 조인 후 첫 에러.
+               try 안 parallel에서 throw하면 spawn 스코프가 스택에 남던 문제 → TryHandler.spawn_depth로 정리.
+             성능: fib_seq/fib_par 변화 없음(측정 잡음 범위).
+             문서: SPEC 6.3·6.3-1(신설)·6.4-2. 회귀: vm_test +5. (tests: 424 green, clippy 0)
+✅ Phase 56 — 에러 위치 정확화 (헌법 7조 위반 수정) — v0.42.0
+             (발견, 헌법 점검) parallel_map/spawn의 인자 수 에러 등 일부 에러에 위치가 없었음(run_spawned가 Span(0,0)).
+               추가 발견: import한 모듈 안의 에러가 메인 파일의 같은 줄 번호를 보여 줘 엉뚱한 줄(빈 줄)을 가리켰음.
+             (수정) RuntimeError.file + CompiledFn.file(compile_with_file — import가 모듈 경로를 기록).
+               exec_until이 위치 없는 에러에 현재 지점을, 파일 없는 에러에 실행 중 함수의 파일을 채움.
+               표시: [모듈경로 줄:열], CLI(run/REPL/test)는 그 파일의 소스 줄을 보여 줌(runtime_error_text).
+               run_spawned(call_span): 작업 시작 전 에러는 spawn/parallel_map 호출 지점.
+               auto_resolve가 작업 에러의 위치를 "값을 쓴 줄"로 덮어쓰던 것 → 원래 난 줄 유지(위치 없을 때만 채움).
+             문서: SPEC 8장. 회귀: import_test +1, vm_test +2. (tests: 427 green, clippy 0)
+✅ Phase 57 — 몰래 바뀌는 동작 제거 ("암묵 변환 금지" 위반 3건, 사용자 승인) — v0.43.0  [호환성 깨짐]
+             (1) 나눗셈: `/`는 항상 float (이전: 나누어떨어지면 int — 값에 따라 타입이 바뀜). 상수 폴딩도 동일.
+               정수 몫은 빌트인 idiv(a, b)(134, 내림 — Python //와 같음, int/int → int). `//`는 bang 주석이라 연산자 불가
+               → 추천안(//)을 함수로 대체. float 표시에 소수점 유지(4.0, 1e3 → 1000.0 — fmt_float, 출력·str·JSON 공통).
+             (2) 참거짓: Python 규칙 — false·nil·0·0.0·""·[]·{}·빈 bytes가 거짓 (이전: false·nil만).
+             (3) 맵 키: str 또는 int (1과 "1"은 다른 키). 그 밖의 키는 type 에러 (이전: 무엇이든 to_string).
+               저장소는 문자열 키 유지 — int 키는 표식(\u{1}i…)으로 인코딩, 표식으로 시작하는 문자열 키는 이스케이프
+               (map_key/encode_str_key/decode_key/key_display). keys()·for·출력·JSON에서 원래 타입으로 복원.
+               리터럴 정수 키 {1: "a"}, {-2: x} (MapKey::Int). 채널·spawn을 건너도 유지.
+             동작 스냅샷 갱신(float 표시 3줄, bool() 1줄) — 의도된 의미 변경. 기존 테스트 기대값 5곳 갱신.
+             문서: SPEC 3.1(나눗셈·float 표시·참거짓)·3.2(맵 키), llms.txt(134개), TUTORIAL 3·8장, README, VS Code.
+             회귀: vm_test +4, 스냅샷 +1줄. (tests: 431 green, clippy 0)
+✅ Phase 58 — AOT를 VM 의미에 맞춤 (헌법 4조 위반 수정) — v0.44.0
+             (발견, 헌법 점검) bang compile 결과가 VM과 조용히 달랐음: 정수 오버플로 wrap, 7/2 → 3, 참거짓, float 표시(%g),
+               len이 UTF-8 바이트 수, int("abc") → 0, float(true) → 1.0, 문자열 비교 불가, floor/ceil/round가 float,
+               % float 미지원, float 리터럴 1e21이 C 정수 상수로 넘침, exit() 인자 없으면 실패, min/max 리스트 인자.
+             (수정) C 런타임 재작성: __builtin_*_overflow 검사, / 는 float(int/int 0은 에러, float은 IEEE), Python 참거짓,
+               bv_fmt_float(가장 짧게 왕복되는 자릿수를 지수 없이 + ".0" — VM fmt_float와 같음), UTF-8 문자 수,
+               엄격한 int/float 변환(trim 후 전체 파싱), 문자열 비교(strcmp = Rust 바이트 순), floor/ceil/round → int
+               (Rust as i64처럼 포화), pow int 규칙, fmod, 에러 = "런타임 오류: …" + exit 1. float 리터럴은 {:e}로 출력.
+               min/max 인자 2개 아니면 컴파일 에러, assert 메시지 VM과 같게.
+             VM↔AOT 동치 테스트(tests/transpile_test.rs aot_matches_vm_on_corpus): 23개 프로그램(에러 경우 포함)을
+               두 엔진으로 실행해 stdout·종료 코드 비교 — 전부 일치. 한계: AOT 에러 메시지에 줄·열 없음.
+             문서: SPEC 1장(AOT 지원 범위·동치 보장). (tests: 432 green, clippy 0)
+✅ Phase 59 — 헌법·문서를 현실에 맞춤 (헌법 점검 B·C 항목) — 문서만 변경, 버전 불변
+             헌법: 정체성 문장 "공유 가변 상태 제거" → "작업 사이의 공유 가변 값"(파일·소켓 등 외부 자원은 본래 공유).
+               5조 의존성 정정(polling + https용 rustls/ring/webpki-roots, 기능 플래그로 제외 가능).
+               9조 명확화("타입 힌트가 필수가 되는 일은 없다" — 하위 호환 약속 아님, 구조 오류는 항상 거절).
+               거부 목록: 락 행("채널이 유일한 통로" → 채널·반환값), "컨테이너 공유 가변 참조" → "작업 사이의"(1조 개정과 일치).
+             언어 정책 이행: README 영어 요약 섹션 신설(정체성·데모·구조적 동시성·정직한 한계·문서 안내).
+             SPEC 15장 신설: 참조 카운팅, 순환 참조 누수(클로저가 끼는 두 경우·실측 298MB vs 12MB·회피법 — 실측 검증).
+             SPEC 6장: 자동 대기는 얕다([spawn g()] == [3]은 false, wait로 꺼내 비교 — 실측 검증).
+             README 값 의미론 문구 과장 수정, VISION 의존성 문구, CLAUDE.md 불변 규칙 문구·vm "GC" 표기 정정, llms.txt 순환 주의.
+✅ Phase 60 — 세대별 순환 참조 수집 (메모리 누수 제거) — v0.45.0
+             (발견) SPEC 15장에 적은 두 경우(자기 참조 객체·지역 재귀 함수)보다 심각한 누수: spawn·parallel_map·
+               serve_event 요청마다 Isolator가 복사한 모듈 전역 ↔ 그 안의 함수 순환이 해제되지 않아 작업마다 약 260B 누수
+               (spawn 20만 회 75MB, 횟수에 비례) — 장시간 서버에 치명적.
+             (구현) src/cycles.rs: 후보 상태 벡터에서 닿는 부분 그래프(상태 벡터·클로저·upvalue·클로저를 품은 리스트/맵;
+               클로저 없는 컨테이너·Future는 건너뜀)의 내부 참조 수를 세어, 외부 참조가 없는 순환만 상태 벡터를 비워 끊음
+               (trial deletion). 후보: (1) 클로저가 붙잡은 채 반환된 프레임 locals(release_locals, 되감기 포함) —
+               젊은 세대 2048개마다 수집, 생존자는 늙은 세대(살아남은 수의 2배가 되면 재검사, 최소 8192),
+               (2) 작업 경계 Isolator가 만든 상태 벡터 — 작업 종료 시(OP_SPAWN·parallel_map 원소·serve_event 요청·bang test),
+               (3) 작업 VM의 후보 전부 — run_spawned 끝에서 VM을 버린 뒤. isolate_closure가 (클로저, 새 상태 벡터) 반환.
+             (함께 수정한 성능 결함) Isolator가 끝난 Future의 결과를 "격리할 게 있나" 검사하며 실제로 통째로 복사(버려지는 일)
+               → 전역에 객체 Future를 모으며 spawn하면 O(n²) (300회 1.1초). contains_closure 순수 검사로 교체 → 14ms.
+             안전 검증: 수집 주기를 1(매 반환마다 수집)로 낮춘 빌드로 전체 테스트 436개 통과, 예제·검증 스크립트 29개의
+               출력이 일반 빌드와 동일. 회귀 테스트: 살아 있는 객체 다수 수집 후 유지, 실행 중 프레임 보호, 작업 결과 객체 유지,
+               쓰레기 순환 실제 해제(cycles::freed_cells_total).
+             실측: 순환 객체 30만 개 298MB → 14MB, spawn 20만 회 75MB → 12MB, parallel_map 반복 19MB → 12MB.
+               fib_seq/fib_par·큰 리스트 spawn 시간은 잡음 범위.
+             남은 한계: 오래 산 뒤 버려진 객체는 늙은 세대 재검사 때까지 남음(SPEC 15장).
+             문서: SPEC 15장 재작성, README 영어 요약, llms.txt(순환 주의 문구 제거), VISION(예외 기록).
+             회귀: vm_test +4. (tests: 436 green, clippy 0)
+✅ Phase 61 — AOT 에러를 VM과 글자 단위로 같게 + VM 산술 암묵 변환 결함 수정 — v0.46.0
+             AOT: 실패할 수 있는 연산·빌트인마다 인자를 먼저 계산한 뒤(GNU 문장식으로 순서 고정) 소스 위치 기록
+               (Transpiler::at), bv_fail이 VM과 같은 "[줄:열] 런타임 오류: …" + 원본 소스 줄·^ 표시. 원본 소스 줄을
+               실행 파일에 포함(transpile_with_source, bang compile이 사용). VM 문구 재현(bv_tname — 타입 이름 포함 문구,
+               as_float 문구, len/abs/int/float/exit/assert 문구). 에러 전 fflush(stdout)로 출력 순서도 VM과 같음.
+             (VM 결함, 수집 중 발견) vm_arith가 한쪽이 float이면 숫자 아닌 쪽을 조용히 0.0으로 바꿈 → 2.5 * "x" = 0.0,
+               1.5 - nil = 1.5, 7.5 % "a" = NaN. → type 에러. exit("x")가 조용히 exit 0 → argument 에러.
+               (unreachable!() 2곳도 함께 제거)
+             VM↔AOT 동치 테스트 확장: 36개 프로그램(에러 13개)으로 stdout·종료 코드·에러 출력 블록까지 비교 — 전부 일치.
+             문서: SPEC 1장(AOT 동치 범위)·3.1(산술의 타입). 회귀: vm_test +2, transpile 동치 +13. (tests: 438 green, clippy 0)
+✅ Phase 62 — 위키 매뉴얼 작성 중 발견한 결함 6건 수정 — v0.47.0  [동작 바뀜: input EOF·args·import 기준]
+             (매뉴얼) wiki/ 한국어 14페이지 + verify_wiki.py(예제 77블록 실행·출력 비교 + 내부 링크 검사) + publish.sh.
+             (1) 스크립트 인자: bang app.bang a b가 마지막 인자를 파일로 오인 → 경로 뒤 인자는 스크립트의 것.
+               args()는 Python sys.argv 모양 [스크립트, 인자...] (이전: 프로세스 argv 전체). REPL·bang test는 [].
+               stdlib::set_script_args(OnceLock) — CLI가 실행 전 1회 설정.
+             (2) 타입 표기 fn·nil이 키워드라 파스 오류 → parse_type이 Fn/Nil 토큰을 타입으로 받음.
+             (3) import 상대 경로가 현재 디렉터리 기준 → import를 쓴 파일의 디렉터리 기준(CompiledFn.src_dir,
+               compile_main(메인: 표시용 file은 None 유지)·compile_with_file(모듈)). 바레 이름은 기준/name.bang →
+               기준에서 위로 올라가며 bang_modules/ (Node식 — 패키지 안에서 프로젝트 의존성 import 가능) → BANG_PATH.
+               REPL·stdin은 현재 디렉터리. SPEC 16장 신설.
+             (4) bang add가 bang.toml을 [dependencies]만으로 다시 써 [package] 삭제 → pkg::update_manifest(섹션만 교체).
+             (5) 작업·콜백을 건넌 throw 값이 {kind: error, message: "잡히지 않은 예외: …"} 맵으로 바뀜 → RuntimeError.thrown에
+               원래 값을 실어 바깥 catch에 그대로 전달(spawn·parallel_map·함수 조인·map 등 콜백). derived Future는
+               에러의 thrown 값도 Isolator로 격리(작업 간 공유 금지). 잡히지 않으면 메시지는 이전과 같음.
+             (6) input()이 EOF에서도 "" → nil (빈 줄과 구별, Ruby gets와 같음).
+             (문서 오류 수정) 빌트인 개수 134→135(llms.txt·VS Code README), TUTORIAL json_stringify 주석, llms.txt contains·min/max.
+             문서: SPEC 8.1·10장·16장, llms.txt, README, wiki. 회귀: pkg +1, vm_test +4, cli_test +2, import_test +1.
+             (tests: 446 green 양쪽 feature, clippy 0)
+✅ Phase 63 — AI 시대 대응 1차: LLM API를 실제로 부를 수 있게 + 문서 검증 CI — v0.48.0
+             (계기) HTTP 읽기 대기가 10초 고정·스트리밍 불가 → LLM API(응답 수십 초~분, SSE) 호출 불가.
+             옵션 맵(http_post 4번째·http_request 5번째 인자, http_get은 번호 계약상 그대로): timeout_ms(기본 10000,
+               0=무제한 — 연결·전송·읽기 각각의 상한), on_line(2xx 본문을 받는 대로 줄 단위로 콜백, false면 중단, body=nil;
+               2xx 아니면 body에 모음). 모르는 키·잘못된 타입 = argument 에러. 콜백은 같은 작업에서 동기 호출(스레드 없음).
+             본문 수신 재작성(BodyDecoder: chunked 점진 해석·Length·EOF·본문 없음(HEAD/1xx/204/304)) + LineSplitter.
+             (기존 결함 수정) 대기 시간 초과·연결 끊김 시 잘린 본문을 조용히 반환 → io 에러. 데이터 안 "0\r\n\r\n"을
+               chunked 끝으로 오판 → 점진 디코더로 해소. connect_timeout 적용.
+             예제 examples/llm_fanout.bang (Anthropic Messages API: parallel_map 병렬 + SSE 스트리밍, ANTHROPIC_BASE_URL 지원).
+             문서 검증: tests/docs_test.rs — llms.txt 빌트인 개수·이름 양방향·코드 블록 파싱, 위키 전체 목록=BUILTINS,
+               VS Code 문법 빌트인·개수. 바로 발견·수정: llms.txt에 format·log10 누락, `break / continue`·`{ ... }` 파스 불가
+               표기, VS Code 문법 log10 누락. CI docs 작업: verify_wiki.py(위키 예제 실행·링크) + bang fmt --check.
+             문서: SPEC 12장·12.2 신설, llms.txt(옵션·SSE 관용구), README, wiki(네트워킹 옵션·LLM 절, FAQ).
+             회귀: http_stream_test +5(타임아웃·잘린 응답·chunk 데이터·점진 스트리밍·중단/throw/에러 상태/옵션 검증·
+               LLM 예제 종단(가짜 Messages API, 병렬 확인)), docs_test +4. lexer/parser 예제 개수 20→21.
+             (tests: 455 green 양쪽 feature·디버그/릴리스, clippy 0, 위키 77블록)
+✅ Phase 64 — AI 시대 대응 2차: 권한 모드 (--sandbox / --allow-*) — v0.49.0
+             목적: AI가 생성한 코드·남의 스크립트를 안심하고 실행. Deno식 허가 목록, 플래그 없으면 이전과 같이 모두 허용.
+             src/permissions.rs: Permissions{read,write,net,run,env: Allow(None|All|List)} + OnceLock 1회 설치(스크립트가 못 바꿈).
+               check(name, args)를 Vm::call_builtin(유일한 빌트인 디스패치)에서 호출 → 직접·메서드 문법·spawn·콜백·모듈 모두 같은 검사.
+               read: read_file·file_read_bytes·file_exists·is_dir·list_dir·file_size·tcp_send_file(경로),
+               write: write_file·file_append·dir_create·file_remove·file_move(양쪽), net: http_*(URL host:port, 기본 포트)·
+               tcp_connect·tcp_listen·serve_event(addr), run: proc_run(argv[0] 정확 일치), env: env_get(이름).
+               import는 허용하되 권한 모드에선 .bang만(다른 파일을 import로 읽어 에러로 흘리는 것 차단).
+               경로: 실제 경로로 풀어(canonicalize, 없으면 가장 가까운 존재 상위 + 나머지 어휘 정리) 허가 경로 아래인지 —
+               `..`·심볼릭 링크 탈출 불가. 호스트는 문자열 비교(DNS 미해석).
+             새 에러 종류 permission (kind 목록 끝에 추가 — 기존 계약 불변). 메시지에 허용 플래그 안내.
+             CLI: run/베어 실행(bang --sandbox x.bang 디스패치 포함)·bang test가 플래그를 파일 앞에서 받음, 잘못된 플래그는 exit 1.
+             한계(SPEC 17장 명시): OS 격리 아님 — --allow-run=sh 등 범용 실행기는 우회 통로, CPU·메모리·시간 제한 없음.
+             문서: SPEC 8.2·17장 신설, help, llms.txt, README(권한 모드 절·English summary), wiki(도구 권한 모드 절·에러 표·FAQ).
+             회귀: permissions 단위 +3(플래그·호스트 파싱·경로 탈출), permission_test +7(무플래그 동일·sandbox 전부 거부·
+               선택 허용 17항목·심볼릭 링크·미처리 exit 1·잘못된 플래그·bang test). (tests: 465 green 양쪽 feature, clippy 0)
+✅ Phase 65 — AI 시대 대응 3차: 기계가 읽는 진단(--json) + 다른 언어 습관 힌트 — v0.50.0
+             src/diagnostics.rs: Diagnostic{severity, stage(lex·parse·resolve·type·compile·runtime), kind(런타임만), message,
+               display(기존 사람용 첫 줄), file, span, hint} → human()(기존 형식 + "  = 힌트: …") / json()(필드 순서 고정 한 줄).
+             CLI: bang check --json(stdout JSON Lines, 문제 없으면 무출력 exit 0), bang run --json(stderr, stdout은 프로그램 그대로).
+               main.rs의 모든 오류 출력(lex/parse/resolve 경고·오류/type/compile/runtime, REPL·bang test 런타임 포함)을
+               emit()·runtime_diag()로 통일. 사람용은 같은 줄·같은 힌트를 한 번만. LexError::message() 추가.
+             힌트(hint_for): 오류 난 줄을 문자열·주석 지우고 판단(오류 위치가 습관 단어 다음 토큰인 경우가 많음) —
+               elif def function var/const class lambda except raise import문 from pass None/null/undefined True/False is
+               && || !x ++ ** ; 콜론 블록 Python 조건식. 런타임은 메시지에 'append'/'length'/'size'/'count'/'remove'가 있을 때만.
+               확인: 습관 코드 24종 전부 힌트, 문자열·주석·정상 코드 오탐 없음(단위 테스트).
+             기존 출력 불변(힌트가 없는 오류는 글자 그대로) — VM↔AOT 오류 동치 테스트·위키 에러 출력 예시 그대로 통과.
+             문서: SPEC 8.4 신설, help, llms.txt, README, wiki(에러 처리 힌트 예시 — 검증됨, 도구 JSON 진단).
+             회귀: diagnostics 단위 +3, cli_test +3(check --json·run --json·힌트 1회). (tests: 471 green 양쪽 feature, clippy 0, 위키 78블록)
+✅ Phase 66 — AI 시대 대응 4차: LLM 정답률 시험 세트 + 측정기 — v0.51.0
+             eval/tasks 32개(기본·컬렉션·값 의미론 함정(xs.append)·클로저 객체·f-문자열 형식·JSON/정규식/CSV/바이트·
+               동시성(parallel_map·spawn·채널·select)·에러(kind·throw 값)·타입 힌트·오버플로) — task.md/reference.bang/solution_test.bang.
+             eval/run.bang (bang으로 작성): llms.txt를 시스템 프롬프트(프롬프트 캐시)로 Messages API에 과제를 JOBS개씩 병렬 요청,
+               429·5xx는 retry-after/지수 백오프 재시도, 답의 ```bang 블록을 bang test --sandbox로 채점(timeout 60초 — 있으면),
+               실패 시 테스트 출력 + bang check --json 진단을 돌려주고 1회 수리(assistant content는 thinking 포함 원본 그대로).
+               pass@1·수리 후 통과율·토큰(캐시 읽기 포함) 출력, eval/out/results.json + 과제별 생성 코드 보존.
+               --reference(정답 전부 통과)·--empty(빈 답 전부 실패 — 채점이 실제로 검사함)는 API 없이 검증, 종료 코드로 판정.
+             과제 검증 중 발견: 26_checksum 기대값을 잘못 계산(가 = EA B0 80 → 0x1a) — 정답 모드가 잡아 수정.
+             회귀: tests/eval_test.rs +3(정답 모드 32/32, 빈 답 0/32, 가짜 API 종단 — 429 재시도·Python 습관 오답의 수리 요청에
+               힌트 전달·끝까지 틀리는 과제·요청 형식(헤더·모델·캐시·llms.txt)·토큰 집계). 실제 API 측정은 미실행(비용 — 사용자 승인 대기).
+             문서: eval/README.md(실행·비용 추정·과제 추가), VISION 9장 선행 지표, CLAUDE.md 모듈 경계.

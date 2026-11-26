@@ -309,3 +309,35 @@ pub(crate) fn b_e(
     req_args("e", &args, 0, span)?;
     Ok(VmValue::Float(std::f64::consts::E))
 }
+
+/// 134: idiv(a, b) → 내림 정수 나눗셈 (Phase 57). `/`는 항상 float이므로 정수 몫은 이것으로.
+/// int끼리는 int (음수는 아래로 내림: idiv(-7, 2) = -4, Python의 //와 같음), float이 섞이면 floor한 float.
+pub(crate) fn b_idiv(
+    _vm: &mut Vm,
+    args: Vec<VmValue>,
+    span: Span,
+    _stop_depth: usize,
+) -> Result<VmValue, RuntimeError> {
+    use crate::runtime::kind;
+    req_args("idiv", &args, 2, span)?;
+    let zero = || RuntimeError::new("idiv(): 0으로 나눌 수 없음", span).with_kind(kind::ZERO_DIVISION);
+    match (&args[0], &args[1]) {
+        (VmValue::Int(a), VmValue::Int(b)) => {
+            if *b == 0 {
+                return Err(zero());
+            }
+            let q = a.checked_div(*b).ok_or_else(|| overflow_err("idiv", span))?;
+            // 나머지가 있고 부호가 다르면 한 칸 아래로 (truncation → floor)
+            let q = if a % b != 0 && ((*a < 0) != (*b < 0)) { q - 1 } else { q };
+            Ok(VmValue::Int(q))
+        }
+        (a, b) => {
+            let x = num_of("idiv", a, span)?;
+            let y = num_of("idiv", b, span)?;
+            if y == 0.0 {
+                return Err(zero());
+            }
+            Ok(VmValue::Float((x / y).floor()))
+        }
+    }
+}

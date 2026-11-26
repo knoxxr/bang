@@ -15,8 +15,9 @@ pub(crate) fn b_print(
         parts.push(format!("{resolved}"));
     }
     let line = parts.join(" ");
-    vm.output.lock().unwrap().push(line.clone());
-    println!("{line}");
+    vm.output
+        .write_line(line)
+        .map_err(|m| RuntimeError::new(format!("print(): {m}"), span).with_kind(crate::runtime::kind::IO))?;
     Ok(VmValue::Nil)
 }
 
@@ -121,6 +122,30 @@ pub(crate) fn b_type(
 }
 
 /// 18: assert
+/// 123: assert_eq(actual, expected) — 같지 않으면 두 값을 보여 주는 에러 (Phase 49, `bang test`용).
+pub(crate) fn b_assert_eq(
+    _vm: &mut Vm,
+    args: Vec<VmValue>,
+    span: Span,
+    _stop_depth: usize,
+) -> Result<VmValue, RuntimeError> {
+    req_args("assert_eq", &args, 2, span)?;
+    let actual = deep_resolve(args[0].clone(), span)?;
+    let expected = deep_resolve(args[1].clone(), span)?;
+    if vm_eq(&actual, &expected) {
+        return Ok(VmValue::Nil);
+    }
+    // 문자열은 따옴표로 감싸 1과 "1"을 구별해 보여 준다
+    let show = |v: &VmValue| match v {
+        VmValue::Str(s) => format!("{s:?}"),
+        other => format!("{other}"),
+    };
+    Err(RuntimeError::new(
+        format!("assert_eq 실패: 기대 {}, 실제 {}", show(&expected), show(&actual)),
+        span,
+    ))
+}
+
 pub(crate) fn b_assert(
     _vm: &mut Vm,
     args: Vec<VmValue>,
@@ -151,16 +176,14 @@ pub(crate) fn b_assert(
 pub(crate) fn b_exit(
     _vm: &mut Vm,
     args: Vec<VmValue>,
-    _span: Span,
+    span: Span,
     _stop_depth: usize,
 ) -> Result<VmValue, RuntimeError> {
-    let code = args
-        .first()
-        .and_then(|v| match v {
-            VmValue::Int(n) => Some(*n as i32),
-            _ => None,
-        })
-        .unwrap_or(0);
+    // 정수가 아닌 종료 코드는 에러 (Phase 61: 이전에는 조용히 0으로 종료 — 실패가 성공으로 보였다)
+    let code = match args.first() {
+        None => 0,
+        Some(v) => int_of("exit", v, span)? as i32,
+    };
     std::process::exit(code);
 }
 
@@ -180,9 +203,13 @@ pub(crate) fn b_input(
         let _ = std::io::stdout().flush();
     }
     let mut line = String::new();
-    std::io::stdin()
+    let n = std::io::stdin()
         .read_line(&mut line)
         .map_err(|e| RuntimeError::new(format!("input(): {e}"), span))?;
+    // 입력 끝(EOF)은 nil — 빈 줄("")과 구별된다 (Phase 62, Ruby gets와 같음)
+    if n == 0 {
+        return Ok(VmValue::Nil);
+    }
     Ok(VmValue::Str(
         line.trim_end_matches('\n')
             .trim_end_matches('\r')
@@ -206,14 +233,26 @@ pub(crate) fn b_print_err(
     Ok(VmValue::Nil)
 }
 
-/// 56: args() → List of CLI args
+/// 스크립트 인자 (Phase 62): `bang app.bang a b` → ["app.bang", "a", "b"] (Python sys.argv와 같은 모양).
+/// CLI가 실행 전에 한 번 설정한다. 설정되지 않았으면(REPL·bang test·라이브러리로 쓸 때) 빈 리스트.
+static SCRIPT_ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// CLI 전용: 스크립트 경로와 그 뒤의 인자를 기록한다 (두 번째 호출은 무시).
+pub fn set_script_args(argv: Vec<String>) {
+    let _ = SCRIPT_ARGS.set(argv);
+}
+
+/// 56: args() → [스크립트, 인자...]
 pub(crate) fn b_args(
     _vm: &mut Vm,
     _args: Vec<VmValue>,
     _span: Span,
     _stop_depth: usize,
 ) -> Result<VmValue, RuntimeError> {
-    let cli_args: Vec<VmValue> = std::env::args().map(VmValue::Str).collect();
+    let cli_args: Vec<VmValue> = SCRIPT_ARGS
+        .get()
+        .map(|v| v.iter().cloned().map(VmValue::Str).collect())
+        .unwrap_or_default();
     Ok(VmValue::List(Arc::new(cli_args)))
 }
 
@@ -226,9 +265,10 @@ pub(crate) fn b_import(
 ) -> Result<VmValue, RuntimeError> {
     req_args("import", &args, 1, span)?;
     let spec = str_arg("import", &args[0], span)?;
-    // 이름 해석: 바레 이름은 bang_modules/ 및 BANG_PATH에서 검색,
-    // .bang/경로 구분자 포함이면 직접 경로.
-    let path = resolve_module(&spec).ok_or_else(|| {
+    // 이름 해석 (Phase 62): 상대 경로·바레 이름은 import를 쓴 파일의 디렉터리 기준.
+    // 바레 이름은 이어서 위쪽 bang_modules/ 및 BANG_PATH에서 검색.
+    let base = vm.frames.last().and_then(|f| f.closure.func.src_dir.clone());
+    let path = resolve_module(&spec, base.as_deref()).ok_or_else(|| {
         RuntimeError::new(
             format!("import(): 모듈을 찾을 수 없음: '{spec}' (bang_modules/ 또는 BANG_PATH 확인)"),
             span,

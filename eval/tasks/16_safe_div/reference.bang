@@ -1,0 +1,7 @@
+fn safe_div(a, b) {
+    try {
+        return {"ok": true, "value": a / b}
+    } catch e {
+        return {"ok": false, "error": e.kind}
+    }
+}

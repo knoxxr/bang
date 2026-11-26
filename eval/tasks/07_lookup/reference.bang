@@ -1,0 +1,3 @@
+fn lookup(m, key) {
+    return get(m, key, "없음")
+}
