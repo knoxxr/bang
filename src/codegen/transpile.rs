@@ -54,6 +54,10 @@ const C_RUNTIME: &str = r#"/* Bang Language C Runtime — 자동 생성 */
 #include <stdint.h>
 #include <math.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#endif
 
 typedef enum { BT_INT=0, BT_FLOAT=1, BT_BOOL=2, BT_NIL=3, BT_STR=4 } BT;
 typedef struct { BT tag; union { int64_t i; double f; int b; char* s; }; } BV;
@@ -850,6 +854,8 @@ impl Transpiler {
 
         // 5. main()
         self.push_raw("int main(void) {\n");
+        // Windows C 런타임은 텍스트 모드에서 \n을 \r\n으로 바꿔 쓴다 — VM(Rust)과 같은 바이트를 내도록 바이너리 모드로
+        self.push_raw("#ifdef _WIN32\n    _setmode(_fileno(stdout), _O_BINARY);\n    _setmode(_fileno(stderr), _O_BINARY);\n#endif\n");
         self.indent = 1;
         self.enter_scope();
         if let Some(src) = &self.source {

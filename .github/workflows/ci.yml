@@ -24,12 +24,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
-        run: cargo test --verbose
+        run: cargo test --verbose --no-fail-fast
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
       # 자급 코어 빌드(https 끔)가 계속 컴파일·통과하는지 확인 (헌법 5조의 예외 범위 고정)
       - name: cargo test (no default features)
-        run: cargo test --no-default-features
+        run: cargo test --no-default-features --no-fail-fast
       - name: cargo clippy (no default features)
         run: cargo clippy --all-targets --no-default-features -- -D warnings
 
