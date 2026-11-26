@@ -680,6 +680,41 @@ try {
 없을 수도 있는 키는 명시적으로 다룬다: `get(m, k, 기본값)`, `has(m, k)`, `k in m`.
 리스트 인덱스 범위 초과가 에러인 것과 같은 원칙이다 (헌법 7조 — 조용한 마법 금지).
 
+### 8.4 진단 출력: 힌트와 JSON (Phase 65)
+
+**다른 언어 습관 힌트**: 오류가 Python·JavaScript 습관 때문으로 보이면 사람용 출력 끝에 `= 힌트:` 줄을 붙인다.
+판단은 오류가 난 줄(문자열·주석 제외)을 보고 한다 — 오류 위치가 습관 단어 다음 토큰을 가리키는 경우가 많아서다.
+대상: `elif` `def` `function` `var`/`const` `class` `lambda` `except` `raise` `import x`(문장형) `pass` `None`/`null`/`undefined`
+`True`/`False` `is` `&&`/`||` `!x` `x++` `**` `;` 콜론 블록(`if x:`) Python 조건식(`a if c else b`), 런타임의 `.append`·`.length`
+등(런타임 오류는 메시지에 그 이름이 있을 때만). 같은 줄의 연쇄 오류에는 한 번만 보인다.
+
+```
+[1:9] 리졸브 오류: 정의되지 않은 변수: 'None'
+  |
+  1 | let y = None
+  |         ^
+  = 힌트: 값이 없음은 `nil`
+```
+
+**JSON 진단** (AI 에이전트·편집기용): 진단 하나를 JSON 한 줄로 낸다(JSON Lines, 필드 순서 고정).
+
+- `bang check --json 파일` — stdout. 문제가 없으면 아무것도 출력하지 않고 종료 코드 0, 오류가 있으면 1.
+- `bang run --json 파일` — stderr. 프로그램 출력(stdout)은 그대로다.
+
+```
+{"severity":"error","stage":"runtime","kind":"type","message":"필드 접근: List 에 필드 'append' 없음","file":"app.bang","line":3,"col":1,"hint":"리스트에 추가는 `xs += [v]` …"}
+```
+
+| 필드 | 값 |
+|---|---|
+| `severity` | `"error"` 또는 `"warning"` |
+| `stage` | `"lex"` `"parse"` `"resolve"` `"type"` `"compile"` `"runtime"` |
+| `kind` | 런타임 오류의 종류(8.2, `e.kind`와 같음). 그 밖의 단계는 `null` |
+| `message` | 위치 접두어 없는 메시지 |
+| `file` | 파일 경로 (import한 모듈 안의 런타임 오류면 그 모듈) |
+| `line` `col` | 1부터. 위치가 없으면 0 |
+| `hint` | 힌트 문자열 또는 `null` |
+
 ## 9. 선택적 타입 힌트 (Gradual Typing)
 
 변수·파라미터·반환값에 선택적으로 타입을 표기할 수 있다. 표기는 **점진적(gradual)**

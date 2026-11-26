@@ -119,7 +119,7 @@ bang                      REPL 진입
 bang run     [--dump-ast] <파일|->   실행 (바이트코드 VM — 유일한 실행 엔진)
 bang compile -o <출력> <파일>   [실험적] AOT 컴파일 (C 트랜스파일 + cc/clang/gcc -O2)
                           정수·문자열·함수만 지원. 미지원 기능은 컴파일 에러
-bang check   <파일>       오류 검사 + 정적 타입 검사 (실행 없음)
+bang check   [--json] <파일>  오류 검사 + 정적 타입 검사 (실행 없음, --json: 기계가 읽는 진단)
 bang build   <파일>       컴파일 검증 + 통계
 bang parse   <파일>       AST 출력
 bang tokenize <파일>      토큰 출력 (디버그)

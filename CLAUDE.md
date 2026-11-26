@@ -80,6 +80,7 @@ src/
   regex/        자체 정규식 엔진 (Phase 21~22, 백트래킹 VM + 캡처)
   pkg/          bang.toml 매니페스트 파서 (Phase 23, bang add/install)
   reactor/      논블로킹 I/O 리액터 (Phase 34, polling 기반; serve_event가 사용)
+  diagnostics   진단 출력 (Phase 65, src/diagnostics.rs) — 사람용·JSON Lines·다른 언어 습관 힌트. CLI 오류 출력은 main.rs emit() 경유.
   permissions   권한 모드 (Phase 64, src/permissions.rs) — --sandbox/--allow-*. Vm::call_builtin 한 곳에서 검사.
                 새 빌트인이 파일·네트워크·프로세스·환경에 닿으면 permissions::check에 분야를 등록할 것.
 docs/SPEC.md    언어 명세 (동시성·serve_event 한계 포함). 의미 변경 시 함께 갱신.
@@ -778,3 +779,16 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              문서: SPEC 8.2·17장 신설, help, llms.txt, README(권한 모드 절·English summary), wiki(도구 권한 모드 절·에러 표·FAQ).
              회귀: permissions 단위 +3(플래그·호스트 파싱·경로 탈출), permission_test +7(무플래그 동일·sandbox 전부 거부·
                선택 허용 17항목·심볼릭 링크·미처리 exit 1·잘못된 플래그·bang test). (tests: 465 green 양쪽 feature, clippy 0)
+✅ Phase 65 — AI 시대 대응 3차: 기계가 읽는 진단(--json) + 다른 언어 습관 힌트 — v0.50.0
+             src/diagnostics.rs: Diagnostic{severity, stage(lex·parse·resolve·type·compile·runtime), kind(런타임만), message,
+               display(기존 사람용 첫 줄), file, span, hint} → human()(기존 형식 + "  = 힌트: …") / json()(필드 순서 고정 한 줄).
+             CLI: bang check --json(stdout JSON Lines, 문제 없으면 무출력 exit 0), bang run --json(stderr, stdout은 프로그램 그대로).
+               main.rs의 모든 오류 출력(lex/parse/resolve 경고·오류/type/compile/runtime, REPL·bang test 런타임 포함)을
+               emit()·runtime_diag()로 통일. 사람용은 같은 줄·같은 힌트를 한 번만. LexError::message() 추가.
+             힌트(hint_for): 오류 난 줄을 문자열·주석 지우고 판단(오류 위치가 습관 단어 다음 토큰인 경우가 많음) —
+               elif def function var/const class lambda except raise import문 from pass None/null/undefined True/False is
+               && || !x ++ ** ; 콜론 블록 Python 조건식. 런타임은 메시지에 'append'/'length'/'size'/'count'/'remove'가 있을 때만.
+               확인: 습관 코드 24종 전부 힌트, 문자열·주석·정상 코드 오탐 없음(단위 테스트).
+             기존 출력 불변(힌트가 없는 오류는 글자 그대로) — VM↔AOT 오류 동치 테스트·위키 에러 출력 예시 그대로 통과.
+             문서: SPEC 8.4 신설, help, llms.txt, README, wiki(에러 처리 힌트 예시 — 검증됨, 도구 JSON 진단).
+             회귀: diagnostics 단위 +3, cli_test +3(check --json·run --json·힌트 1회). (tests: 471 green 양쪽 feature, clippy 0, 위키 78블록)

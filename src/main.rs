@@ -2,6 +2,7 @@
 
 use bang::ast::dump_program;
 use bang::compiler::compile;
+use bang::diagnostics::{Diagnostic, Severity};
 use bang::lexer::Lexer;
 use bang::lexer::token::Span;
 use bang::parser::Parser;
@@ -64,10 +65,10 @@ fn print_usage() {
     eprintln!("  bang <명령> [옵션] [인자...]");
     eprintln!();
     eprintln!("명령:");
-    eprintln!("  run     [--dump-ast] [권한] <파일|-> [인자...]  .bang 파일/표준입력 실행 (바이트코드 VM)");
+    eprintln!("  run     [--dump-ast] [--json] [권한] <파일|-> [인자...]  .bang 파일/표준입력 실행 (바이트코드 VM)");
     eprintln!("  compile -o <출력> <파일>  [실험적] AOT 컴파일 (C 트랜스파일 + cc -O2,");
     eprintln!("                    정수·문자열·함수만 지원 — 리스트/맵/동시성 미지원)");
-    eprintln!("  check   <파일>   오류 검사 (실행 없음)");
+    eprintln!("  check   [--json] <파일>  오류 검사 (실행 없음, --json: 진단을 JSON Lines로)");
     eprintln!("  build   <파일>   컴파일 검증 + 통계 출력");
     eprintln!("  parse   <파일>   AST 출력");
     eprintln!("  tokenize <파일>  토큰화 출력 (디버그)");
@@ -115,7 +116,7 @@ fn lex_and_parse(source: &str, _path: &str) -> bang::ast::Program {
         Err(errors) => {
             for e in &errors {
                 let span = Span::new(e.line, e.col);
-                eprintln!("{}", format_with_context(&e.to_string(), span, source));
+                emit(&diag(Severity::Error, "lex", e.message(), e.to_string(), span, source), source);
             }
             process::exit(1);
         }
@@ -124,7 +125,7 @@ fn lex_and_parse(source: &str, _path: &str) -> bang::ast::Program {
         Ok(prog) => prog,
         Err(errors) => {
             for e in &errors {
-                eprintln!("{}", format_with_context(&e.to_string(), e.span, source));
+                emit(&diag(Severity::Error, "parse", e.message.clone(), e.to_string(), e.span, source), source);
             }
             process::exit(1);
         }
@@ -135,29 +136,64 @@ fn lex_and_parse(source: &str, _path: &str) -> bang::ast::Program {
 // Phase 7: 소스 컨텍스트가 있는 에러 포맷
 // ============================================================================
 
-/// 런타임 에러 출력: import한 모듈 안에서 난 에러면 그 모듈 파일의 줄을 보여 준다 (Phase 56).
-fn runtime_error_text(e: &bang::runtime::RuntimeError, main_source: &str) -> String {
-    match &e.file {
-        Some(path) => match fs::read_to_string(path.as_ref()) {
-            Ok(src) => format_with_context(&e.to_string(), e.span, &src),
-            Err(_) => e.to_string(),
-        },
-        None => format_with_context(&e.to_string(), e.span, main_source),
+/// 진단 출력 방식 (Phase 65): 0 = 사람용(stderr), 1 = JSON Lines(stderr — run), 2 = JSON Lines(stdout — check)
+static DIAG_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// 진단에 적을 메인 스크립트 경로
+static DIAG_FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn set_diag(mode: u8, file: &str) {
+    DIAG_MODE.store(mode, std::sync::atomic::Ordering::Relaxed);
+    let _ = DIAG_FILE.set(file.to_string());
+}
+
+fn json_mode() -> bool {
+    DIAG_MODE.load(std::sync::atomic::Ordering::Relaxed) != 0
+}
+
+/// 진단 하나를 현재 방식으로 출력한다.
+fn emit(d: &Diagnostic, source: &str) {
+    match DIAG_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => {
+            // 같은 줄의 연쇄 에러에 같은 힌트를 되풀이하지 않는다 (사람용만 — JSON은 진단마다 온전히)
+            static SHOWN: std::sync::Mutex<Vec<(usize, &'static str)>> = std::sync::Mutex::new(Vec::new());
+            let mut d = d.clone();
+            if let (Some(h), Ok(mut shown)) = (d.hint, SHOWN.lock()) {
+                if shown.contains(&(d.span.line, h)) {
+                    d.hint = None;
+                } else {
+                    shown.push((d.span.line, h));
+                }
+            }
+            eprintln!("{}", d.human(source))
+        }
+        1 => eprintln!("{}", d.json()),
+        _ => println!("{}", d.json()),
     }
 }
 
+/// 메인 파일 기준 진단 (lex·parse·resolve·type·compile 단계).
+fn diag(sev: Severity, stage: &'static str, message: String, display: String, span: Span, source: &str) -> Diagnostic {
+    Diagnostic::new(sev, stage, None, message, display, DIAG_FILE.get().cloned(), span, source)
+}
+
+/// 런타임 에러 진단: import한 모듈 안에서 난 에러면 그 모듈 파일·소스를 쓴다 (Phase 56). (진단, 그 소스)
+fn runtime_diag(e: &bang::runtime::RuntimeError, main_source: &str) -> (Diagnostic, String) {
+    let (file, src) = match &e.file {
+        Some(path) => (Some(path.to_string()), fs::read_to_string(path.as_ref()).unwrap_or_default()),
+        None => (DIAG_FILE.get().cloned(), main_source.to_string()),
+    };
+    let d = Diagnostic::new(Severity::Error, "runtime", Some(e.kind), e.message.clone(), e.to_string(), file, e.span, &src);
+    (d, src)
+}
+
+/// 런타임 에러 사람용 출력 (REPL·bang test·run 공통 — 힌트 포함).
+fn runtime_error_text(e: &bang::runtime::RuntimeError, main_source: &str) -> String {
+    let (d, src) = runtime_diag(e, main_source);
+    d.human(&src)
+}
+
 fn format_with_context(message: &str, span: Span, source: &str) -> String {
-    if span.line == 0 {
-        return message.to_string();
-    }
-    let line_num = span.line;
-    let col_num  = span.col;
-    let line_text = source.lines().nth(line_num.saturating_sub(1)).unwrap_or("");
-    let pointer_offset = col_num.saturating_sub(1);
-    format!(
-        "{message}\n  |\n{:>3} | {line_text}\n  | {:>pointer_offset$}^",
-        line_num, ""
-    )
+    bang::diagnostics::with_context(message, span, source)
 }
 
 // ============================================================================
@@ -187,6 +223,8 @@ fn cmd_run(args: &[String]) {
         }
         match arg.as_str() {
             "--dump-ast" => dump_ast = true,
+            // 진단을 JSON Lines로 stderr에 (Phase 65 — AI 에이전트용). 프로그램 출력(stdout)은 그대로.
+            "--json" => DIAG_MODE.store(1, std::sync::atomic::Ordering::Relaxed),
             // v0.30.0에서 제거된 백엔드 — 파일 경로로 오인하지 않게 명확히 알린다.
             "--interp" | "--jit" => {
                 eprintln!("오류: '{arg}'는 v0.30.0에서 제거되었습니다 — 바이트코드 VM이 유일한 실행 엔진입니다");
@@ -211,6 +249,7 @@ fn cmd_run(args: &[String]) {
     };
 
     bang::stdlib::set_script_args(script_args);
+    set_diag(DIAG_MODE.load(std::sync::atomic::Ordering::Relaxed), path);
     if sandboxed {
         bang::permissions::install(perms);
     }
@@ -224,11 +263,11 @@ fn cmd_run(args: &[String]) {
 
     let resolve_result = bang::resolver::resolve(&prog);
     for w in &resolve_result.warnings {
-        eprintln!("{}", format_with_context(&w.to_string(), w.span, &source));
+        emit(&diag(Severity::Warning, "resolve", w.message.clone(), w.to_string(), w.span, &source), &source);
     }
     if !resolve_result.errors.is_empty() {
         for e in &resolve_result.errors {
-            eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
+            emit(&diag(Severity::Error, "resolve", e.message.clone(), e.to_string(), e.span, &source), &source);
         }
         process::exit(1);
     }
@@ -243,14 +282,15 @@ fn run_vm_program(prog: &bang::ast::Program, source: &str, path: &str) {
         Ok(o) => o,
         Err(errors) => {
             for e in &errors {
-                eprintln!("{}", format_with_context(&e.to_string(), e.span, source));
+                emit(&diag(Severity::Error, "compile", e.message.clone(), e.to_string(), e.span, source), source);
             }
             process::exit(1);
         }
     };
     let mut vm = bang::vm::Vm::new(out.global_count as usize, bang::vm::Output::Stdout);
     if let Err(e) = vm.run(out.main_fn) {
-        eprintln!("{}", runtime_error_text(&e, source));
+        let (d, src) = runtime_diag(&e, source);
+        emit(&d, &src);
         process::exit(1);
     }
 }
@@ -260,21 +300,23 @@ fn run_vm_program(prog: &bang::ast::Program, source: &str, path: &str) {
 // ============================================================================
 
 fn cmd_check(args: &[String]) {
-    if args.is_empty() {
+    // --json: 진단을 JSON Lines로 stdout에 (Phase 65). 문제가 없으면 아무것도 출력하지 않고 exit 0.
+    let json = args.iter().any(|a| a == "--json");
+    let Some(path) = args.iter().find(|a| *a != "--json") else {
         eprintln!("오류: 파일 경로가 필요합니다");
         process::exit(1);
-    }
-    let path   = &args[0];
+    };
+    set_diag(if json { 2 } else { 0 }, path);
     let source = read_source(path);
     let prog   = lex_and_parse(&source, path);
 
     let resolve_result = bang::resolver::resolve(&prog);
     for w in &resolve_result.warnings {
-        eprintln!("{}", format_with_context(&w.to_string(), w.span, &source));
+        emit(&diag(Severity::Warning, "resolve", w.message.clone(), w.to_string(), w.span, &source), &source);
     }
     if !resolve_result.errors.is_empty() {
         for e in &resolve_result.errors {
-            eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
+            emit(&diag(Severity::Error, "resolve", e.message.clone(), e.to_string(), e.span, &source), &source);
         }
         process::exit(1);
     }
@@ -283,13 +325,13 @@ fn cmd_check(args: &[String]) {
     let type_errors = bang::typeck::check(&prog);
     if !type_errors.is_empty() {
         for e in &type_errors {
-            eprintln!("{}", format_with_context(
-                &format!("타입 오류: {}", e.message), e.span, &source));
+            emit(&diag(Severity::Error, "type", e.message.clone(), format!("타입 오류: {}", e.message), e.span, &source), &source);
         }
         process::exit(1);
     }
 
     match compile(&prog) {
+        Ok(_) if json_mode() => {}
         Ok(out) => {
             println!("OK: {path}");
             println!("  전역 바인딩: {}개  opcodes: {}바이트",
@@ -298,7 +340,7 @@ fn cmd_check(args: &[String]) {
         }
         Err(errors) => {
             for e in &errors {
-                eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
+                emit(&diag(Severity::Error, "compile", e.message.clone(), e.to_string(), e.span, &source), &source);
             }
             process::exit(1);
         }
@@ -315,16 +357,17 @@ fn cmd_build(args: &[String]) {
         process::exit(1);
     }
     let path   = &args[0];
+    set_diag(0, path);
     let source = read_source(path);
     let prog   = lex_and_parse(&source, path);
 
     let resolve_result = bang::resolver::resolve(&prog);
     for w in &resolve_result.warnings {
-        eprintln!("{}", format_with_context(&w.to_string(), w.span, &source));
+        emit(&diag(Severity::Warning, "resolve", w.message.clone(), w.to_string(), w.span, &source), &source);
     }
     if !resolve_result.errors.is_empty() {
         for e in &resolve_result.errors {
-            eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
+            emit(&diag(Severity::Error, "resolve", e.message.clone(), e.to_string(), e.span, &source), &source);
         }
         process::exit(1);
     }
@@ -339,7 +382,7 @@ fn cmd_build(args: &[String]) {
         }
         Err(errors) => {
             for e in &errors {
-                eprintln!("{}", format_with_context(&e.to_string(), e.span, &source));
+                emit(&diag(Severity::Error, "compile", e.message.clone(), e.to_string(), e.span, &source), &source);
             }
             process::exit(1);
         }

@@ -262,3 +262,53 @@ fn test_input_returns_nil_at_eof() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "[a, , b] 3\n");
     let _ = fs::remove_file(&p);
 }
+
+/// Phase 65: bang check --json — 진단을 JSON Lines로 stdout에. 문제 없으면 출력 없이 exit 0.
+#[test]
+fn test_check_json_diagnostics() {
+    let bad = temp_bang("fn f() {\n    let unused = 2\n    return 1\n}\nlet y = None\n");
+    let out = Command::new(BANG).args(["check", "--json"]).arg(&bad).output().expect("실행 실패");
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    // 경고(사용되지 않은 변수)와 오류(None)가 한 줄씩 — 필드 순서 고정
+    assert!(lines.iter().any(|l| l.starts_with("{\"severity\":\"warning\",\"stage\":\"resolve\"")), "{text}");
+    let err = lines.iter().find(|l| l.contains("\"severity\":\"error\"")).expect("오류 줄");
+    assert!(err.contains("\"stage\":\"resolve\",\"kind\":null,\"message\":\"정의되지 않은 변수: 'None'\""), "{err}");
+    assert!(err.contains("\"line\":5,\"col\":9,\"hint\":\"값이 없음은 `nil`\"}"), "{err}");
+    assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let ok = temp_bang("print(1)\n");
+    let out = Command::new(BANG).args(["check", "--json"]).arg(&ok).output().expect("실행 실패");
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty());
+    let _ = fs::remove_file(&bad);
+    let _ = fs::remove_file(&ok);
+}
+
+/// Phase 65: bang run --json — 런타임 에러를 kind와 함께 JSON 한 줄로 stderr에. 프로그램 출력(stdout)은 그대로.
+#[test]
+fn test_run_json_runtime_error() {
+    let p = temp_bang("print(\"before\")\nlet xs = [1]\nxs.append(2)\n");
+    let ps = p.to_str().unwrap();
+    let out = Command::new(BANG).args(["run", "--json", ps]).output().expect("실행 실패");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "before\n");
+    let err = String::from_utf8_lossy(&out.stderr);
+    let expected = format!(
+        "{{\"severity\":\"error\",\"stage\":\"runtime\",\"kind\":\"type\",\"message\":\"필드 접근: List 에 필드 'append' 없음\",\"file\":{ps:?},\"line\":3,\"col\":1,\"hint\":\"리스트에 추가는 `xs += [v]` (또는 `xs = xs.push(v)`) — 리스트는 값이라 제자리에서 바뀌지 않습니다\"}}"
+    );
+    assert_eq!(err.trim_end(), expected);
+    let _ = fs::remove_file(&p);
+}
+
+/// Phase 65: 사람용 출력에도 다른 언어 습관 힌트가 붙는다 (같은 줄의 연쇄 에러에는 한 번만).
+#[test]
+fn test_human_errors_show_habit_hints() {
+    let p = temp_bang("let x = 1\nif x == 1 {\n} elif x == 2 {\n}\n");
+    let out = Command::new(BANG).arg(&p).output().expect("실행 실패");
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.matches("= 힌트: `elif` 대신 `else if`").count(), 1, "{err}");
+    let _ = fs::remove_file(&p);
+}

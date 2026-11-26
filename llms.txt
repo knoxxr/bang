@@ -204,6 +204,8 @@ serve_event("127.0.0.1:8080", fn(req) {
 bang script.bang       # 실행 (run 생략 가능)
 bang                   # REPL (VM 기반 — 전 기능 동작)
 bang check script.bang # 정적 검사 (타입·해석)
+bang check --json x.bang  # 진단을 JSON Lines로(stdout): severity·stage·kind·message·file·line·col·hint — 에이전트가 고칠 때
+bang run --json x.bang    # 실행 중 진단도 JSON으로(stderr). 오류의 hint는 Python/JS 습관을 bang 문법으로 안내
 bang new myproj        # 새 프로젝트 스캐폴딩
 bang test              # *_test.bang / test_*.bang 의 test_* 함수 실행 (assert_eq로 검증)
 bang fmt               # 들여쓰기 정규화 (--check: CI용)

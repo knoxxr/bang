@@ -32,17 +32,23 @@ pub struct LexError {
     pub col: usize,
 }
 
-impl fmt::Display for LexError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let msg = match &self.kind {
+impl LexError {
+    /// 위치 접두어 없는 메시지 (JSON 진단용 — Phase 65).
+    pub fn message(&self) -> String {
+        match &self.kind {
             LexErrorKind::UnexpectedChar(c) => format!("예상하지 못한 문자: '{c}'"),
             LexErrorKind::UnterminatedString => "종료되지 않은 문자열".to_string(),
             LexErrorKind::InvalidEscape(c) => format!("잘못된 이스케이프 시퀀스: '\\{c}'"),
             LexErrorKind::InvalidNumber(s) => format!("잘못된 숫자 리터럴: '{s}'"),
             LexErrorKind::UnterminatedComment => "종료되지 않은 블록 주석 ('*/' 없음)".to_string(),
             LexErrorKind::BadFString(m) => format!("f-문자열 오류: {m}"),
-        };
-        write!(f, "[{}:{}] 오류: {}", self.line, self.col, msg)
+        }
+    }
+}
+
+impl fmt::Display for LexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}:{}] 오류: {}", self.line, self.col, self.message())
     }
 }
 
