@@ -1,0 +1,5 @@
+fn top_users(json_text, n) {
+    let users = json_parse(json_text)
+    let ranked = sort_by(users, fn(u) { return -u.score })
+    return ranked[:n].map(fn(u) { return u.name })
+}

@@ -1,0 +1,8 @@
+fn group_by_len(words) {
+    let out = {}
+    for w in words {
+        let n = len(w)
+        out[n] = get(out, n, []) + [w]
+    }
+    return out
+}

@@ -1,0 +1,11 @@
+let s = import("solution.bang")
+
+fn test_counts() {
+    assert_eq(s.word_count("the Cat and the  hat THE"), {"the": 3, "cat": 1, "and": 1, "hat": 1})
+}
+fn test_order() {
+    assert_eq(keys(s.word_count("b a b c")), ["b", "a", "c"])
+}
+fn test_empty() {
+    assert_eq(s.word_count(""), {})
+}

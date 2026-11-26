@@ -1,0 +1,7 @@
+let s = import("solution.bang")
+
+fn test_group() {
+    let r = s.group_by_len(["hi", "cat", "a", "dog", "yo"])
+    assert_eq(r, {2: ["hi", "yo"], 3: ["cat", "dog"], 1: ["a"]})
+    assert_eq(keys(r), [2, 3, 1])
+}

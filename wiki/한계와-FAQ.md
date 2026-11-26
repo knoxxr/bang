@@ -88,7 +88,7 @@ close(requests)
 
 ### LLM(ChatGPT, Claude 등)에게 bang 코드를 쓰게 하려면?
 
-저장소의 [`llms.txt`](https://github.com/knoxxr/bang/blob/main/llms.txt) 한 파일을 대화에 붙여 넣으세요. 문법, 동시성 규칙, 내장 함수 전체, "하지 말 것" 목록이 들어 있습니다.
+저장소의 [`llms.txt`](https://github.com/knoxxr/bang/blob/main/llms.txt) 한 파일을 대화에 붙여 넣으세요. LLM이 이 파일만 보고 얼마나 맞게 쓰는지는 [`eval/`](https://github.com/knoxxr/bang/tree/main/eval)의 과제 32개로 잴 수 있습니다(`bang eval/run.bang`, API 키 필요). 문법, 동시성 규칙, 내장 함수 전체, "하지 말 것" 목록이 들어 있습니다.
 
 ### 버그를 찾았어요 / 기능을 제안하고 싶어요
 

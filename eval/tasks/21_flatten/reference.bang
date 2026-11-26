@@ -1,0 +1,11 @@
+fn flatten_deep(xs) {
+    let out = []
+    for x in xs {
+        if type(x) == "List" {
+            out += flatten_deep(x)
+        } else {
+            out += [x]
+        }
+    }
+    return out
+}

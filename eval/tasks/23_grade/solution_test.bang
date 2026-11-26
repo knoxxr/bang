@@ -1,0 +1,5 @@
+let s = import("solution.bang")
+
+fn test_grade() {
+    assert_eq([90, 89, 80, 75, 10].map(s.grade), ["A", "B", "B", "C", "F"])
+}

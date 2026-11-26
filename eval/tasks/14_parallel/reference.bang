@@ -1,0 +1,7 @@
+fn slow_double(x) {
+    sleep(100)
+    return x * 2
+}
+fn double_all(xs) {
+    return parallel_map(xs, slow_double)
+}

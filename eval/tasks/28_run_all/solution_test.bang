@@ -1,0 +1,6 @@
+let s = import("solution.bang")
+
+fn test_run_all() {
+    let fs = [fn() { return 1 }, fn() { throw "x" }, fn() { return 1 / 0 }, fn() { return "ok" }]
+    assert_eq(s.run_all(fs), [1, "error", "error", "ok"])
+}

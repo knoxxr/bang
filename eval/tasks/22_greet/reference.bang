@@ -1,0 +1,3 @@
+fn greet(name, greeting = "안녕", punct = "!") {
+    return f"{greeting}, {name}{punct}"
+}

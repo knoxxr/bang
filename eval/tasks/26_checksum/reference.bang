@@ -1,0 +1,7 @@
+fn checksum(text) {
+    let total = 0
+    for b in bytes_from_str(text) {
+        total += b
+    }
+    return f"{total % 256:02x}"
+}

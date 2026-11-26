@@ -46,5 +46,5 @@ jobs:
         run: cargo build
       - name: verify wiki
         run: python3 wiki/tools/verify_wiki.py target/debug/bang
-      - name: bang fmt --check (examples·tests·bench)
-        run: ./target/debug/bang fmt --check examples tests bench
+      - name: bang fmt --check (examples·tests·bench·eval)
+        run: ./target/debug/bang fmt --check examples tests bench eval

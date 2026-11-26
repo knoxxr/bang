@@ -1,0 +1,3 @@
+fn compact(xs) {
+    return xs.filter(fn(x) { return bool(x) })
+}

@@ -1,0 +1,5 @@
+let s = import("solution.bang")
+
+fn test_compact() {
+    assert_eq(s.compact([0, 1, "", "a", [], [0], {}, {"k": 1}, nil, false, true, 0.0, 2.5]), [1, "a", [0], {"k": 1}, true, 2.5])
+}

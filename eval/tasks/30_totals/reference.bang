@@ -1,0 +1,7 @@
+fn totals(items) {
+    let out = {}
+    for it in items {
+        out[it.cat] = get(out, it.cat, 0) + it.amt
+    }
+    return out
+}

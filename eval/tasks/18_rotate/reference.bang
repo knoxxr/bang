@@ -1,0 +1,5 @@
+fn rotate(xs, k) {
+    if not xs { return xs }
+    let n = k % len(xs)
+    return xs[n:] + xs[:n]
+}

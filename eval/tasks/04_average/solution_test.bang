@@ -1,0 +1,10 @@
+let s = import("solution.bang")
+
+fn test_average() {
+    assert_eq(s.average([1, 2]), 1.5)
+    assert_eq(type(s.average([2, 2])), "Float")
+    assert_eq(s.average([2, 2]), 2.0)
+}
+fn test_empty() {
+    assert_eq(s.average([]), nil)
+}

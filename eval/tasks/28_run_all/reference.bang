@@ -1,0 +1,9 @@
+fn run_all(fs) {
+    return parallel_map(fs, fn(f) {
+        try {
+            return f()
+        } catch e {
+            return "error"
+        }
+    })
+}

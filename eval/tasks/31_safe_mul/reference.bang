@@ -1,0 +1,8 @@
+fn safe_mul(a, b) {
+    try {
+        return a * b
+    } catch e {
+        if e.kind == "overflow" { return nil }
+        throw e
+    }
+}

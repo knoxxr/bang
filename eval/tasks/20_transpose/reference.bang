@@ -1,0 +1,12 @@
+fn transpose(m) {
+    if not m { return [] }
+    let out = []
+    for j in range(len(m[0])) {
+        let col = []
+        for row in m {
+            col += [row[j]]
+        }
+        out += [col]
+    }
+    return out
+}

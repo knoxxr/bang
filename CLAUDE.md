@@ -113,6 +113,9 @@ wiki/           GitHub Wiki 사용자 매뉴얼 원본(한국어 14페이지). �
   - 범용 연산(len, slice, push, map 등)은 접두사 없이 여러 타입을 받는 하나의 이름으로 확장한다.
 의존성: polling(리액터), rustls+webpki-roots(https feature, 기본 켜짐 — 자급 코어의 유일한 예외).
         CI는 --no-default-features 빌드도 검증. (cranelift는 Phase 44에서 JIT와 함께 제거)
+eval/           LLM 정답률 측정 (Phase 66): tasks/<id>/{task.md, reference.bang, solution_test.bang} + run.bang(bang으로 작성).
+                bang eval/run.bang --reference / --empty 는 API 없이 과제 검증(tests/eval_test.rs가 CI에서 실행).
+                실제 측정(API 비용 발생)은 사용자 승인 후. llms.txt·진단·힌트를 바꾸면 측정으로 효과 확인.
 examples/       기본 샘플 + 동시성 샘플(channels/parallel_block/spawn_basic 등)이 한 디렉토리에 평면 배치.
                 상단 주석의 기대 출력이 통합 테스트 정답지.
 
@@ -792,3 +795,15 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              기존 출력 불변(힌트가 없는 오류는 글자 그대로) — VM↔AOT 오류 동치 테스트·위키 에러 출력 예시 그대로 통과.
              문서: SPEC 8.4 신설, help, llms.txt, README, wiki(에러 처리 힌트 예시 — 검증됨, 도구 JSON 진단).
              회귀: diagnostics 단위 +3, cli_test +3(check --json·run --json·힌트 1회). (tests: 471 green 양쪽 feature, clippy 0, 위키 78블록)
+✅ Phase 66 — AI 시대 대응 4차: LLM 정답률 시험 세트 + 측정기 — v0.51.0
+             eval/tasks 32개(기본·컬렉션·값 의미론 함정(xs.append)·클로저 객체·f-문자열 형식·JSON/정규식/CSV/바이트·
+               동시성(parallel_map·spawn·채널·select)·에러(kind·throw 값)·타입 힌트·오버플로) — task.md/reference.bang/solution_test.bang.
+             eval/run.bang (bang으로 작성): llms.txt를 시스템 프롬프트(프롬프트 캐시)로 Messages API에 과제를 JOBS개씩 병렬 요청,
+               429·5xx는 retry-after/지수 백오프 재시도, 답의 ```bang 블록을 bang test --sandbox로 채점(timeout 60초 — 있으면),
+               실패 시 테스트 출력 + bang check --json 진단을 돌려주고 1회 수리(assistant content는 thinking 포함 원본 그대로).
+               pass@1·수리 후 통과율·토큰(캐시 읽기 포함) 출력, eval/out/results.json + 과제별 생성 코드 보존.
+               --reference(정답 전부 통과)·--empty(빈 답 전부 실패 — 채점이 실제로 검사함)는 API 없이 검증, 종료 코드로 판정.
+             과제 검증 중 발견: 26_checksum 기대값을 잘못 계산(가 = EA B0 80 → 0x1a) — 정답 모드가 잡아 수정.
+             회귀: tests/eval_test.rs +3(정답 모드 32/32, 빈 답 0/32, 가짜 API 종단 — 429 재시도·Python 습관 오답의 수리 요청에
+               힌트 전달·끝까지 틀리는 과제·요청 형식(헤더·모델·캐시·llms.txt)·토큰 집계). 실제 API 측정은 미실행(비용 — 사용자 승인 대기).
+             문서: eval/README.md(실행·비용 추정·과제 추가), VISION 9장 선행 지표, CLAUDE.md 모듈 경계.

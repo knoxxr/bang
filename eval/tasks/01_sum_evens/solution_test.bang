@@ -1,0 +1,9 @@
+let s = import("solution.bang")
+
+fn test_basic() {
+    assert_eq(s.sum_evens([1, 2, 3, 4]), 6)
+}
+fn test_empty_and_negative() {
+    assert_eq(s.sum_evens([]), 0)
+    assert_eq(s.sum_evens([-2, -3, 5]), -2)
+}

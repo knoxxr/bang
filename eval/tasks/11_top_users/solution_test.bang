@@ -1,0 +1,7 @@
+let s = import("solution.bang")
+
+fn test_top() {
+    let j = "[{\"name\": \"a\", \"score\": 5}, {\"name\": \"b\", \"score\": 9}, {\"name\": \"c\", \"score\": 5}, {\"name\": \"d\", \"score\": 7}]"
+    assert_eq(s.top_users(j, 3), ["b", "d", "a"])
+    assert_eq(s.top_users(j, 10), ["b", "d", "a", "c"])
+}

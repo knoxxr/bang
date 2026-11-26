@@ -1,0 +1,7 @@
+let s = import("solution.bang")
+
+fn test_checksum() {
+    assert_eq(s.checksum("hi"), "d1")
+    assert_eq(s.checksum(""), "00")
+    assert_eq(s.checksum("가"), "1a")
+}

@@ -1,0 +1,10 @@
+let s = import("solution.bang")
+
+fn test_rotate() {
+    let xs = [1, 2, 3, 4, 5]
+    assert_eq(s.rotate(xs, 2), [3, 4, 5, 1, 2])
+    assert_eq(s.rotate(xs, 7), [3, 4, 5, 1, 2])
+    assert_eq(s.rotate(xs, 0), [1, 2, 3, 4, 5])
+    assert_eq(xs, [1, 2, 3, 4, 5])
+    assert_eq(s.rotate([], 3), [])
+}

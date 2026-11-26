@@ -1,0 +1,256 @@
+// bang LLM 정답률 측정기 (Phase 66)
+//
+// llms.txt 하나만 컨텍스트로 준 LLM에게 과제(eval/tasks/*)를 풀게 하고, 생성된 코드를 권한 모드(--sandbox)로
+// 채점한다. 첫 시도 통과율(pass@1)과, 실패 시 테스트 출력·JSON 진단을 돌려주고 한 번 더 받은 뒤의 통과율을 잰다.
+//
+// 사용:  bang eval/run.bang [옵션]
+//   --reference     정답(reference.bang)으로 채점 — API 호출 없음 (과제·채점 검증, 모두 통과해야 정상)
+//   --empty         빈 답으로 채점 — API 호출 없음 (모두 실패해야 정상: 채점이 실제로 검사하는지 확인)
+//   --model M       모델 (기본 claude-opus-5-5)
+//   --effort E      low / medium / high / xhigh / max (기본 medium)
+//   --tasks a,b     id가 이것으로 시작하는 과제만 (예: --tasks 01,14)
+//   --no-repair     수리 시도 없이 첫 시도만
+//   --jobs N        동시에 푸는 과제 수 (기본 8)
+//   --out DIR       결과 디렉터리 (기본 eval/out)
+// 환경 변수: ANTHROPIC_API_KEY (필수 — API 모드), ANTHROPIC_BASE_URL (선택), BANG_BIN (채점에 쓸 bang, 기본 "bang")
+
+let argv = args()
+let HERE = path_dirname(argv[0])
+let TASKS = path_join(HERE, "tasks")
+let MODE = "api"
+let MODEL = "claude-opus-5-5"
+let EFFORT = "medium"
+let ONLY = []
+let REPAIR = true
+let JOBS = 8
+let OUT = path_join(HERE, "out")
+
+let i = 1
+while i < len(argv) {
+    let a = argv[i]
+    if a == "--reference" {
+        MODE = "reference"
+    } else if a == "--empty" {
+        MODE = "empty"
+    } else if a == "--no-repair" {
+        REPAIR = false
+    } else if a in ["--model", "--effort", "--tasks", "--jobs", "--out"] {
+        if i + 1 >= len(argv) { throw f"{a} 뒤에 값이 필요합니다" }
+        let v = argv[i + 1]
+        i += 1
+        if a == "--model" {
+            MODEL = v
+        } else if a == "--effort" {
+            EFFORT = v
+        } else if a == "--tasks" {
+            ONLY = v.split(",")
+        } else if a == "--jobs" {
+            JOBS = int(v)
+        } else {
+            OUT = v
+        }
+    } else {
+        throw f"알 수 없는 옵션: {a}"
+    }
+    i += 1
+}
+
+let BANG = env_get("BANG_BIN") or "bang"
+let BASE = env_get("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+let KEY = env_get("ANTHROPIC_API_KEY")
+if MODE == "api" and KEY == nil {
+    print("ANTHROPIC_API_KEY가 없습니다. API 없이 과제만 검증하려면 --reference 를 쓰세요.")
+    exit(1)
+}
+
+// 채점 시간 상한: coreutils timeout이 있으면 과제마다 60초 (proc_run에는 자체 시간 제한이 없음 — 무한 루프 대비)
+let TIMEOUT = []
+try {
+    if proc_run(["timeout", "--version"]).code == 0 { TIMEOUT = ["timeout", "60"] }
+} catch e {
+    TIMEOUT = []
+}
+
+let ids = []
+for name in list_dir(TASKS).sort() {
+    if not is_dir(path_join(TASKS, name)) { continue }
+    if ONLY and not ONLY.any(fn(p) { return starts_with(name, p) }) { continue }
+    ids += [name]
+}
+
+let SYSTEM = "당신은 bang 프로그래밍 언어로 코드를 씁니다. 아래는 bang의 전체 레퍼런스(llms.txt)입니다. " +
+    "이 문서에 있는 문법과 내장 함수만 쓰세요.\n\n" + read_file(path_join(HERE, "..", "llms.txt"))
+
+fn headers() {
+    return {
+        "x-api-key": KEY,
+        "anthropic-version": "2026-10-21",
+        "anthropic-beta": "server-side-fallback-2026-07-01",
+    }
+}
+
+// Messages API 호출. 429·5xx는 retry-after(없으면 2^n초)만큼 기다렸다가 최대 5번 다시 시도한다.
+fn call_api(messages) {
+    let body = {
+        "model": MODEL,
+        "max_tokens": 16000,
+        // llms.txt는 모든 과제가 같으므로 프롬프트 캐시를 건다
+        "system": [{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        "messages": messages,
+        "output_config": {"effort": EFFORT},
+        "fallbacks": "default",
+    }
+    let attempt = 0
+    while true {
+        let r = http_post(BASE + "/v1/messages", body, headers(), {"timeout_ms": 300000})
+        if r.status == 200 { return json_parse(r.body) }
+        attempt += 1
+        if (r.status == 429 or r.status >= 500) and attempt <= 5 {
+            let wait_s = pow(2, attempt)
+            try {
+                wait_s = int(float(get(r.headers, "retry-after", str(wait_s))))
+            } catch e {
+                wait_s = pow(2, attempt)
+            }
+            sleep(wait_s * 1000)
+            continue
+        }
+        throw {"status": r.status, "body": r.body[:500]}
+    }
+}
+
+fn text_of(msg) {
+    let out = ""
+    for block in msg.content {
+        if block.type == "text" { out += block.text }
+    }
+    return out
+}
+
+// 답에서 ```bang ... ``` 블록을 꺼낸다 (없으면 첫 ``` 블록, 그것도 없으면 전체)
+fn extract_code(text) {
+    let i = find(text, "```bang")
+    if i < 0 { i = find(text, "```") }
+    if i < 0 { return text }
+    let rest = text[i:]
+    let nl = find(rest, "\n")
+    rest = if nl >= 0 { rest[nl + 1:] } else { "" }
+    let end = find(rest, "```")
+    return if end >= 0 { rest[:end] } else { rest }
+}
+
+fn prompt_for(id, task_text) {
+    return f"과제 ID: {id}\n\n{task_text}\n" +
+        "`solution.bang` 파일의 전체 내용을 작성하세요. 이 파일은 `import(\"solution.bang\")`로 불러와 테스트됩니다. " +
+        "함수만 정의하고 최상위에서 print 등 다른 일은 하지 마세요. 답은 ```bang 코드 블록 하나만 쓰세요."
+}
+
+// 생성된 코드를 격리(--sandbox)해 채점한다. {pass, output, diagnostics}
+fn grade(id, code, dir) {
+    dir_create(dir)
+    let sol = path_join(dir, "solution.bang")
+    write_file(sol, code)
+    write_file(path_join(dir, "solution_test.bang"), read_file(path_join(TASKS, id, "solution_test.bang")))
+    let r = proc_run(TIMEOUT + [BANG, "test", "--sandbox", dir])
+    let out = r.stdout + r.stderr
+    if r.code == 124 and TIMEOUT { out += "\n(60초 시간 초과 — 끝나지 않는 코드)" }
+    let diags = ""
+    if r.code != 0 {
+        diags = proc_run([BANG, "check", "--json", sol]).stdout
+    }
+    return {"pass": r.code == 0, "output": out[:4000], "diagnostics": diags[:4000]}
+}
+
+fn feedback(g) {
+    let msg = "이 solution.bang은 테스트를 통과하지 못했습니다.\n\n테스트 출력:\n```\n" + g.output + "\n```\n"
+    if g.diagnostics != "" {
+        msg += "\n`bang check --json` 진단:\n```\n" + g.diagnostics + "```\n"
+    }
+    return msg + "\n고친 solution.bang 전체를 ```bang 코드 블록 하나로 다시 쓰세요."
+}
+
+fn run_task(id) {
+    let res = {"id": id, "pass1": false, "pass2": nil, "error": nil, "input": 0, "cache_read": 0, "output": 0}
+    let dir = path_join(OUT, id)
+    if MODE != "api" {
+        let code = if MODE == "reference" { read_file(path_join(TASKS, id, "reference.bang")) } else { "" }
+        let g = grade(id, code, path_join(dir, "1"))
+        res.pass1 = g.pass
+        if not g.pass and MODE == "reference" { res.error = g.output }
+        return res
+    }
+    let task_text = read_file(path_join(TASKS, id, "task.md"))
+    let messages = [{"role": "user", "content": prompt_for(id, task_text)}]
+    let count = fn(msg) {
+        res.input += msg.usage.input_tokens
+        res.cache_read += get(msg.usage, "cache_read_input_tokens", 0) or 0
+        res.output += msg.usage.output_tokens
+    }
+    try {
+        let msg = call_api(messages)
+        count(msg)
+        if msg.stop_reason == "refusal" {
+            res.error = "refusal"
+            return res
+        }
+        let g = grade(id, extract_code(text_of(msg)), path_join(dir, "1"))
+        res.pass1 = g.pass
+        if g.pass or not REPAIR { return res }
+        // 수리: 모델의 답(thinking 블록 포함 원본 그대로)과 실패 정보를 이어 붙여 한 번 더
+        messages += [{"role": "assistant", "content": msg.content}, {"role": "user", "content": feedback(g)}]
+        let msg2 = call_api(messages)
+        count(msg2)
+        res.pass2 = msg2.stop_reason != "refusal" and grade(id, extract_code(text_of(msg2)), path_join(dir, "2")).pass
+    } catch e {
+        res.error = if type(e) == "Map" and has(e, "message") { e.message } else { str(e) }
+    }
+    return res
+}
+
+print(f"과제 {len(ids)}개 · 모드 {MODE}" + (if MODE == "api" { f" · 모델 {MODEL} (effort {EFFORT})" } else { "" }))
+let started = now_ms()
+let results = []
+let k = 0
+while k < len(ids) {
+    // JOBS개씩 동시에 (API 속도 제한을 넘지 않게)
+    for r in parallel_map(ids[k:k + JOBS], run_task) {
+        let mark = if r.pass1 { "통과" } else if r.pass2 { "수리 후 통과" } else { "실패" }
+        print(f"  {r.id:<20} {mark}" + (if r.error { f" ({r.error[:120]})" } else { "" }))
+        results += [r]
+    }
+    k += JOBS
+}
+
+let n = len(results)
+let p1 = len(results.filter(fn(r) { return r.pass1 }))
+let p2 = len(results.filter(fn(r) { return r.pass1 or r.pass2 }))
+fn pct(x) {
+    return if n == 0 { "0.0" } else { format("{:.1f}", x * 100 / n) }
+}
+print("")
+print(f"첫 시도 통과 (pass@1): {p1}/{n} ({pct(p1)}%)")
+if MODE == "api" and REPAIR {
+    print(f"수리 1회 후 통과:      {p2}/{n} ({pct(p2)}%)")
+}
+let failed = results.filter(fn(r) { return not r.pass1 }).map(fn(r) { return r.id })
+if failed { print(f"첫 시도 실패: {join(failed, ", ")}") }
+if MODE == "api" {
+    let tin = sum(results.map(fn(r) { return r.input }))
+    let tcache = sum(results.map(fn(r) { return r.cache_read }))
+    let tout = sum(results.map(fn(r) { return r.output }))
+    print(f"토큰: 입력 {tin:,} (+ 캐시 읽기 {tcache:,}) · 출력 {tout:,}")
+}
+print(f"({(now_ms() - started) / 1000.0:.1f}초)")
+
+dir_create(OUT)
+let summary = {
+    "mode": MODE, "model": MODEL, "effort": EFFORT, "repair": REPAIR,
+    "tasks": n, "pass1": p1, "pass_after_repair": p2,
+    "results": results,
+}
+write_file(path_join(OUT, "results.json"), json_stringify(summary))
+print(f"결과: {path_join(OUT, "results.json")}")
+
+// 검증 모드의 종료 코드: --reference는 전부 통과, --empty는 전부 실패해야 0
+if MODE == "reference" and p1 != n { exit(1) }
+if MODE == "empty" and p1 != 0 { exit(1) }

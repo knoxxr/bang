@@ -1,0 +1,9 @@
+fn word_count(text) {
+    let counts = {}
+    for w in text.split(" ") {
+        if w == "" { continue }
+        let k = lower(w)
+        counts[k] = get(counts, k, 0) + 1
+    }
+    return counts
+}

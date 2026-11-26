@@ -1,0 +1,8 @@
+fn buckets(xs, size) {
+    let out = {}
+    for x in xs {
+        let b = idiv(x, size)
+        out[b] = get(out, b, []) + [x]
+    }
+    return out
+}

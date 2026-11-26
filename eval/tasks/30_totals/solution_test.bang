@@ -1,0 +1,8 @@
+let s = import("solution.bang")
+
+fn test_totals() {
+    let items = [{"cat": "food", "amt": 3}, {"cat": "bus", "amt": 2}, {"cat": "food", "amt": 4.5}]
+    let r = s.totals(items)
+    assert_eq(r, {"food": 7.5, "bus": 2})
+    assert_eq(keys(r), ["food", "bus"])
+}
