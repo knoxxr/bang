@@ -22,7 +22,8 @@ fn workdir() -> PathBuf {
     d
 }
 
-/// 시도 목록을 실행해 줄마다 "OK 이름" 또는 "DENY 이름 kind"를 찍는 스크립트.
+/// 시도 목록을 실행해 줄마다 "OK 이름" 또는 "DENY 이름 kind"를 찍는 스크립트 (심볼릭 링크·PATH의 bang이 필요한 unix 테스트용).
+#[cfg(unix)]
 const PROBE: &str = r#"fn try_it(label, f) {
     try {
         f()
@@ -54,7 +55,9 @@ fn run_in(dir: &Path, args: &[&str], src: &str) -> (i32, String, String) {
     fs::write(dir.join("probe.bang"), src).unwrap();
     // proc_run(["bang", ...])가 찾을 수 있게 테스트 바이너리 디렉터리를 PATH 앞에 둔다
     let bin_dir = Path::new(BANG).parent().unwrap();
-    let path = format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap_or_default());
+    let mut dirs = vec![bin_dir.to_path_buf()];
+    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+    let path = std::env::join_paths(dirs).expect("PATH 구성");
     let out = Command::new(BANG)
         .args(args)
         .arg("probe.bang")
@@ -65,6 +68,7 @@ fn run_in(dir: &Path, args: &[&str], src: &str) -> (i32, String, String) {
     (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
+#[cfg(unix)]
 fn verdicts(out: &str) -> Vec<String> {
     out.lines().map(|l| l.to_string()).collect()
 }
