@@ -17,3 +17,4 @@ pub mod codegen;
 pub mod fmt;
 pub mod omap;
 pub mod cycles;
+pub mod permissions;

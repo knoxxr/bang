@@ -38,7 +38,9 @@ fn main() {
         other => {
             // 알려진 명령이 아니면 파일 경로로 간주해 실행한다.
             // (bang script.bang  /  ./script.bang  /  bang - )
-            if other == "-" || std::path::Path::new(other).is_file() {
+            // 권한 플래그로 시작해도 run으로 본다 (bang --sandbox app.bang — Phase 64)
+            let perm_flag = other == "--sandbox" || other.starts_with("--allow-");
+            if other == "-" || perm_flag || std::path::Path::new(other).is_file() {
                 cmd_run(&args[1..]);
             } else {
                 eprintln!("알 수 없는 명령 또는 존재하지 않는 파일: {other}");
@@ -62,7 +64,7 @@ fn print_usage() {
     eprintln!("  bang <명령> [옵션] [인자...]");
     eprintln!();
     eprintln!("명령:");
-    eprintln!("  run     [--dump-ast] <파일|->  .bang 파일/표준입력 실행 (바이트코드 VM)");
+    eprintln!("  run     [--dump-ast] [권한] <파일|-> [인자...]  .bang 파일/표준입력 실행 (바이트코드 VM)");
     eprintln!("  compile -o <출력> <파일>  [실험적] AOT 컴파일 (C 트랜스파일 + cc -O2,");
     eprintln!("                    정수·문자열·함수만 지원 — 리스트/맵/동시성 미지원)");
     eprintln!("  check   <파일>   오류 검사 (실행 없음)");
@@ -70,13 +72,19 @@ fn print_usage() {
     eprintln!("  parse   <파일>   AST 출력");
     eprintln!("  tokenize <파일>  토큰화 출력 (디버그)");
     eprintln!("  repl             대화형 셸(REPL) 시작");
-    eprintln!("  test [경로...]   테스트 실행: *_test.bang / test_*.bang 파일의 test_* 함수");
+    eprintln!("  test [권한] [경로...]  테스트 실행: *_test.bang / test_*.bang 파일의 test_* 함수");
     eprintln!("  fmt [--check] [경로...]  들여쓰기 정규화 (--check: 바뀔 파일만 보고, exit 1)");
     eprintln!("  new <디렉토리>   새 프로젝트 스캐폴딩 (main.bang + bang.toml)");
     eprintln!("  add <이름> <git-url[@rev]>  의존성 추가 (bang.toml + bang_modules/ 설치)");
     eprintln!("  install          bang.toml의 모든 의존성 설치");
     eprintln!("  version          버전 출력");
     eprintln!("  help             도움말 출력");
+    eprintln!();
+    eprintln!("권한 (run/test, 파일 앞에 — 하나라도 주면 허가한 것만 가능):");
+    eprintln!("  --sandbox                 아무것도 허가하지 않음");
+    eprintln!("  --allow-read[=경로,..]    파일 읽기       --allow-write[=경로,..]  파일 쓰기");
+    eprintln!("  --allow-net[=호스트[:포트],..]  네트워크  --allow-run[=프로그램,..]  proc_run");
+    eprintln!("  --allow-env[=이름,..]     환경 변수       --allow-all              전부");
 }
 
 // ============================================================================
@@ -160,9 +168,23 @@ fn cmd_run(args: &[String]) {
     let mut dump_ast = false;
     let mut path: Option<&str> = None;
     let mut script_args: Vec<String> = Vec::new();
+    let mut perms = bang::permissions::Permissions::default();
+    let mut sandboxed = false;
 
     // 옵션은 파일 경로 앞에만 온다. 경로 뒤의 모든 인자는 스크립트의 것이다 (args() — Phase 62).
     for (i, arg) in args.iter().enumerate() {
+        // 권한 모드 플래그 (Phase 64): --sandbox, --allow-read[=..] 등
+        match bang::permissions::parse_flag(&mut perms, arg) {
+            Ok(true) => {
+                sandboxed = true;
+                continue;
+            }
+            Ok(false) => {}
+            Err(m) => {
+                eprintln!("오류: {m}");
+                process::exit(1);
+            }
+        }
         match arg.as_str() {
             "--dump-ast" => dump_ast = true,
             // v0.30.0에서 제거된 백엔드 — 파일 경로로 오인하지 않게 명확히 알린다.
@@ -189,6 +211,9 @@ fn cmd_run(args: &[String]) {
     };
 
     bang::stdlib::set_script_args(script_args);
+    if sandboxed {
+        bang::permissions::install(perms);
+    }
     let source = read_source(path);
     let prog   = lex_and_parse(&source, path);
 
@@ -755,7 +780,25 @@ fn collect_bang_files(paths: &[String], only_tests: bool) -> Vec<std::path::Path
 /// bang test [경로...] — 테스트 파일의 최상위를 실행한 뒤 이름이 test_로 시작하는 최상위 함수를
 /// 하나씩 격리 실행한다. 함수가 에러 없이 끝나면 통과 (assert / assert_eq / throw로 실패).
 fn cmd_test(args: &[String]) {
-    let files = collect_bang_files(args, true);
+    // 권한 플래그 (Phase 64): bang test --sandbox --allow-read=fixtures — 나머지 인자는 경로
+    let mut perms = bang::permissions::Permissions::default();
+    let mut sandboxed = false;
+    let mut paths: Vec<String> = Vec::new();
+    for a in args {
+        match bang::permissions::parse_flag(&mut perms, a) {
+            Ok(true) => sandboxed = true,
+            Ok(false) => paths.push(a.clone()),
+            Err(m) => {
+                eprintln!("오류: {m}");
+                process::exit(1);
+            }
+        }
+    }
+    let files = collect_bang_files(&paths, true);
+    if sandboxed {
+        // 테스트 파일 탐색은 권한과 무관하게 먼저 끝내고, 테스트 코드 실행부터 권한을 적용한다
+        bang::permissions::install(perms);
+    }
     if files.is_empty() {
         eprintln!("테스트 파일이 없습니다 (*_test.bang 또는 test_*.bang)");
         process::exit(1);

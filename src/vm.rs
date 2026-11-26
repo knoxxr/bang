@@ -1675,8 +1675,13 @@ impl Vm {
         stop_depth: usize,
     ) -> Result<VmValue, RuntimeError> {
         match crate::stdlib::BUILTINS.get(idx) {
-            Some(b) => (b.func)(self, args, span, stop_depth)
-                .map_err(|e| crate::stdlib::categorize_error(b.name, e)),
+            Some(b) => {
+                // 권한 모드 (Phase 64): 모든 빌트인 호출이 여기를 지나므로 경로와 무관하게 같은 검사를 받는다
+                if let Err(m) = crate::permissions::check(b.name, &args) {
+                    return Err(RuntimeError::new(m, span).with_kind(crate::runtime::kind::PERMISSION));
+                }
+                (b.func)(self, args, span, stop_depth).map_err(|e| crate::stdlib::categorize_error(b.name, e))
+            }
             None => Err(RuntimeError::new(format!("알 수 없는 내장 함수 인덱스: {idx}"), span)),
         }
     }

@@ -80,6 +80,8 @@ src/
   regex/        자체 정규식 엔진 (Phase 21~22, 백트래킹 VM + 캡처)
   pkg/          bang.toml 매니페스트 파서 (Phase 23, bang add/install)
   reactor/      논블로킹 I/O 리액터 (Phase 34, polling 기반; serve_event가 사용)
+  permissions   권한 모드 (Phase 64, src/permissions.rs) — --sandbox/--allow-*. Vm::call_builtin 한 곳에서 검사.
+                새 빌트인이 파일·네트워크·프로세스·환경에 닿으면 permissions::check에 분야를 등록할 것.
 docs/SPEC.md    언어 명세 (동시성·serve_event 한계 포함). 의미 변경 시 함께 갱신.
 docs/PHILOSOPHY.md 헌법(9조 + 영구 거부 목록 + 거절의 기록). 기능 제안은 이것과 대조.
 docs/VISION.md  활성화 계획(철학+GTM 종합). P0~P2 실행 로드맵.
@@ -760,3 +762,19 @@ Value는 Clone + Send를 만족해야 한다(스레드 이동 가능). 데이터
              회귀: http_stream_test +5(타임아웃·잘린 응답·chunk 데이터·점진 스트리밍·중단/throw/에러 상태/옵션 검증·
                LLM 예제 종단(가짜 Messages API, 병렬 확인)), docs_test +4. lexer/parser 예제 개수 20→21.
              (tests: 455 green 양쪽 feature·디버그/릴리스, clippy 0, 위키 77블록)
+✅ Phase 64 — AI 시대 대응 2차: 권한 모드 (--sandbox / --allow-*) — v0.49.0
+             목적: AI가 생성한 코드·남의 스크립트를 안심하고 실행. Deno식 허가 목록, 플래그 없으면 이전과 같이 모두 허용.
+             src/permissions.rs: Permissions{read,write,net,run,env: Allow(None|All|List)} + OnceLock 1회 설치(스크립트가 못 바꿈).
+               check(name, args)를 Vm::call_builtin(유일한 빌트인 디스패치)에서 호출 → 직접·메서드 문법·spawn·콜백·모듈 모두 같은 검사.
+               read: read_file·file_read_bytes·file_exists·is_dir·list_dir·file_size·tcp_send_file(경로),
+               write: write_file·file_append·dir_create·file_remove·file_move(양쪽), net: http_*(URL host:port, 기본 포트)·
+               tcp_connect·tcp_listen·serve_event(addr), run: proc_run(argv[0] 정확 일치), env: env_get(이름).
+               import는 허용하되 권한 모드에선 .bang만(다른 파일을 import로 읽어 에러로 흘리는 것 차단).
+               경로: 실제 경로로 풀어(canonicalize, 없으면 가장 가까운 존재 상위 + 나머지 어휘 정리) 허가 경로 아래인지 —
+               `..`·심볼릭 링크 탈출 불가. 호스트는 문자열 비교(DNS 미해석).
+             새 에러 종류 permission (kind 목록 끝에 추가 — 기존 계약 불변). 메시지에 허용 플래그 안내.
+             CLI: run/베어 실행(bang --sandbox x.bang 디스패치 포함)·bang test가 플래그를 파일 앞에서 받음, 잘못된 플래그는 exit 1.
+             한계(SPEC 17장 명시): OS 격리 아님 — --allow-run=sh 등 범용 실행기는 우회 통로, CPU·메모리·시간 제한 없음.
+             문서: SPEC 8.2·17장 신설, help, llms.txt, README(권한 모드 절·English summary), wiki(도구 권한 모드 절·에러 표·FAQ).
+             회귀: permissions 단위 +3(플래그·호스트 파싱·경로 탈출), permission_test +7(무플래그 동일·sandbox 전부 거부·
+               선택 허용 17항목·심볼릭 링크·미처리 exit 1·잘못된 플래그·bang test). (tests: 465 green 양쪽 feature, clippy 0)

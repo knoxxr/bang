@@ -662,6 +662,7 @@ try {
 | `io` | 파일·디렉터리·네트워크·프로세스·환경 빌트인의 실패 |
 | `assertion` | `assert` / `assert_eq` 실패 |
 | `import` | 모듈을 찾거나 실행하지 못함 |
+| `permission` | 권한 모드에서 허가하지 않은 파일·네트워크·프로세스·환경 변수 접근 (17장, Phase 64) |
 | `error` | 그 밖의 런타임 에러 |
 
 ```
@@ -1004,3 +1005,42 @@ fn make() {
 
 **매니페스트** (`bang.toml`): `bang add`/`bang install`은 `[dependencies]` 섹션만 읽고 쓴다. 다른 섹션(`bang new`가
 만드는 `[package]` 등)과 주석은 보존한다(Phase 62 — 이전에는 `bang add`가 파일을 `[dependencies]`만으로 다시 썼다).
+
+## 17. 권한 모드 (Phase 64)
+
+AI가 생성한 코드나 남이 준 스크립트를 실행할 때, 그 코드가 할 수 있는 일을 실행 전에 제한한다(Deno식 허가 목록).
+
+```
+bang --sandbox app.bang                                   # 아무것도 허가하지 않음
+bang run --allow-read=./data --allow-net=api.anthropic.com app.bang
+bang test --sandbox --allow-read=fixtures                 # 테스트도 같은 플래그
+```
+
+- **켜는 조건**: `--sandbox` 또는 `--allow-*` 플래그가 하나라도 있으면 권한 모드다. 플래그가 없으면 이전과 같이 모두 허용한다.
+  플래그는 스크립트 경로 **앞**에 쓴다(경로 뒤의 인자는 스크립트의 `args()` — 10장).
+- **분야와 대상** (값 없이 쓰면 그 분야 전부, `=a,b`로 목록, 같은 플래그를 여러 번 쓰면 합쳐짐):
+
+| 플래그 | 검사하는 빌트인 | 목록 항목 |
+|---|---|---|
+| `--allow-read` | `read_file` `file_read_bytes` `file_exists` `is_dir` `list_dir` `file_size` `tcp_send_file` | 경로 — 그 아래 전부 |
+| `--allow-write` | `write_file` `file_append` `dir_create` `file_remove` `file_move`(양쪽) | 경로 — 그 아래 전부 |
+| `--allow-net` | `http_get` `http_post` `http_request` `tcp_connect` `tcp_listen` `serve_event` | `host`(모든 포트) 또는 `host:port` |
+| `--allow-run` | `proc_run` | 프로그램 이름(`argv[0]`과 정확히 같아야 함) |
+| `--allow-env` | `env_get` | 변수 이름 |
+| `--allow-all` | 전부 | — |
+
+- 허가하지 않은 호출은 아무 일도 하지 않고 `permission` 종류의 에러를 낸다(catch 가능, 미처리 시 종료 코드 1).
+  메시지에 허용하는 플래그가 들어 있다.
+- **경로 비교**: 대상과 허가 경로를 모두 실제 경로로 풀어(심볼릭 링크 해소, 존재하지 않는 대상은 가장 가까운 존재하는
+  상위 디렉터리를 풀고 나머지를 붙임) 허가 경로 아래인지 본다. `data/../secret`이나 `data` 안의 링크로 빠져나갈 수 없다.
+- **네트워크 비교**: 호스트 이름 문자열 그대로 비교한다(DNS를 풀지 않음 — `localhost`와 `127.0.0.1`은 다르다). URL은 스킴
+  기본 포트(http 80, https 443)를 쓴다. `tcp_accept`·`tcp_read` 등은 이미 허가된 연결·리스너에만 쓸 수 있으므로 검사하지 않는다.
+- **import**: 모듈 적재는 허용하되 `.bang` 파일만 불러올 수 있다(다른 파일을 import로 읽어 에러 메시지로 내용을 흘리지 못하게).
+  모듈 코드도 같은 권한으로 실행된다.
+- **범위**: 권한은 프로세스 전체에 한 번 설정되고 스크립트가 바꿀 수 없다. `spawn`·`parallel_map` 작업, 콜백, 메서드 문법
+  등 모든 경로가 빌트인 디스패치 한 곳에서 같은 검사를 받는다.
+- **언제나 허용**: `print`·`input`·`args`·`env_cwd`·`sleep`·`now_ms` 등 외부 자원을 바꾸지 않는 빌트인, CPU·메모리 사용.
+
+**한계 (반드시 인지)**: 이것은 bang 코드가 *빌트인으로* 하는 일을 막는 장치이지 운영체제 수준 격리가 아니다.
+`--allow-run=sh`나 `--allow-run=python`처럼 범용 실행기를 허가하면 그 프로세스는 아무 제한 없이 동작한다 — 실행을 허가할
+프로그램은 좁게 고른다. CPU·메모리·실행 시간 제한은 없다(무한 루프는 막지 못함). 완전한 격리가 필요하면 컨테이너와 함께 쓴다.

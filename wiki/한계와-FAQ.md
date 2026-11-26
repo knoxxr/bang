@@ -78,6 +78,10 @@ close(requests)
 
 사내 프록시가 자체 인증 기관(CA)으로 TLS를 가로채는 환경입니다. bang은 내장된 Mozilla 루트 인증서만 신뢰하고 검증을 끄는 옵션이 없어, 현재 이런 환경에서는 https를 쓸 수 없습니다.
 
+### AI가 만든 bang 코드를 안전하게 실행하려면?
+
+권한 모드로 실행하세요: `bang --sandbox generated.bang`은 파일·네트워크·프로세스·환경 변수 접근을 전부 막고, 필요한 것만 `--allow-read=./data --allow-net=api.example.com`처럼 허가합니다. bang은 원래 작업 사이에 공유 가변 값이 없어 데이터 경쟁이 일어날 수 없고, 잘못된 동작을 조용히 넘기지 않으므로, 여기에 권한 제어까지 더하면 생성된 코드를 실행하기 좋은 환경이 됩니다. 단 OS 수준 격리는 아니므로 범용 실행기(`sh` 등)는 허가하지 말고, 필요하면 컨테이너와 함께 쓰세요. 자세한 내용: [도구 → 권한 모드](도구#권한-모드--ai가-쓴-코드를-안심하고-실행).
+
 ### bang으로 LLM API를 부를 수 있나요?
 
 됩니다. bang이 가장 잘하는 일 중 하나입니다 — 질문 여러 개를 `parallel_map`으로 동시에 보내고, 긴 답은 `on_line` 옵션으로 생성되는 대로 받습니다. 응답이 오래 걸리므로 `timeout_ms` 옵션으로 대기 시간을 늘리세요. [네트워킹 → LLM API 부르기](네트워킹#llm-api-부르기-병렬--스트리밍)와 [`examples/llm_fanout.bang`](https://github.com/knoxxr/bang/blob/main/examples/llm_fanout.bang)을 보세요.

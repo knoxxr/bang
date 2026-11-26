@@ -60,7 +60,7 @@ try {
     print(e.message)           // 내장 에러는 맵 {kind, message, line, col}
     if e.kind == "zero_division" { print("0 나눗셈") }
 }
-// kind: zero_division overflow index key type argument value io assertion import error
+// kind: zero_division overflow index key type argument value io assertion import permission error
 ```
 
 ### 선택적 타입 힌트 (gradual — 생략 가능, 표기 시 런타임 검증)
@@ -207,6 +207,8 @@ bang check script.bang # 정적 검사 (타입·해석)
 bang new myproj        # 새 프로젝트 스캐폴딩
 bang test              # *_test.bang / test_*.bang 의 test_* 함수 실행 (assert_eq로 검증)
 bang fmt               # 들여쓰기 정규화 (--check: CI용)
+bang --sandbox x.bang  # 권한 모드: 파일·네트워크·프로세스·환경 변수 전부 거부 (permission 에러)
+bang --allow-read=./data --allow-net=api.example.com x.bang   # 허가한 것만 (--allow-write/run/env/all)
 ```
 
 ## 하지 말 것 (bang에 없는 것)

@@ -130,6 +130,21 @@ bang version              버전 출력
 bang help                 도움말
 ```
 
+### 권한 모드 — AI가 쓴 코드를 안심하고 실행
+
+`--sandbox`나 `--allow-*`를 하나라도 주면 허가한 것만 할 수 있습니다. 나머지 파일·네트워크·프로세스·환경 변수
+접근은 `permission` 에러가 됩니다(플래그가 없으면 지금처럼 모두 허용).
+
+```
+bang --sandbox generated.bang                                    # 아무것도 허가하지 않음
+bang run --allow-read=./data --allow-write=./out \
+         --allow-net=api.anthropic.com --allow-env=ANTHROPIC_API_KEY agent.bang
+bang test --sandbox                                               # 테스트도 같은 플래그
+```
+
+경로는 심볼릭 링크·`..`를 풀어 비교하고, `spawn`·콜백 등 어떤 경로로 불러도 같은 검사를 받습니다.
+OS 수준 격리는 아니므로 `--allow-run=sh`처럼 범용 실행기는 허가하지 마세요 (SPEC 17장).
+
 ## 예제
 
 ```
@@ -411,6 +426,11 @@ print(f"fetched {len(pages)} pages")
 - **Install**: `brew install knoxxr/tap/bang`, or the shell / PowerShell installers above.
 - **Structured concurrency**: every task is joined before the function that spawned it returns; unhandled task
   errors propagate to the caller.
+- **Permission mode** for running AI-generated or untrusted scripts: `bang --sandbox x.bang` denies file, network,
+  process and environment access; grant only what is needed with `--allow-read=./data --allow-net=api.example.com`
+  (also `--allow-write`, `--allow-run`, `--allow-env`). Not OS-level isolation (SPEC §17).
+- **LLM APIs**: `http_post(url, body, headers, {"timeout_ms": 120000, "on_line": fn(line) {...}})` streams
+  responses line by line; see [`examples/llm_fanout.bang`](examples/llm_fanout.bang).
 - **Honest limits**: sequential execution is about 3–4× slower than CPython ([benchmarks](bench/README.md));
   memory is reference-counted with a generational cycle collector (see SPEC §15); the experimental native compiler
   (`bang compile`) supports only a small subset.

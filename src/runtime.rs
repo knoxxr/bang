@@ -45,12 +45,14 @@ pub mod kind {
     pub const ASSERTION: &str = "assertion";
     /// import 실패
     pub const IMPORT: &str = "import";
+    /// 권한 모드에서 허가하지 않은 파일·네트워크·프로세스·환경 변수 접근 (Phase 64)
+    pub const PERMISSION: &str = "permission";
     /// 그 밖의 런타임 에러
     pub const ERROR: &str = "error";
 
     /// 전체 목록 (다시 던진 에러 맵 복원용).
     pub const ALL: &[&str] = &[
-        ZERO_DIVISION, OVERFLOW, INDEX, KEY, TYPE, ARGUMENT, VALUE, IO, ASSERTION, IMPORT, ERROR,
+        ZERO_DIVISION, OVERFLOW, INDEX, KEY, TYPE, ARGUMENT, VALUE, IO, ASSERTION, IMPORT, PERMISSION, ERROR,
     ];
 }
 
